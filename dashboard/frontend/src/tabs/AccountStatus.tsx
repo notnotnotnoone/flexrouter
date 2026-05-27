@@ -3,7 +3,12 @@ import { fetchStatus } from '../api'
 
 export function AccountStatus() {
   const [status, setStatus] = useState<any>(null)
-  useEffect(() => { fetchStatus().then(setStatus) }, [])
+  useEffect(() => {
+    const load = () => fetchStatus().then(setStatus).catch(() => {})
+    load()
+    const id = setInterval(load, 5000)
+    return () => clearInterval(id)
+  }, [])
   const providers = status?.providers ?? {}
   return (
     <div className="space-y-4">
