@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio
+import threading
 import time
-import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -29,6 +29,11 @@ class FlexRouter:
         self._client = AsyncClient()
         self._hooks = HookRunner()
         self._loop = asyncio.new_event_loop()
+        self._loop_lock = threading.Lock()
+        try:
+            self._last_mtime: float = self._config_path.stat().st_mtime
+        except OSError:
+            self._last_mtime = 0.0
 
     def generate(
         self,
@@ -39,9 +44,10 @@ class FlexRouter:
         session_id: Optional[str] = None,
         **kwargs,
     ) -> dict:
-        return self._loop.run_until_complete(
-            self.agenerate(messages, tier, wait=wait, vision=vision, session_id=session_id, **kwargs)
-        )
+        with self._loop_lock:
+            return self._loop.run_until_complete(
+                self.agenerate(messages, tier, wait=wait, vision=vision, session_id=session_id, **kwargs)
+            )
 
     async def agenerate(
         self,
@@ -78,6 +84,12 @@ class FlexRouter:
                 result = await self._client.chat(route, messages, **kwargs)
             except RateLimitError:
                 self._engine.penalize(route.provider, route.model)
+                self._audit.log(
+                    tier=tier, provider=route.provider, model=route.model,
+                    prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
+                    latency_ms=int((time.monotonic() - start) * 1000),
+                    status="rate_limited",
+                )
                 if attempt == retries:
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
@@ -86,6 +98,12 @@ class FlexRouter:
                 raise
             except ProviderError:
                 self._engine.penalize(route.provider, route.model)
+                self._audit.log(
+                    tier=tier, provider=route.provider, model=route.model,
+                    prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
+                    latency_ms=int((time.monotonic() - start) * 1000),
+                    status="error",
+                )
                 if attempt == retries:
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
@@ -117,12 +135,19 @@ class FlexRouter:
         self._engine.update_config(self._cfg)
         self._audit = AuditLogger(self._cfg.state_dir)
 
+    def close(self) -> None:
+        self._loop.close()
+
+    def __enter__(self) -> "FlexRouter":
+        return self
+
+    def __exit__(self, *_) -> None:
+        self.close()
+
     def _maybe_hot_reload(self) -> None:
         try:
             mtime = self._config_path.stat().st_mtime
-            if not hasattr(self, "_last_mtime"):
-                self._last_mtime = mtime
-            elif mtime != self._last_mtime:
+            if mtime != self._last_mtime:
                 self._last_mtime = mtime
                 self.reload()
         except OSError:
