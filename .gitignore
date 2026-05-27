@@ -1,0 +1,9 @@
+.flexrouter/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+dist/
+*.egg-info/
+.env
+dashboard/frontend/node_modules/
+dashboard/frontend/dist/
