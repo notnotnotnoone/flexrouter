@@ -14,7 +14,8 @@ def test_appends_csv_row(tmp_path):
     logger = AuditLogger(str(tmp_path))
     logger.log("low", "groq", "llama", 10, 5, 0.001, 300, "ok")
     logger.log("low", "groq", "llama", 20, 10, 0.002, 400, "ok")
-    rows = list(csv.DictReader((tmp_path / "audit.csv").open()))
+    with (tmp_path / "audit.csv").open() as f:
+        rows = list(csv.DictReader(f))
     assert len(rows) == 2
     assert rows[0]["provider"] == "groq"
     assert rows[1]["prompt_tokens"] == "20"
@@ -22,7 +23,8 @@ def test_appends_csv_row(tmp_path):
 def test_csv_has_correct_headers(tmp_path):
     logger = AuditLogger(str(tmp_path))
     logger.log("low", "groq", "llama", 0, 0, 0, 0, "ok")
-    headers = list(csv.DictReader((tmp_path / "audit.csv").open()).fieldnames)
+    with (tmp_path / "audit.csv").open() as f:
+        headers = list(csv.DictReader(f).fieldnames)
     assert headers == ["timestamp", "tier", "provider", "model",
                        "prompt_tokens", "completion_tokens", "cost_usd", "latency_ms", "status"]
 

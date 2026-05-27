@@ -1,6 +1,7 @@
 from __future__ import annotations
 import csv
 import json
+import os
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +51,7 @@ class AuditLogger:
         with self._csv_path.open("a", newline="") as f:
             csv.DictWriter(f, fieldnames=_HEADERS).writerow(row)
 
+        # Only update in-memory state after successful disk write
         self._recent.append(row)
         self._total_cost += cost_usd
         self._provider_cost[provider] = self._provider_cost.get(provider, 0.0) + cost_usd
@@ -70,4 +72,6 @@ class AuditLogger:
         }
 
     def _write_health(self) -> None:
-        self._health_path.write_text(json.dumps(self.snapshot(), indent=2))
+        tmp = self._health_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.snapshot(), indent=2))
+        os.replace(tmp, self._health_path)

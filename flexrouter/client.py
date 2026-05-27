@@ -36,7 +36,16 @@ class AsyncClient:
         if resp.status_code >= 400:
             raise ProviderError(f"{resp.status_code} from {route.provider}: {resp.text[:200]}")
 
-        return resp.json()
+        try:
+            return resp.json()
+        except Exception as exc:
+            raise ProviderError(f"Invalid JSON from {route.provider}/{route.model}: {exc}") from exc
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    async def __aenter__(self) -> "AsyncClient":
+        return self
+
+    async def __aexit__(self, *_) -> None:
+        await self.aclose()
