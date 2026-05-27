@@ -12,7 +12,7 @@ def make_engine(models=None):
     if models is None:
         models = [
             ModelConfig("groq", "llama-8b", score=85, rpm=60, tpm=60000, context_window=131072),
-            ModelConfig("groq", "llama-70b", score=70, rpm=30, tpm=30000, context_window=131072),
+            ModelConfig("groq", "llama-70b", score=60, rpm=30, tpm=30000, context_window=131072),
         ]
     cfg = FlexConfig(
         tiers={"low": models},

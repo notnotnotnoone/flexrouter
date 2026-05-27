@@ -158,8 +158,10 @@ class RoutingEngine:
 
     def _pick(self, scored: list[tuple[int, ModelConfig]], tier: str) -> RouteResult:
         scored.sort(key=lambda x: x[0], reverse=True)
-        # Pick the highest available score (no randomization across different scores)
-        chosen = scored[0][1]
+        best_score = scored[0][0]
+        threshold = best_score * 0.8
+        top = [m for score, m in scored if score >= threshold]
+        chosen = random.choice(top)
         return self._make_result(chosen, tier)
 
     def _make_result(self, m: ModelConfig, tier: str) -> RouteResult:
