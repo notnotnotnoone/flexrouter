@@ -30,7 +30,9 @@ class SlidingWindow:
     def seconds_until_available(self, rpm_limit: int, tpm_limit: int) -> float:
         now = time.monotonic()
         self._clean(now)
-        if self.available(rpm_limit, tpm_limit):
+        rpm = len(self._requests)
+        tpm = sum(t for _, t in self._tokens)
+        if rpm < rpm_limit and tpm < tpm_limit:
             return 0.0
         if self._requests:
             return max(0.0, self._requests[0] + self.window_seconds - now)
