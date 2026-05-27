@@ -47,34 +47,47 @@ class _Handler(BaseHTTPRequestHandler):
             self._serve_static()
 
     def do_POST(self):
-        if self.path == "/api/config":
-            length = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(length))
-            post_config(body)
-            self._send_json({"ok": True})
-        else:
-            self._send_json({"error": "not found"}, 404)
+        try:
+            if self.path == "/api/config":
+                length = int(self.headers.get("Content-Length", 0))
+                if length == 0:
+                    self._send_json({"error": "empty body"}, 400)
+                    return
+                body = json.loads(self.rfile.read(length))
+                post_config(body)
+                self._send_json({"ok": True})
+            else:
+                self._send_json({"error": "not found"}, 404)
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, 500)
 
     def _handle_api_get(self):
-        state = _state_dir()
-        if self.path == "/api/status":
-            self._send_json(get_status(state))
-        elif self.path.startswith("/api/logs"):
-            self._send_json(get_logs(state))
-        elif self.path == "/api/config":
-            self._send_json(get_config())
-        else:
-            self._send_json({"error": "not found"}, 404)
+        try:
+            state = _state_dir()
+            if self.path == "/api/status":
+                self._send_json(get_status(state))
+            elif self.path.startswith("/api/logs"):
+                self._send_json(get_logs(state))
+            elif self.path == "/api/config":
+                self._send_json(get_config())
+            else:
+                self._send_json({"error": "not found"}, 404)
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, 500)
 
     def _serve_static(self):
-        index = STATIC_DIR / "index.html"
-        if not index.exists():
+        # Strip query string
+        path = self.path.split("?")[0].lstrip("/") or "index.html"
+        candidate = STATIC_DIR / path
+        # Serve real asset if it exists, else SPA fallback to index.html
+        target = candidate if candidate.exists() and candidate.is_file() else STATIC_DIR / "index.html"
+        if not target.exists():
             self.send_response(503)
             self.end_headers()
             self.wfile.write(b"Dashboard not built. Run: cd dashboard/frontend && npm run build")
             return
-        mime, _ = mimetypes.guess_type(str(index))
-        body = index.read_bytes()
+        mime, _ = mimetypes.guess_type(str(target))
+        body = target.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", mime or "text/html")
         self.send_header("Content-Length", len(body))
