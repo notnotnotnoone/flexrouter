@@ -1,6 +1,7 @@
+import os
+
 import pytest
-from pathlib import Path
-import tempfile, os, yaml
+import yaml
 
 MINIMAL_CONFIG = {
     "tiers": {
