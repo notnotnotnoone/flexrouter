@@ -41,8 +41,12 @@ class PenaltyBox:
 
     def penalty_seconds(self, provider: str, model: str) -> int:
         k = self._key(provider, model)
-        _, count = self._state.get(k, (0.0, 0))
-        return min(self.base_seconds * (2 ** (count - 1)), self.max_seconds)
+        if k not in self._state:
+            return 0
+        until, count = self._state[k]
+        if time.monotonic() >= until:
+            return 0
+        return int(min(self.base_seconds * (2 ** (count - 1)), self.max_seconds))
 
     def penalty_until(self, provider: str, model: str) -> Optional[float]:
         k = self._key(provider, model)
