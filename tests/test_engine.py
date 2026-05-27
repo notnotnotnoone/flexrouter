@@ -107,3 +107,34 @@ def test_seconds_until_available():
     engine._penalties.penalize("groq", "llama-70b")
     secs = engine.seconds_until_available("low")
     assert secs >= 0
+
+
+def test_make_result_raises_on_empty_api_keys():
+    models = [ModelConfig("groq", "llama-8b", score=85, rpm=60, tpm=60000, context_window=131072)]
+    cfg = FlexConfig(
+        tiers={"low": models},
+        providers={"groq": ProviderConfig("http://groq", [])},  # empty api_keys
+        window_seconds=60,
+        penalty_base_seconds=30,
+        penalty_max_seconds=1800,
+        session_ttl_minutes=30,
+    )
+    engine = RoutingEngine(cfg)
+    with pytest.raises(ValueError, match="no api_keys"):
+        engine.select("low", estimated_tokens=0, vision=False)
+
+
+def test_update_config_updates_penalty_params():
+    engine = make_engine()
+    assert engine._penalties.base_seconds == 30
+    new_cfg = FlexConfig(
+        tiers={"low": [ModelConfig("groq", "llama-8b", score=85, rpm=60, tpm=60000, context_window=131072)]},
+        providers={"groq": ProviderConfig("http://groq", ["key"])},
+        window_seconds=60,
+        penalty_base_seconds=60,
+        penalty_max_seconds=3600,
+        session_ttl_minutes=30,
+    )
+    engine.update_config(new_cfg)
+    assert engine._penalties.base_seconds == 60
+    assert engine._penalties.max_seconds == 3600

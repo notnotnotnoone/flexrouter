@@ -43,6 +43,8 @@ class RoutingEngine:
         self._cfg = cfg
         self._budget = DailyBudget(cfg.provider_budget)
         self._session_ttl = cfg.session_ttl_minutes * 60
+        self._penalties.base_seconds = cfg.penalty_base_seconds
+        self._penalties.max_seconds = cfg.penalty_max_seconds
         for tier_models in cfg.tiers.values():
             for m in tier_models:
                 k = f"{m.provider}/{m.model}"
@@ -159,6 +161,7 @@ class RoutingEngine:
     def _pick(self, scored: list[tuple[int, ModelConfig]], tier: str) -> RouteResult:
         scored.sort(key=lambda x: x[0], reverse=True)
         best_score = scored[0][0]
+        assert best_score > 0, f"Model scores must be positive (1-100), got {best_score}"
         threshold = best_score * 0.8
         top = [m for score, m in scored if score >= threshold]
         chosen = random.choice(top)
@@ -166,6 +169,8 @@ class RoutingEngine:
 
     def _make_result(self, m: ModelConfig, tier: str) -> RouteResult:
         provider_cfg = self._cfg.providers[m.provider]
+        if not provider_cfg.api_keys:
+            raise ValueError(f"Provider {m.provider!r} has no api_keys configured")
         counter = self._key_counters.get(m.provider, 0)
         api_key = provider_cfg.api_keys[counter % len(provider_cfg.api_keys)]
         self._key_counters[m.provider] = counter + 1
