@@ -2,6 +2,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import tiktoken
 
+_TOKEN_ENCODING = "cl100k_base"  # GPT-4 tokenizer; used as a universal approximation
+_ENC = tiktoken.get_encoding(_TOKEN_ENCODING)
+
 
 @dataclass
 class HookContext:
@@ -32,14 +35,13 @@ class HookRunner:
                         return
 
     def _hook_estimate_tokens(self, ctx: HookContext) -> None:
-        enc = tiktoken.get_encoding("cl100k_base")
         total = 0
         for msg in ctx.messages:
             content = msg.get("content", "")
             if isinstance(content, str):
-                total += len(enc.encode(content))
+                total += len(_ENC.encode(content))
             elif isinstance(content, list):
                 for part in content:
                     if isinstance(part, dict) and part.get("type") == "text":
-                        total += len(enc.encode(part.get("text", "")))
+                        total += len(_ENC.encode(part.get("text", "")))
         ctx.estimated_tokens = total

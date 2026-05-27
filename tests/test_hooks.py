@@ -46,3 +46,30 @@ def test_unknown_hook_raises():
     runner = HookRunner()
     with pytest.raises(ValueError, match="Unknown hook"):
         runner.run(ctx)
+
+def test_both_hooks_compose():
+    messages = [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "http://x.com/img.jpg"}},
+        {"type": "text", "text": "describe it"},
+    ]}]
+    ctx = make_ctx(messages, hooks=["detect_vision", "estimate_tokens"])
+    runner = HookRunner()
+    result = runner.run(ctx)
+    assert result.vision is True
+    assert result.estimated_tokens > 0
+
+def test_estimate_tokens_mixed_content():
+    messages = [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "http://x.com/img.jpg"}},
+        {"type": "text", "text": "describe it"},
+    ]}]
+    ctx = make_ctx(messages, hooks=["estimate_tokens"])
+    runner = HookRunner()
+    result = runner.run(ctx)
+    assert result.estimated_tokens > 0
+
+def test_estimate_tokens_empty_messages():
+    ctx = make_ctx([], hooks=["estimate_tokens"])
+    runner = HookRunner()
+    result = runner.run(ctx)
+    assert result.estimated_tokens == 0
