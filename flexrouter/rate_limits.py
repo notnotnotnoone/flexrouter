@@ -4,13 +4,13 @@ from pathlib import Path
 
 
 class RateLimitStore:
-    def __init__(self, state_dir: str) -> None:
+    def __init__(self, state_dir: str | None) -> None:
         self._path = Path(state_dir) / "rate_limits.json" if state_dir else None
         self._data: dict = {}
         if self._path and self._path.exists():
             try:
                 self._data = json.loads(self._path.read_text())
-            except Exception:
+            except (json.JSONDecodeError, ValueError, OSError):
                 pass
 
     def update(self, provider: str, model: str, rpm: int | None, tpm: int | None) -> None:
