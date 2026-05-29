@@ -4,6 +4,7 @@ import respx
 import httpx
 from flexrouter.client import AsyncClient
 from flexrouter.engine import RouteResult
+from flexrouter.rate_limits import RateLimitStore
 
 ROUTE = RouteResult(
     provider="groq",
@@ -97,3 +98,49 @@ async def test_403_raises_router_error():
     async with AsyncClient() as client:
         with pytest.raises(RouterError, match="Auth failure"):
             await client.chat(ROUTE, MESSAGES)
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_rate_limit_headers_stored_on_success(tmp_path):
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json=OK_RESPONSE,
+            headers={
+                "x-ratelimit-limit-requests": "30",
+                "x-ratelimit-limit-tokens": "6000",
+            },
+        )
+    )
+    store = RateLimitStore(str(tmp_path))
+    async with AsyncClient(rate_limit_store=store) as client:
+        await client.chat(ROUTE, MESSAGES)
+    assert store.get_rpm("groq", "llama-8b", default=0) == 30
+    assert store.get_tpm("groq", "llama-8b", default=0) == 6000
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_missing_rate_limit_headers_no_error(tmp_path):
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=OK_RESPONSE)
+    )
+    store = RateLimitStore(str(tmp_path))
+    async with AsyncClient(rate_limit_store=store) as client:
+        result = await client.chat(ROUTE, MESSAGES)
+    assert result["choices"][0]["message"]["content"] == "hi"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_no_store_still_works():
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json=OK_RESPONSE,
+            headers={"x-ratelimit-limit-requests": "30"},
+        )
+    )
+    async with AsyncClient() as client:
+        result = await client.chat(ROUTE, MESSAGES)
+    assert result is not None

@@ -11,9 +11,20 @@ class ProviderError(Exception):
     pass
 
 
+def _parse_int_header(headers, name: str) -> int | None:
+    val = headers.get(name)
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
+
+
 class AsyncClient:
-    def __init__(self) -> None:
+    def __init__(self, rate_limit_store=None) -> None:
         self._client = httpx.AsyncClient(timeout=60.0)
+        self._rate_limit_store = rate_limit_store
 
     async def chat(
         self,
@@ -35,6 +46,12 @@ class AsyncClient:
             raise ProviderError(f"{resp.status_code} from {route.provider}/{route.model}")
         if resp.status_code >= 400:
             raise ProviderError(f"{resp.status_code} from {route.provider}: {resp.text[:200]}")
+
+        if self._rate_limit_store is not None:
+            rpm = _parse_int_header(resp.headers, "x-ratelimit-limit-requests")
+            tpm = _parse_int_header(resp.headers, "x-ratelimit-limit-tokens")
+            if rpm is not None or tpm is not None:
+                self._rate_limit_store.update(route.provider, route.model, rpm, tpm)
 
         try:
             return resp.json()
