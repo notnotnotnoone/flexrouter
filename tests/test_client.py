@@ -129,6 +129,8 @@ async def test_missing_rate_limit_headers_no_error(tmp_path):
     async with AsyncClient(rate_limit_store=store) as client:
         result = await client.chat(ROUTE, MESSAGES)
     assert result["choices"][0]["message"]["content"] == "hi"
+    assert store.get_rpm("groq", "llama-8b", default=-1) == -1
+    assert store.get_tpm("groq", "llama-8b", default=-1) == -1
 
 
 @pytest.mark.asyncio
@@ -143,4 +145,4 @@ async def test_no_store_still_works():
     )
     async with AsyncClient() as client:
         result = await client.chat(ROUTE, MESSAGES)
-    assert result is not None
+    assert result["choices"][0]["message"]["content"] == "hi"
