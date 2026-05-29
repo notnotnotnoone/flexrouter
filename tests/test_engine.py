@@ -6,6 +6,7 @@ from flexrouter.window import SlidingWindow
 from flexrouter.recovery import PenaltyBox
 from flexrouter.budget import DailyBudget
 from flexrouter.engine import RoutingEngine, RouteResult
+from flexrouter.rate_limits import RateLimitStore
 
 
 def make_engine(models=None):
@@ -109,9 +110,8 @@ def test_seconds_until_available():
     assert secs >= 0
 
 
-def test_make_result_empty_api_keys_uses_empty_string(tmp_path):
+def test_make_result_empty_api_keys_uses_empty_string():
     """Ollama and other local providers have no api_keys."""
-    from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig, RetryConfig
     cfg = FlexConfig(
         tiers={"default": [ModelConfig(provider="ollama", model="llama3", score=50, rpm=600, tpm=10_000_000)]},
         providers={"ollama": ProviderConfig(base_url="http://localhost:11434/v1", api_keys=[])},
@@ -124,9 +124,6 @@ def test_make_result_empty_api_keys_uses_empty_string(tmp_path):
 
 def test_score_candidates_uses_learned_rpm(tmp_path):
     """Engine uses RateLimitStore rpm over ModelConfig.rpm when available."""
-    from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig, RetryConfig
-    from flexrouter.rate_limits import RateLimitStore
-
     store = RateLimitStore(str(tmp_path))
     # Model config says rpm=30 but store says rpm=5 (very low)
     store.update("groq", "llama-8b", rpm=5, tpm=None)
