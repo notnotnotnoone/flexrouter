@@ -201,6 +201,17 @@ async def score_with_aa(models: list[dict], aa_key: str | None) -> list[dict]:
     return [{**m, "score": _best_score(m.get("id", ""), aa_lookup)} for m in models]
 
 
+def _quote_yaml_scalar(value: str) -> str:
+    """Safely quote a string for YAML by using the representer.
+
+    Handles special characters like colons and hashes that could break YAML syntax.
+    """
+    test_yaml = yaml.dump({value: "dummy"})
+    line = test_yaml.split('\n')[0]
+    quoted_value = line.split(': ')[0]
+    return quoted_value
+
+
 def build_yaml(
     provider_keys: dict[str, str],
     free_models: list[dict],
@@ -222,8 +233,9 @@ def build_yaml(
         lines.append(f"    base_url: {pdef.base_url}")
         key = provider_keys.get(name)
         if key:
+            quoted_key = _quote_yaml_scalar(key)
             lines.append("    api_keys:")
-            lines.append(f"      - key: {key}")
+            lines.append(f"      - key: {quoted_key}")
         else:
             lines.append("    api_keys: []")
 

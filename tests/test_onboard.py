@@ -287,3 +287,13 @@ def test_build_yaml_ollama_has_empty_api_keys():
     text = build_yaml(provider_keys, free_models, [], PROVIDERS)
     doc = yaml.safe_load(text)
     assert doc["providers"]["ollama"]["api_keys"] == []
+
+
+def test_build_yaml_key_with_special_chars():
+    from flexrouter.onboard import build_yaml
+
+    provider_keys = {"groq": "key:with:colons"}
+    free_models = [{"id": "llama", "context_window": 8192, "score": 50, "_provider": "groq"}]
+    text = build_yaml(provider_keys, free_models, [], PROVIDERS)
+    doc = yaml.safe_load(text)
+    assert doc["providers"]["groq"]["api_keys"][0]["key"] == "key:with:colons"
