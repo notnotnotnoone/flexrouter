@@ -134,7 +134,10 @@ class FlexRouter:
 
     def reload(self) -> None:
         self._cfg = load_config(self._config_path)
+        self._rate_limit_store = RateLimitStore(self._cfg.state_dir)
         self._engine.update_config(self._cfg)
+        self._engine._rate_limit_store = self._rate_limit_store
+        self._client._rate_limit_store = self._rate_limit_store
         self._audit = AuditLogger(self._cfg.state_dir)
 
     def close(self) -> None:

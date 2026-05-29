@@ -57,7 +57,6 @@ def test_unknown_tier_raises_key_error(config_file):
 
 def test_flexrouter_creates_rate_limit_store(config_file):
     """FlexRouter wires RateLimitStore to client and engine."""
-    from flexrouter import FlexRouter
     from flexrouter.rate_limits import RateLimitStore
     router = FlexRouter(str(config_file))
     assert router._rate_limit_store is not None
