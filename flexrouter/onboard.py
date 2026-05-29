@@ -197,7 +197,7 @@ async def score_with_aa(models: list[dict], aa_key: str | None) -> list[dict]:
     except Exception:
         return [{**m, "score": 50} for m in models]
 
-    return [{**m, "score": _best_score(m["id"], aa_lookup)} for m in models]
+    return [{**m, "score": _best_score(m.get("id", ""), aa_lookup)} for m in models]
 
 
 def run_onboard() -> None:

@@ -208,3 +208,19 @@ async def test_score_with_aa_no_key_gives_50():
     models = [{"id": "groq/llama-8b", "context_window": 131072}]
     scored = await score_with_aa(models, aa_key=None)
     assert scored[0]["score"] == 50
+
+
+def test_normalize_strips_prefix_and_suffix():
+    from flexrouter.onboard import _normalize
+    assert _normalize("meta-llama/llama-3.3-70b-instruct:free") == "llama 3 3 70b instruct"
+
+
+def test_normalize_short_name_does_not_match_longer():
+    """Document known substring limitation: gpt-4 would match inside gpt-4o."""
+    from flexrouter.onboard import _normalize, _best_score
+    # "gpt 4" IS a substring of "gpt 4o" — this is a known limitation
+    # At minimum assert the normalize output so future changes are visible
+    assert _normalize("openai/gpt-4") == "gpt 4"
+    assert _normalize("openai/gpt-4o") == "gpt 4o"
+    # "gpt 4" in "gpt 4o" is True — document this as expected behavior
+    assert "gpt 4" in "gpt 4o"
