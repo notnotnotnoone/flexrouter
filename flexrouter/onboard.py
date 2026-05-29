@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 import re
 import httpx
+import yaml
 
 STANDARD_RL_HEADERS = {
     "rpm": "x-ratelimit-limit-requests",
@@ -198,6 +199,67 @@ async def score_with_aa(models: list[dict], aa_key: str | None) -> list[dict]:
         return [{**m, "score": 50} for m in models]
 
     return [{**m, "score": _best_score(m.get("id", ""), aa_lookup)} for m in models]
+
+
+def build_yaml(
+    provider_keys: dict[str, str],
+    free_models: list[dict],
+    paid_models: list[dict],
+    providers: list[ProviderDef],
+) -> str:
+    provider_map = {p.name: p for p in providers}
+
+    # Collect all referenced provider names
+    all_models = free_models + paid_models
+    used_providers = {m["_provider"] for m in all_models}
+    # Always include providers with keys even if no models found
+    used_providers |= set(provider_keys.keys())
+
+    lines = ["providers:"]
+    for name in sorted(used_providers):
+        pdef = provider_map[name]
+        lines.append(f"  {name}:")
+        lines.append(f"    base_url: {pdef.base_url}")
+        key = provider_keys.get(name)
+        if key:
+            lines.append("    api_keys:")
+            lines.append(f"      - key: {key}")
+        else:
+            lines.append("    api_keys: []")
+
+    def model_block(m: dict, pdef: ProviderDef) -> list[str]:
+        return [
+            f"    - provider: {m['_provider']}",
+            f"      model: {m['id']}",
+            f"      score: {m['score']}",
+            f"      rpm: {pdef.default_rpm}",
+            f"      tpm: {pdef.default_tpm}",
+            f"      context_window: {_context_window(m)}",
+        ]
+
+    lines.append("")
+    lines.append("tiers:")
+
+    if free_models:
+        sorted_free = sorted(free_models, key=lambda m: m["score"], reverse=True)
+        lines.append("  default:")
+        for m in sorted_free:
+            lines.extend(model_block(m, provider_map[m["_provider"]]))
+
+    if paid_models:
+        sorted_paid = sorted(paid_models, key=lambda m: m["score"], reverse=True)
+        lines.append("  paid:")
+        for m in sorted_paid:
+            lines.extend(model_block(m, provider_map[m["_provider"]]))
+
+    lines += [
+        "",
+        "settings:",
+        "  state_dir: .flexrouter",
+        "  dashboard_port: 7352",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def run_onboard() -> None:

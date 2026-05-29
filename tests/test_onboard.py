@@ -1,6 +1,7 @@
 import pytest
 import respx
 import httpx
+import yaml
 from flexrouter.onboard import PROVIDERS, ProviderDef
 
 
@@ -224,3 +225,65 @@ def test_normalize_short_name_does_not_match_longer():
     assert _normalize("openai/gpt-4o") == "gpt 4o"
     # "gpt 4" in "gpt 4o" is True — document this as expected behavior
     assert "gpt 4" in "gpt 4o"
+
+
+def test_build_yaml_produces_valid_yaml():
+    from flexrouter.onboard import build_yaml
+
+    provider_keys = {"groq": "gsk-test", "openrouter": "sk-or-test"}
+    free_models = [
+        {"id": "llama-3.3-70b-versatile", "context_window": 131072, "score": 72, "_provider": "groq"},
+        {"id": "qwen/qwen3:free", "context_window": 262144, "score": 87, "_provider": "openrouter"},
+    ]
+    paid_models = []
+
+    text = build_yaml(provider_keys, free_models, paid_models, PROVIDERS)
+    doc = yaml.safe_load(text)
+
+    assert "groq" in doc["providers"]
+    assert doc["providers"]["groq"]["api_keys"][0]["key"] == "gsk-test"
+    assert "openrouter" in doc["providers"]
+    assert len(doc["tiers"]["default"]) == 2
+    assert "paid" not in doc["tiers"]
+
+
+def test_build_yaml_includes_paid_tier():
+    from flexrouter.onboard import build_yaml
+
+    provider_keys = {"deepseek": "dsk-test"}
+    free_models = []
+    paid_models = [
+        {"id": "deepseek-chat", "context_window": 65536, "score": 74, "_provider": "deepseek"},
+    ]
+
+    text = build_yaml(provider_keys, free_models, paid_models, PROVIDERS)
+    doc = yaml.safe_load(text)
+    assert "paid" in doc["tiers"]
+    assert doc["tiers"]["paid"][0]["model"] == "deepseek-chat"
+
+
+def test_build_yaml_models_sorted_by_score_desc():
+    from flexrouter.onboard import build_yaml
+
+    provider_keys = {"groq": "key"}
+    free_models = [
+        {"id": "model-a", "context_window": 8192, "score": 40, "_provider": "groq"},
+        {"id": "model-b", "context_window": 8192, "score": 90, "_provider": "groq"},
+        {"id": "model-c", "context_window": 8192, "score": 60, "_provider": "groq"},
+    ]
+    text = build_yaml(provider_keys, free_models, [], PROVIDERS)
+    doc = yaml.safe_load(text)
+    scores = [m["score"] for m in doc["tiers"]["default"]]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_build_yaml_ollama_has_empty_api_keys():
+    from flexrouter.onboard import build_yaml
+
+    provider_keys = {}  # Ollama needs no key
+    free_models = [
+        {"id": "llama3:latest", "context_window": 8192, "score": 50, "_provider": "ollama"},
+    ]
+    text = build_yaml(provider_keys, free_models, [], PROVIDERS)
+    doc = yaml.safe_load(text)
+    assert doc["providers"]["ollama"]["api_keys"] == []
