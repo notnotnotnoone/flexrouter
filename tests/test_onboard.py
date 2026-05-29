@@ -1,7 +1,9 @@
+import os
 import pytest
 import respx
 import httpx
 import yaml
+from unittest.mock import patch, MagicMock, call
 from flexrouter.onboard import PROVIDERS, ProviderDef
 
 
@@ -297,3 +299,216 @@ def test_build_yaml_key_with_special_chars():
     text = build_yaml(provider_keys, free_models, [], PROVIDERS)
     doc = yaml.safe_load(text)
     assert doc["providers"]["groq"]["api_keys"][0]["key"] == "key:with:colons"
+
+
+# ---------------------------------------------------------------------------
+# run_onboard() integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_run_onboard_requires_tty(capsys):
+    """Guard: non-TTY stdin prints error message and returns immediately."""
+    from flexrouter.onboard import run_onboard
+
+    with patch("flexrouter.onboard.sys") as mock_sys:
+        mock_sys.stdin.isatty.return_value = False
+        run_onboard()
+
+    out = capsys.readouterr().out
+    assert "init requires an interactive terminal" in out
+
+
+def test_run_onboard_no_keys_no_file_written(capsys):
+    """When every provider is skipped (empty input, no existing key), no file is written."""
+    from flexrouter.onboard import run_onboard
+
+    # All free providers: input returns "" and no existing key → skipped
+    # click.confirm returns False → skip paid providers entirely
+    with (
+        patch("flexrouter.onboard.sys") as mock_sys,
+        patch("flexrouter.onboard._read_existing_key", return_value=None),
+        patch("builtins.input", return_value=""),
+        patch("flexrouter.onboard.click.confirm", return_value=False),
+        patch("flexrouter.onboard.Path") as mock_path_cls,
+    ):
+        mock_sys.stdin.isatty.return_value = True
+        run_onboard()
+
+    out = capsys.readouterr().out
+    assert "No keys provided" in out
+    # write_text must never have been called on the config path
+    mock_path_cls.return_value.write_text.assert_not_called()
+
+
+def test_run_onboard_new_key_stored(capsys, monkeypatch):
+    """Entering a new key for the first free provider triggers 'updated' and writes the YAML."""
+    from flexrouter.onboard import run_onboard
+
+    # Remove AA_API_KEY so we take the fallback scoring branch
+    monkeypatch.delenv("AA_API_KEY", raising=False)
+
+    free_model = {"id": "test-model", "_provider": "cerebras", "context_window": 8192}
+    discovery_result = ([free_model], [])
+
+    # input: first provider (cerebras) gets a real key; all others get ""
+    input_values = iter(["my-cerebras-key"] + [""] * 20)
+
+    with (
+        patch("flexrouter.onboard.sys") as mock_sys,
+        patch("flexrouter.onboard._read_existing_key", return_value=None),
+        patch("builtins.input", side_effect=input_values),
+        patch("flexrouter.onboard.click.confirm", return_value=False),
+        patch("flexrouter.onboard.asyncio.run", return_value=discovery_result),
+        patch("flexrouter.onboard.Path") as mock_path_cls,
+    ):
+        mock_sys.stdin.isatty.return_value = True
+        mock_path_cls.return_value.exists.return_value = False
+        run_onboard()
+
+    out = capsys.readouterr().out
+    assert "updated" in out
+    # YAML was written
+    mock_path_cls.return_value.write_text.assert_called_once()
+    written_text = mock_path_cls.return_value.write_text.call_args[0][0]
+    assert "cerebras" in written_text
+    assert "my-cerebras-key" in written_text
+
+
+def test_run_onboard_clear_key_with_dash(capsys, monkeypatch):
+    """Entering '-' for a provider that has an existing key clears it and skips that provider."""
+    from flexrouter.onboard import run_onboard
+
+    monkeypatch.delenv("AA_API_KEY", raising=False)
+
+    # cerebras has an existing key; user types "-" to clear it → provider should NOT appear in keys
+    # All other free providers: empty input → skipped
+    # click.confirm → False (no paid providers)
+    input_values = iter(["-"] + [""] * 20)
+
+    with (
+        patch("flexrouter.onboard.sys") as mock_sys,
+        patch("flexrouter.onboard._read_existing_key", side_effect=lambda _path, name: "old-key" if name == "cerebras" else None),
+        patch("builtins.input", side_effect=input_values),
+        patch("flexrouter.onboard.click.confirm", return_value=False),
+        patch("flexrouter.onboard.Path") as mock_path_cls,
+    ):
+        mock_sys.stdin.isatty.return_value = True
+        mock_path_cls.return_value.exists.return_value = True
+        run_onboard()
+
+    out = capsys.readouterr().out
+    assert "cleared" in out
+    # cerebras key was cleared, so provider_keys ends up empty → no file written
+    assert "No keys provided" in out
+
+
+def test_run_onboard_paid_provider_opt_in(capsys, monkeypatch):
+    """click.confirm=True causes the paid-provider loop to run and process a key."""
+    from flexrouter.onboard import run_onboard
+
+    monkeypatch.delenv("AA_API_KEY", raising=False)
+
+    # Determine first paid provider name for assertion
+    first_paid = next(p for p in PROVIDERS if not p.free)
+    paid_model = {"id": "paid-model", "_provider": first_paid.name, "context_window": 32768}
+    discovery_result = ([], [paid_model])
+
+    # Free providers (cerebras, groq, openrouter, googleai) = 4 prompts, all empty
+    # Paid providers: first one (deepseek) gets a key, rest empty
+    num_free = len([p for p in PROVIDERS if p.free and not p.ollama])
+    num_paid = len([p for p in PROVIDERS if not p.free])
+    input_values = iter([""] * num_free + ["my-paid-key"] + [""] * (num_paid - 1))
+
+    confirm_calls = iter([True])  # Include paid providers
+
+    with (
+        patch("flexrouter.onboard.sys") as mock_sys,
+        patch("flexrouter.onboard._read_existing_key", return_value=None),
+        patch("builtins.input", side_effect=input_values),
+        patch("flexrouter.onboard.click.confirm", side_effect=confirm_calls),
+        patch("flexrouter.onboard.asyncio.run", return_value=discovery_result),
+        patch("flexrouter.onboard.Path") as mock_path_cls,
+    ):
+        mock_sys.stdin.isatty.return_value = True
+        mock_path_cls.return_value.exists.return_value = False
+        run_onboard()
+
+    out = capsys.readouterr().out
+    # "updated" should appear for the paid provider key we typed
+    assert "updated" in out
+    mock_path_cls.return_value.write_text.assert_called_once()
+    written_text = mock_path_cls.return_value.write_text.call_args[0][0]
+    assert first_paid.name in written_text
+    assert "my-paid-key" in written_text
+
+
+def test_run_onboard_aa_scoring_called_when_key_set(capsys, monkeypatch):
+    """When AA_API_KEY is set, score_with_aa is called with discovered models and the key."""
+    from flexrouter.onboard import run_onboard
+
+    monkeypatch.setenv("AA_API_KEY", "test_aa_key")
+
+    free_model = {"id": "m1", "_provider": "openrouter", "context_window": 8192}
+    scored_model = {**free_model, "score": 75}
+
+    input_values = iter(["my-openrouter-key"] + [""] * 20)
+    discovery_result = ([free_model], [])
+
+    # asyncio.run is called twice:
+    #   1st call: _discover_all() → returns ([free_model], [])
+    #   2nd call: score_with_aa(...)  → returns [scored_model]
+    asyncio_run_results = iter([discovery_result, [scored_model]])
+
+    with (
+        patch("flexrouter.onboard.sys") as mock_sys,
+        patch("flexrouter.onboard._read_existing_key", return_value=None),
+        patch("builtins.input", side_effect=input_values),
+        patch("flexrouter.onboard.click.confirm", return_value=False),
+        patch("flexrouter.onboard.asyncio.run", side_effect=asyncio_run_results),
+        patch("flexrouter.onboard.score_with_aa") as mock_score,
+        patch("flexrouter.onboard.Path") as mock_path_cls,
+    ):
+        mock_sys.stdin.isatty.return_value = True
+        mock_path_cls.return_value.exists.return_value = False
+        # score_with_aa is a coroutine that asyncio.run wraps; we've patched asyncio.run
+        # to return [scored_model] on the 2nd call, so the mock_score just needs to exist
+        # as a callable that returns a coroutine object (asyncio.run intercepts it).
+        run_onboard()
+
+    out = capsys.readouterr().out
+    assert "Scoring with Artificial Analysis" in out
+    mock_path_cls.return_value.write_text.assert_called_once()
+    written_text = mock_path_cls.return_value.write_text.call_args[0][0]
+    assert "score: 75" in written_text
+
+
+def test_run_onboard_aa_fallback_score_50(capsys, monkeypatch):
+    """When AA_API_KEY is absent, all models get score=50 without calling score_with_aa."""
+    from flexrouter.onboard import run_onboard
+
+    monkeypatch.delenv("AA_API_KEY", raising=False)
+
+    free_model = {"id": "llama-fast", "_provider": "cerebras", "context_window": 8192}
+    discovery_result = ([free_model], [])
+
+    input_values = iter(["my-cerebras-key"] + [""] * 20)
+
+    with (
+        patch("flexrouter.onboard.sys") as mock_sys,
+        patch("flexrouter.onboard._read_existing_key", return_value=None),
+        patch("builtins.input", side_effect=input_values),
+        patch("flexrouter.onboard.click.confirm", return_value=False),
+        patch("flexrouter.onboard.asyncio.run", return_value=discovery_result),
+        patch("flexrouter.onboard.score_with_aa") as mock_score,
+        patch("flexrouter.onboard.Path") as mock_path_cls,
+    ):
+        mock_sys.stdin.isatty.return_value = True
+        mock_path_cls.return_value.exists.return_value = False
+        run_onboard()
+
+    out = capsys.readouterr().out
+    assert "AA_API_KEY not set" in out
+    mock_score.assert_not_called()
+    mock_path_cls.return_value.write_text.assert_called_once()
+    written_text = mock_path_cls.return_value.write_text.call_args[0][0]
+    assert "score: 50" in written_text
