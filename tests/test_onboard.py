@@ -306,6 +306,14 @@ def test_build_yaml_key_with_special_chars():
 # ---------------------------------------------------------------------------
 
 
+def _make_run(result):
+    """Return a side_effect for asyncio.run that closes the coroutine before returning result."""
+    def _run(coro, *_a, **_kw):
+        coro.close()
+        return result
+    return _run
+
+
 def test_run_onboard_requires_tty(capsys):
     """Guard: non-TTY stdin prints error message and returns immediately."""
     from flexrouter.onboard import run_onboard
@@ -358,7 +366,7 @@ def test_run_onboard_new_key_stored(capsys, monkeypatch):
         patch("flexrouter.onboard._read_existing_key", return_value=None),
         patch("builtins.input", side_effect=input_values),
         patch("flexrouter.onboard.click.confirm", return_value=False),
-        patch("flexrouter.onboard.asyncio.run", return_value=discovery_result),
+        patch("flexrouter.onboard.asyncio.run", side_effect=_make_run(discovery_result)),
         patch("flexrouter.onboard.Path") as mock_path_cls,
     ):
         mock_sys.stdin.isatty.return_value = True
@@ -426,7 +434,7 @@ def test_run_onboard_paid_provider_opt_in(capsys, monkeypatch):
         patch("flexrouter.onboard._read_existing_key", return_value=None),
         patch("builtins.input", side_effect=input_values),
         patch("flexrouter.onboard.click.confirm", side_effect=confirm_calls),
-        patch("flexrouter.onboard.asyncio.run", return_value=discovery_result),
+        patch("flexrouter.onboard.asyncio.run", side_effect=_make_run(discovery_result)),
         patch("flexrouter.onboard.Path") as mock_path_cls,
     ):
         mock_sys.stdin.isatty.return_value = True
@@ -457,14 +465,18 @@ def test_run_onboard_aa_scoring_called_when_key_set(capsys, monkeypatch):
     # asyncio.run is called twice:
     #   1st call: _discover_all() → returns ([free_model], [])
     #   2nd call: score_with_aa(...)  → returns [scored_model]
-    asyncio_run_results = iter([discovery_result, [scored_model]])
+    results = iter([discovery_result, [scored_model]])
+
+    def _run(coro, *_a, **_kw):
+        coro.close()
+        return next(results)
 
     with (
         patch("flexrouter.onboard.sys") as mock_sys,
         patch("flexrouter.onboard._read_existing_key", return_value=None),
         patch("builtins.input", side_effect=input_values),
         patch("flexrouter.onboard.click.confirm", return_value=False),
-        patch("flexrouter.onboard.asyncio.run", side_effect=asyncio_run_results),
+        patch("flexrouter.onboard.asyncio.run", side_effect=_run),
         patch("flexrouter.onboard.score_with_aa") as mock_score,
         patch("flexrouter.onboard.Path") as mock_path_cls,
     ):
@@ -477,6 +489,7 @@ def test_run_onboard_aa_scoring_called_when_key_set(capsys, monkeypatch):
 
     out = capsys.readouterr().out
     assert "Scoring with Artificial Analysis" in out
+    mock_score.assert_called_once()
     mock_path_cls.return_value.write_text.assert_called_once()
     written_text = mock_path_cls.return_value.write_text.call_args[0][0]
     assert "score: 75" in written_text
@@ -498,7 +511,7 @@ def test_run_onboard_aa_fallback_score_50(capsys, monkeypatch):
         patch("flexrouter.onboard._read_existing_key", return_value=None),
         patch("builtins.input", side_effect=input_values),
         patch("flexrouter.onboard.click.confirm", return_value=False),
-        patch("flexrouter.onboard.asyncio.run", return_value=discovery_result),
+        patch("flexrouter.onboard.asyncio.run", side_effect=_make_run(discovery_result)),
         patch("flexrouter.onboard.score_with_aa") as mock_score,
         patch("flexrouter.onboard.Path") as mock_path_cls,
     ):
