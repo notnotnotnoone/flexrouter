@@ -1,7 +1,12 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
+import asyncio
+import os
 import re
+import sys
+import click
 import httpx
 import yaml
 
@@ -274,5 +279,143 @@ def build_yaml(
     return "\n".join(lines)
 
 
+def _read_existing_key(config_path: Path, provider_name: str) -> str | None:
+    if not config_path.exists():
+        return None
+    try:
+        raw = yaml.safe_load(config_path.read_text())
+        keys = (raw or {}).get("providers", {}).get(provider_name, {}).get("api_keys", [])
+        for k in keys:
+            if isinstance(k, str) and k:
+                return k
+            if isinstance(k, dict) and k.get("key"):
+                return k["key"]
+    except Exception:
+        pass
+    return None
+
+
+def _mask(key: str) -> str:
+    if len(key) <= 8:
+        return key[:2] + "***"
+    return key[:6] + "..." + key[-4:]
+
+
 def run_onboard() -> None:
-    raise NotImplementedError("run_onboard is not yet implemented")
+    if not sys.stdin.isatty():
+        click.echo("init requires an interactive terminal.")
+        return
+
+    config_path = Path("flexrouter.yaml")
+    provider_keys: dict[str, str] = {}
+
+    # --- Free providers ---
+    free_providers = [p for p in PROVIDERS if p.free and not p.ollama]
+    click.echo("\nflexrouter onboarding\n")
+    click.echo("Free providers:")
+
+    for pdef in free_providers:
+        existing = _read_existing_key(config_path, pdef.name)
+        click.echo(f"\n- {pdef.name}")
+        click.echo(f"  signup: {pdef.signup_url}")
+        click.echo(f"  current: {_mask(existing) if existing else '(none)'}")
+        click.echo("  Enter key, press Enter to keep, or - to clear.")
+        raw = input("  key: ").strip()
+        if raw == "-":
+            click.echo("  cleared")
+        elif raw:
+            provider_keys[pdef.name] = raw
+            click.echo("  updated")
+        elif existing:
+            provider_keys[pdef.name] = existing
+            click.echo("  unchanged")
+        else:
+            click.echo("  skipped")
+
+    # --- Paid providers ---
+    include_paid = click.confirm("\nInclude paid providers?", default=False)
+    paid_providers: list[ProviderDef] = []
+    if include_paid:
+        paid_defs = [p for p in PROVIDERS if not p.free]
+        for pdef in paid_defs:
+            existing = _read_existing_key(config_path, pdef.name)
+            click.echo(f"\n- {pdef.name} (paid)")
+            click.echo(f"  signup: {pdef.signup_url}")
+            click.echo(f"  current: {_mask(existing) if existing else '(none)'}")
+            click.echo("  Enter key, press Enter to keep, or - to clear.")
+            raw = input("  key: ").strip()
+            if raw == "-":
+                click.echo("  cleared")
+            elif raw:
+                provider_keys[pdef.name] = raw
+                paid_providers.append(pdef)
+                click.echo("  updated")
+            elif existing:
+                provider_keys[pdef.name] = existing
+                paid_providers.append(pdef)
+                click.echo("  unchanged")
+            else:
+                click.echo("  skipped")
+
+    if not provider_keys:
+        click.echo("\nNo keys provided. flexrouter.yaml not written.")
+        return
+
+    # --- Discover models ---
+    click.echo("\nDiscovering models...")
+
+    async def _discover_all() -> tuple[list[dict], list[dict]]:
+        free_models: list[dict] = []
+        p_models: list[dict] = []
+
+        for pdef in free_providers:
+            key = provider_keys.get(pdef.name)
+            if not key:
+                continue
+            models = await discover_models(pdef, key)
+            for m in models:
+                m["_provider"] = pdef.name
+            free_models.extend(models)
+            click.echo(f"  {pdef.name}: {len(models)} free models")
+
+        # Ollama
+        ollama_models = await discover_ollama()
+        for m in ollama_models:
+            m["_provider"] = "ollama"
+        if ollama_models:
+            click.echo(f"  ollama: {len(ollama_models)} local models")
+            free_models.extend(ollama_models)
+
+        for pdef in paid_providers:
+            key = provider_keys.get(pdef.name)
+            if not key:
+                continue
+            models = await discover_models(pdef, key)
+            for m in models:
+                m["_provider"] = pdef.name
+            p_models.extend(models)
+            click.echo(f"  {pdef.name}: {len(models)} models")
+
+        return free_models, p_models
+
+    free_models, paid_models = asyncio.run(_discover_all())
+
+    # --- AA Scoring ---
+    aa_key = os.environ.get("AA_API_KEY")
+    if aa_key:
+        click.echo("Scoring with Artificial Analysis...")
+        all_models = asyncio.run(score_with_aa(free_models + paid_models, aa_key))
+        split = len(free_models)
+        free_models = all_models[:split]
+        paid_models = all_models[split:]
+    else:
+        click.echo("AA_API_KEY not set — using score=50 for all models.")
+        free_models = [{**m, "score": 50} for m in free_models]
+        paid_models = [{**m, "score": 50} for m in paid_models]
+
+    # --- Write yaml ---
+    text = build_yaml(provider_keys, free_models, paid_models, PROVIDERS)
+    config_path.write_text(text)
+    click.echo(f"\nWritten to {config_path}")
+    click.echo(f"  {len(free_models)} free models, {len(paid_models)} paid models")
+    click.echo("Run `flexrouter dashboard` to start.")
