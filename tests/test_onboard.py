@@ -144,3 +144,67 @@ def test_context_window_falls_back_to_context_length():
 def test_context_window_defaults_to_131072():
     from flexrouter.onboard import _context_window
     assert _context_window({}) == 131_072
+
+
+AA_RESPONSE = {
+    "data": [
+        {
+            "id": "llama-3-3-70b-instruct",
+            "name": "Llama 3.3 70B Instruct",
+            "slug": "llama-3-3-70b-instruct",
+            "evaluations": {"artificial_analysis_intelligence_index": 72.5},
+        },
+        {
+            "id": "gemini-2-5-flash",
+            "name": "Gemini 2.5 Flash",
+            "slug": "gemini-2-5-flash",
+            "evaluations": {"artificial_analysis_intelligence_index": 81.0},
+        },
+    ]
+}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_score_with_aa_matches_known_model():
+    from flexrouter.onboard import score_with_aa
+    respx.get("https://artificialanalysis.ai/data/llms/models").mock(
+        return_value=httpx.Response(200, json=AA_RESPONSE)
+    )
+    models = [
+        {"id": "meta-llama/llama-3.3-70b-instruct:free", "context_window": 131072},
+    ]
+    scored = await score_with_aa(models, aa_key="test-aa-key")
+    assert scored[0]["score"] == 72
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_score_with_aa_unknown_model_gets_50():
+    from flexrouter.onboard import score_with_aa
+    respx.get("https://artificialanalysis.ai/data/llms/models").mock(
+        return_value=httpx.Response(200, json=AA_RESPONSE)
+    )
+    models = [{"id": "unknown/totally-new-model", "context_window": 32768}]
+    scored = await score_with_aa(models, aa_key="test-aa-key")
+    assert scored[0]["score"] == 50
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_score_with_aa_api_failure_gives_50():
+    from flexrouter.onboard import score_with_aa
+    respx.get("https://artificialanalysis.ai/data/llms/models").mock(
+        return_value=httpx.Response(500, text="error")
+    )
+    models = [{"id": "groq/llama-8b", "context_window": 131072}]
+    scored = await score_with_aa(models, aa_key="test-aa-key")
+    assert scored[0]["score"] == 50
+
+
+@pytest.mark.asyncio
+async def test_score_with_aa_no_key_gives_50():
+    from flexrouter.onboard import score_with_aa
+    models = [{"id": "groq/llama-8b", "context_window": 131072}]
+    scored = await score_with_aa(models, aa_key=None)
+    assert scored[0]["score"] == 50

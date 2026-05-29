@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
+import re
 import httpx
 
 STANDARD_RL_HEADERS = {
@@ -151,6 +152,52 @@ def _context_window(model: dict) -> int:
         if v is not None:
             return int(v)
     return 131_072
+
+
+def _normalize(s: str) -> str:
+    """Lowercase, strip provider prefix, remove :free suffix, collapse non-alphanum to spaces."""
+    s = s.lower()
+    s = re.sub(r":free$", "", s)          # remove :free suffix
+    s = s.split("/")[-1]                   # take part after last /
+    s = re.sub(r"[^a-z0-9 ]", " ", s)     # non-alphanum → space
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _best_score(model_id: str, aa_lookup: list[tuple[str, int]]) -> int:
+    needle = _normalize(model_id)
+    for norm_name, score in aa_lookup:
+        if needle in norm_name or norm_name in needle:
+            return score
+    return 50
+
+
+async def score_with_aa(models: list[dict], aa_key: str | None) -> list[dict]:
+    """Assign AA intelligence scores to models. Unmatched → score=50."""
+    if not aa_key:
+        return [{**m, "score": 50} for m in models]
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://artificialanalysis.ai/data/llms/models",
+                headers={"x-api-key": aa_key},
+            )
+            if resp.status_code >= 400:
+                return [{**m, "score": 50} for m in models]
+            data = resp.json()
+        aa_models = data.get("data", [])
+        aa_lookup = [
+            (
+                _normalize(entry.get("name", "")),
+                int(entry.get("evaluations", {}).get("artificial_analysis_intelligence_index", 50)),
+            )
+            for entry in aa_models
+        ]
+    except Exception:
+        return [{**m, "score": 50} for m in models]
+
+    return [{**m, "score": _best_score(m["id"], aa_lookup)} for m in models]
 
 
 def run_onboard() -> None:
