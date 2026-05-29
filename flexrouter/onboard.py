@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
+import httpx
 
 STANDARD_RL_HEADERS = {
     "rpm": "x-ratelimit-limit-requests",
@@ -113,6 +114,43 @@ PROVIDERS: list[ProviderDef] = [
         default_tpm=50_000,
     ),
 ]
+
+
+async def discover_models(provider: ProviderDef, api_key: str) -> list[dict]:
+    """GET /v1/models for a provider, return free-filtered model dicts."""
+    url = f"{provider.base_url.rstrip('/')}/models"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+        if resp.status_code >= 400:
+            return []
+        data = resp.json()
+        models = data.get("data", data) if isinstance(data, dict) else data
+        return [m for m in models if provider.free_filter(m)]
+    except Exception:
+        return []
+
+
+async def discover_ollama() -> list[dict]:
+    """Auto-detect Ollama at localhost:11434. Returns model dicts or []."""
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get("http://localhost:11434/v1/models")
+        if resp.status_code >= 400:
+            return []
+        data = resp.json()
+        return data.get("data", data) if isinstance(data, dict) else data
+    except Exception:
+        return []
+
+
+def _context_window(model: dict) -> int:
+    return int(
+        model.get("context_window")
+        or model.get("context_length")
+        or 131_072
+    )
 
 
 def run_onboard() -> None:

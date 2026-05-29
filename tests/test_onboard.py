@@ -1,3 +1,6 @@
+import pytest
+import respx
+import httpx
 from flexrouter.onboard import PROVIDERS, ProviderDef
 
 
@@ -46,3 +49,83 @@ def test_googleai_free_filter():
     pro = {"id": "gemini-2.5-pro"}
     assert googleai.free_filter(flash) is True
     assert googleai.free_filter(pro) is False
+
+
+GROQ_MODELS_RESPONSE = {
+    "data": [
+        {"id": "llama-3.3-70b-versatile", "context_window": 131072},
+        {"id": "llama-3.1-8b-instant", "context_window": 131072},
+    ]
+}
+
+OPENROUTER_MODELS_RESPONSE = {
+    "data": [
+        {"id": "qwen/qwen3:free", "context_length": 262144, "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "openai/gpt-4o", "context_length": 128000, "pricing": {"prompt": "0.000005", "completion": "0.000015"}},
+    ]
+}
+
+OLLAMA_MODELS_RESPONSE = {
+    "data": [
+        {"id": "llama3:latest", "context_window": 8192},
+    ]
+}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_discover_models_returns_filtered_list():
+    from flexrouter.onboard import discover_models
+    groq = next(p for p in PROVIDERS if p.name == "groq")
+    respx.get("https://api.groq.com/openai/v1/models").mock(
+        return_value=httpx.Response(200, json=GROQ_MODELS_RESPONSE)
+    )
+    models = await discover_models(groq, api_key="test-key")
+    assert len(models) == 2
+    assert models[0]["id"] == "llama-3.3-70b-versatile"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_discover_models_filters_paid_from_openrouter():
+    from flexrouter.onboard import discover_models
+    or_provider = next(p for p in PROVIDERS if p.name == "openrouter")
+    respx.get("https://openrouter.ai/api/v1/models").mock(
+        return_value=httpx.Response(200, json=OPENROUTER_MODELS_RESPONSE)
+    )
+    models = await discover_models(or_provider, api_key="test-key")
+    assert len(models) == 1
+    assert models[0]["id"] == "qwen/qwen3:free"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_discover_models_returns_empty_on_auth_error():
+    from flexrouter.onboard import discover_models
+    groq = next(p for p in PROVIDERS if p.name == "groq")
+    respx.get("https://api.groq.com/openai/v1/models").mock(
+        return_value=httpx.Response(401, json={"error": "unauthorized"})
+    )
+    models = await discover_models(groq, api_key="bad-key")
+    assert models == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_discover_ollama_returns_models_when_running():
+    from flexrouter.onboard import discover_ollama
+    respx.get("http://localhost:11434/v1/models").mock(
+        return_value=httpx.Response(200, json=OLLAMA_MODELS_RESPONSE)
+    )
+    models = await discover_ollama()
+    assert len(models) == 1
+    assert models[0]["id"] == "llama3:latest"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_discover_ollama_returns_empty_when_not_running():
+    from flexrouter.onboard import discover_ollama
+    respx.get("http://localhost:11434/v1/models").mock(side_effect=httpx.ConnectError("refused"))
+    models = await discover_ollama()
+    assert models == []
