@@ -16,15 +16,15 @@ class RateLimitStore:
     def update(self, provider: str, model: str, rpm: int | None, tpm: int | None) -> None:
         if self._path is None:
             return
-        if rpm is None and tpm is None:
+        if (rpm is None or rpm <= 0) and (tpm is None or tpm <= 0):
             return
         key = f"{provider}/{model}"
         entry = dict(self._data.get(key, {}))
         changed = False
-        if rpm is not None and entry.get("rpm") != rpm:
+        if rpm is not None and rpm > 0 and entry.get("rpm") != rpm:
             entry["rpm"] = rpm
             changed = True
-        if tpm is not None and entry.get("tpm") != tpm:
+        if tpm is not None and tpm > 0 and entry.get("tpm") != tpm:
             entry["tpm"] = tpm
             changed = True
         if changed:

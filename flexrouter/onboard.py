@@ -196,7 +196,7 @@ async def score_with_aa(models: list[dict], aa_key: str | None) -> list[dict]:
         aa_lookup = [
             (
                 _normalize(entry.get("name", "")),
-                int(entry.get("evaluations", {}).get("artificial_analysis_intelligence_index", 50)),
+                int((entry.get("evaluations") or {}).get("artificial_analysis_intelligence_index", 50)),
             )
             for entry in aa_models
         ]
@@ -255,19 +255,22 @@ def build_yaml(
         ]
 
     lines.append("")
-    lines.append("tiers:")
+    if not free_models and not paid_models:
+        lines.append("tiers: {}")
+    else:
+        lines.append("tiers:")
 
-    if free_models:
-        sorted_free = sorted(free_models, key=lambda m: m["score"], reverse=True)
-        lines.append("  default:")
-        for m in sorted_free:
-            lines.extend(model_block(m, provider_map[m["_provider"]]))
+        if free_models:
+            sorted_free = sorted(free_models, key=lambda m: m["score"], reverse=True)
+            lines.append("  default:")
+            for m in sorted_free:
+                lines.extend(model_block(m, provider_map[m["_provider"]]))
 
-    if paid_models:
-        sorted_paid = sorted(paid_models, key=lambda m: m["score"], reverse=True)
-        lines.append("  paid:")
-        for m in sorted_paid:
-            lines.extend(model_block(m, provider_map[m["_provider"]]))
+        if paid_models:
+            sorted_paid = sorted(paid_models, key=lambda m: m["score"], reverse=True)
+            lines.append("  paid:")
+            for m in sorted_paid:
+                lines.extend(model_block(m, provider_map[m["_provider"]]))
 
     lines += [
         "",

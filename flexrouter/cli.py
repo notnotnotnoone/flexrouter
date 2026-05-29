@@ -16,12 +16,9 @@ def cli():
 
 @cli.command()
 def init():
-    """Open browser setup wizard to generate flexrouter.yaml."""
-    from flexrouter.dashboard.server import start_server
-    port = 7352
-    click.echo(f"Starting setup wizard at http://localhost:{port}/#setup")
-    webbrowser.open(f"http://localhost:{port}/#setup")
-    start_server(port=port, open_tab=False)
+    """Interactive terminal wizard to generate flexrouter.yaml."""
+    from flexrouter.onboard import run_onboard
+    run_onboard()
 
 
 @cli.command()

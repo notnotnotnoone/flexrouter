@@ -42,3 +42,21 @@ def test_empty_state_dir_does_not_crash():
     store = RateLimitStore("")
     store.update("groq", "llama-8b", rpm=30, tpm=6000)  # should be no-op
     assert store.get_rpm("groq", "llama-8b", default=99) == 99
+
+
+def test_update_zero_rpm_does_not_overwrite_positive_value(tmp_path):
+    """rpm=0 must be ignored so it cannot permanently disable a stored positive value."""
+    store = RateLimitStore(str(tmp_path))
+    store.update("groq", "llama-8b", rpm=60, tpm=12000)
+    # Now send a zero — should be a no-op
+    store.update("groq", "llama-8b", rpm=0, tpm=0)
+    assert store.get_rpm("groq", "llama-8b", default=30) == 60
+    assert store.get_tpm("groq", "llama-8b", default=6000) == 12000
+
+
+def test_update_zero_rpm_alone_does_not_overwrite(tmp_path):
+    """rpm=0 with tpm=None must not overwrite a previously stored rpm."""
+    store = RateLimitStore(str(tmp_path))
+    store.update("groq", "llama-8b", rpm=45, tpm=None)
+    store.update("groq", "llama-8b", rpm=0, tpm=None)
+    assert store.get_rpm("groq", "llama-8b", default=30) == 45

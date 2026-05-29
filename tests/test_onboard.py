@@ -495,6 +495,43 @@ def test_run_onboard_aa_scoring_called_when_key_set(capsys, monkeypatch):
     assert "score: 75" in written_text
 
 
+def test_build_yaml_empty_models_produces_parseable_config():
+    """build_yaml with no free or paid models emits 'tiers: {}' and load_config can parse it."""
+    from flexrouter.onboard import build_yaml
+    from flexrouter.config import load_config
+    import tempfile, yaml
+    from pathlib import Path
+
+    provider_keys = {"groq": "gsk-test"}
+    text = build_yaml(provider_keys, [], [], PROVIDERS)
+
+    # Must parse as valid YAML with an empty-dict tiers
+    doc = yaml.safe_load(text)
+    assert doc["tiers"] == {} or doc["tiers"] is None or doc["tiers"] == {}
+
+    # load_config must not raise
+    import os
+    p = Path(tempfile.mktemp(suffix=".yaml"))
+    try:
+        # Provide a config that has tiers: (bare null, as PyYAML parses it)
+        p.write_text("providers:\ntiers:\nsettings:\n  state_dir: .flexrouter\n  dashboard_port: 7352\n")
+        cfg = load_config(p)
+        assert cfg.tiers == {}
+    finally:
+        if p.exists():
+            p.unlink()
+
+    # Also confirm the text produced by build_yaml itself is loadable via load_config
+    p2 = Path(tempfile.mktemp(suffix=".yaml"))
+    try:
+        p2.write_text(text)
+        cfg2 = load_config(p2)
+        assert cfg2.tiers == {}
+    finally:
+        if p2.exists():
+            p2.unlink()
+
+
 def test_run_onboard_aa_fallback_score_50(capsys, monkeypatch):
     """When AA_API_KEY is absent, all models get score=50 without calling score_with_aa."""
     from flexrouter.onboard import run_onboard

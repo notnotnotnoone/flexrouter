@@ -68,22 +68,29 @@ def load_config(path: Path | str) -> FlexConfig:
 
     # Parse providers — resolve env vars
     providers: dict[str, ProviderConfig] = {}
-    for name, praw in raw.get("providers", {}).items():
+    for name, praw in (raw.get("providers") or {}).items():
         keys_raw = praw.get("api_keys", [])
         if isinstance(keys_raw, str):
             keys_raw = [{"env": keys_raw}]
         resolved: list[str] = []
         for k in keys_raw:
-            env_name = k["env"]
-            val = os.environ.get(env_name)
-            if not val:
-                raise ConfigError(f"Env var {env_name!r} not set (required by provider {name!r})")
-            resolved.append(val)
+            if isinstance(k, str):
+                if k:
+                    resolved.append(k)
+            elif "key" in k:
+                if k["key"]:
+                    resolved.append(k["key"])
+            elif "env" in k:
+                env_name = k["env"]
+                val = os.environ.get(env_name)
+                if not val:
+                    raise ConfigError(f"Env var {env_name!r} not set (required by provider {name!r})")
+                resolved.append(val)
         providers[name] = ProviderConfig(base_url=praw["base_url"], api_keys=resolved)
 
     # Parse tiers
     tiers: dict[str, list[ModelConfig]] = {}
-    for tier_name, models in raw.get("tiers", {}).items():
+    for tier_name, models in (raw.get("tiers") or {}).items():
         tiers[tier_name] = [
             ModelConfig(
                 provider=m["provider"],
