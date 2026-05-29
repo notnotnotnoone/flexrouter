@@ -11,6 +11,7 @@ from flexrouter.config import FlexConfig, load_config, discover_config
 from flexrouter.engine import RoutingEngine
 from flexrouter.exceptions import ConfigError, RouterBusy, RouterError
 from flexrouter.hooks import HookRunner, HookContext
+from flexrouter.rate_limits import RateLimitStore
 
 
 class FlexRouter:
@@ -24,9 +25,10 @@ class FlexRouter:
 
         self._config_path = path
         self._cfg: FlexConfig = load_config(path)
-        self._engine = RoutingEngine(self._cfg)
+        self._rate_limit_store = RateLimitStore(self._cfg.state_dir)
+        self._engine = RoutingEngine(self._cfg, rate_limit_store=self._rate_limit_store)
         self._audit = AuditLogger(self._cfg.state_dir)
-        self._client = AsyncClient()
+        self._client = AsyncClient(rate_limit_store=self._rate_limit_store)
         self._hooks = HookRunner()
         self._loop = asyncio.new_event_loop()
         self._loop_lock = threading.Lock()

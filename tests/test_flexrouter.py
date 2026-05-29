@@ -54,3 +54,14 @@ def test_unknown_tier_raises_key_error(config_file):
     router = FlexRouter(str(config_file))
     with pytest.raises(KeyError):
         router.generate([], tier="nuclear", wait=False)
+
+def test_flexrouter_creates_rate_limit_store(config_file):
+    """FlexRouter wires RateLimitStore to client and engine."""
+    from flexrouter import FlexRouter
+    from flexrouter.rate_limits import RateLimitStore
+    router = FlexRouter(str(config_file))
+    assert router._rate_limit_store is not None
+    assert isinstance(router._rate_limit_store, RateLimitStore)
+    assert router._client._rate_limit_store is router._rate_limit_store
+    assert router._engine._rate_limit_store is router._rate_limit_store
+    router.close()
