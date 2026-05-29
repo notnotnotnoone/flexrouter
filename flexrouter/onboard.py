@@ -123,9 +123,9 @@ async def discover_models(provider: ProviderDef, api_key: str) -> list[dict]:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url, headers=headers)
-        if resp.status_code >= 400:
-            return []
-        data = resp.json()
+            if resp.status_code >= 400:
+                return []
+            data = resp.json()
         models = data.get("data", data) if isinstance(data, dict) else data
         return [m for m in models if provider.free_filter(m)]
     except Exception:
@@ -137,20 +137,20 @@ async def discover_ollama() -> list[dict]:
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             resp = await client.get("http://localhost:11434/v1/models")
-        if resp.status_code >= 400:
-            return []
-        data = resp.json()
+            if resp.status_code >= 400:
+                return []
+            data = resp.json()
         return data.get("data", data) if isinstance(data, dict) else data
     except Exception:
         return []
 
 
 def _context_window(model: dict) -> int:
-    return int(
-        model.get("context_window")
-        or model.get("context_length")
-        or 131_072
-    )
+    for key in ("context_window", "context_length"):
+        v = model.get(key)
+        if v is not None:
+            return int(v)
+    return 131_072
 
 
 def run_onboard() -> None:

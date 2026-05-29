@@ -129,3 +129,18 @@ async def test_discover_ollama_returns_empty_when_not_running():
     respx.get("http://localhost:11434/v1/models").mock(side_effect=httpx.ConnectError("refused"))
     models = await discover_ollama()
     assert models == []
+
+
+def test_context_window_uses_context_window_key():
+    from flexrouter.onboard import _context_window
+    assert _context_window({"context_window": 65536}) == 65536
+
+
+def test_context_window_falls_back_to_context_length():
+    from flexrouter.onboard import _context_window
+    assert _context_window({"context_length": 32768}) == 32768
+
+
+def test_context_window_defaults_to_131072():
+    from flexrouter.onboard import _context_window
+    assert _context_window({}) == 131_072
