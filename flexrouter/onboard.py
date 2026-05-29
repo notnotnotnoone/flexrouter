@@ -1,14 +1,6 @@
 from __future__ import annotations
-import os
-import re
-import sys
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable
-
-import click
-import httpx
-import yaml
 
 STANDARD_RL_HEADERS = {
     "rpm": "x-ratelimit-limit-requests",
@@ -16,7 +8,7 @@ STANDARD_RL_HEADERS = {
 }
 
 
-@dataclass
+@dataclass(frozen=True)
 class ProviderDef:
     name: str
     base_url: str
@@ -121,3 +113,7 @@ PROVIDERS: list[ProviderDef] = [
         default_tpm=50_000,
     ),
 ]
+
+
+def run_onboard() -> None:
+    raise NotImplementedError("run_onboard is not yet implemented")
