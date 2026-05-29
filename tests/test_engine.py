@@ -109,19 +109,43 @@ def test_seconds_until_available():
     assert secs >= 0
 
 
-def test_make_result_raises_on_empty_api_keys():
-    models = [ModelConfig("groq", "llama-8b", score=85, rpm=60, tpm=60000, context_window=131072)]
+def test_make_result_empty_api_keys_uses_empty_string(tmp_path):
+    """Ollama and other local providers have no api_keys."""
+    from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig, RetryConfig
     cfg = FlexConfig(
-        tiers={"low": models},
-        providers={"groq": ProviderConfig("http://groq", [])},  # empty api_keys
-        window_seconds=60,
-        penalty_base_seconds=30,
-        penalty_max_seconds=1800,
-        session_ttl_minutes=30,
+        tiers={"default": [ModelConfig(provider="ollama", model="llama3", score=50, rpm=600, tpm=10_000_000)]},
+        providers={"ollama": ProviderConfig(base_url="http://localhost:11434/v1", api_keys=[])},
+        retry=RetryConfig(),
     )
     engine = RoutingEngine(cfg)
-    with pytest.raises(ValueError, match="no api_keys"):
-        engine.select("low", estimated_tokens=0, vision=False)
+    result = engine._make_result(cfg.tiers["default"][0], "default")
+    assert result.api_key == ""
+
+
+def test_score_candidates_uses_learned_rpm(tmp_path):
+    """Engine uses RateLimitStore rpm over ModelConfig.rpm when available."""
+    from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig, RetryConfig
+    from flexrouter.rate_limits import RateLimitStore
+
+    store = RateLimitStore(str(tmp_path))
+    # Model config says rpm=30 but store says rpm=5 (very low)
+    store.update("groq", "llama-8b", rpm=5, tpm=None)
+
+    cfg = FlexConfig(
+        tiers={"default": [ModelConfig(provider="groq", model="llama-8b", score=80, rpm=30, tpm=6000)]},
+        providers={"groq": ProviderConfig(base_url="https://api.groq.com/openai/v1", api_keys=["key"])},
+        retry=RetryConfig(),
+    )
+    engine = RoutingEngine(cfg, rate_limit_store=store)
+
+    # Saturate the window at learned rpm=5 (not config rpm=30)
+    window = engine._windows["groq/llama-8b"]
+    for _ in range(5):
+        window.record(0)
+
+    # With learned rpm=5, window should be full; with config rpm=30, it wouldn't be
+    candidates = engine._score_candidates(cfg.tiers["default"], 0, False)
+    assert candidates == []
 
 
 def test_update_config_updates_penalty_params():

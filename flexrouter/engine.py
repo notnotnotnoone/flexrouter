@@ -22,8 +22,9 @@ class RouteResult:
 
 
 class RoutingEngine:
-    def __init__(self, cfg: FlexConfig) -> None:
+    def __init__(self, cfg: FlexConfig, rate_limit_store=None) -> None:
         self._cfg = cfg
+        self._rate_limit_store = rate_limit_store
         self._penalties = PenaltyBox(cfg.penalty_base_seconds, cfg.penalty_max_seconds)
         self._budget = DailyBudget(cfg.provider_budget)
         self._windows: dict[str, SlidingWindow] = {}
@@ -102,7 +103,7 @@ class RoutingEngine:
             else:
                 w = self._windows.get(f"{m.provider}/{m.model}")
                 if w:
-                    secs = w.seconds_until_available(m.rpm, m.tpm)
+                    secs = w.seconds_until_available(self._model_rpm(m), self._model_tpm(m))
                     min_wait = min(min_wait, secs)
         return max(0.0, min_wait) if min_wait != float("inf") else 0.0
 
@@ -145,7 +146,7 @@ class RoutingEngine:
                 ctx_skipped = True
                 continue
             w = self._windows.get(f"{m.provider}/{m.model}")
-            if w and not w.available(m.rpm, m.tpm):
+            if w and not w.available(self._model_rpm(m), self._model_tpm(m)):
                 continue
             scored.append((m.score, m))
 
@@ -169,11 +170,12 @@ class RoutingEngine:
 
     def _make_result(self, m: ModelConfig, tier: str) -> RouteResult:
         provider_cfg = self._cfg.providers[m.provider]
-        if not provider_cfg.api_keys:
-            raise ValueError(f"Provider {m.provider!r} has no api_keys configured")
-        counter = self._key_counters.get(m.provider, 0)
-        api_key = provider_cfg.api_keys[counter % len(provider_cfg.api_keys)]
-        self._key_counters[m.provider] = counter + 1
+        if provider_cfg.api_keys:
+            counter = self._key_counters.get(m.provider, 0)
+            api_key = provider_cfg.api_keys[counter % len(provider_cfg.api_keys)]
+            self._key_counters[m.provider] = counter + 1
+        else:
+            api_key = ""  # local providers (Ollama)
         return RouteResult(
             provider=m.provider,
             model=m.model,
@@ -181,6 +183,16 @@ class RoutingEngine:
             base_url=provider_cfg.base_url,
             tier=tier,
         )
+
+    def _model_rpm(self, m: ModelConfig) -> int:
+        if self._rate_limit_store is not None:
+            return self._rate_limit_store.get_rpm(m.provider, m.model, m.rpm)
+        return m.rpm
+
+    def _model_tpm(self, m: ModelConfig) -> int:
+        if self._rate_limit_store is not None:
+            return self._rate_limit_store.get_tpm(m.provider, m.model, m.tpm)
+        return m.tpm
 
     def _model_available(
         self, m: ModelConfig, estimated_tokens: int, vision: bool, emit_warning: bool
@@ -194,6 +206,6 @@ class RoutingEngine:
         if estimated_tokens > 0 and estimated_tokens >= m.context_window:
             return False
         w = self._windows.get(f"{m.provider}/{m.model}")
-        if w and not w.available(m.rpm, m.tpm):
+        if w and not w.available(self._model_rpm(m), self._model_tpm(m)):
             return False
         return True
