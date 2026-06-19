@@ -1,24 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { fetchStatus } from '../api'
+import { usePolling } from '@/hooks/usePolling'
 import { RateBar } from '../components/RateBar'
 import { StatusDot } from '../components/StatusDot'
 
 export function LiveTelemetry() {
-  const [status, setStatus] = useState<any>(null)
+  const { data: status, status: pollStatus, error, inFlight } = usePolling<any>(fetchStatus, { intervalMs: 2000, endpoint: '/api/status' })
   const [paused, setPaused] = useState(false)
   const [search, setSearch] = useState('')
 
-  useEffect(() => {
-    const load = () => { if (!paused) fetchStatus().then(setStatus) }
-    load()
-    const id = setInterval(load, 2000)
-    return () => clearInterval(id)
-  }, [paused])
-
   const models: [string, any][] = Object.entries(status?.models ?? {})
-  const filtered = models.filter(([key]) =>
-    key.toLowerCase().includes(search.toLowerCase())
-  )
+  const filtered = models.filter(([key]) => key.toLowerCase().includes(search.toLowerCase()))
 
   return (
     <div>
@@ -28,22 +20,22 @@ export function LiveTelemetry() {
           placeholder="Search models..."
           value={search}
           onChange={e => setSearch(e.target.value)}
-          className="border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 text-sm bg-white dark:bg-gray-800 w-64"
+          className="border border-border rounded-lg px-3 py-1.5 text-sm bg-card w-64"
         />
         <button
           onClick={() => setPaused(p => !p)}
-          className="text-xs px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700"
+          className="text-xs px-3 py-1.5 rounded-lg border border-border"
         >
           {paused ? '▶ Resume' : '⏸ Pause'}
         </button>
-        <span className="text-sm text-gray-500">
-          Total cost: <b>${(status?.total_cost_usd ?? 0).toFixed(4)}</b>
-        </span>
+        {pollStatus === 'error' && <span className="text-xs text-[var(--color-destructive)]">{error?.message}</span>}
+        {pollStatus === 'stale' && <span className="text-xs text-[var(--color-warning)]">stale</span>}
+        {inFlight && <span className="text-xs text-muted-foreground">refreshing…</span>}
       </div>
 
       <table className="w-full text-sm">
         <thead>
-          <tr className="text-left text-xs text-gray-500 uppercase border-b border-gray-100 dark:border-gray-800">
+          <tr className="text-left text-xs text-muted-foreground uppercase border-b border-border">
             <th className="pb-2 pr-4">Model</th>
             <th className="pb-2 pr-4">RPM</th>
             <th className="pb-2 pr-4">TPM</th>
@@ -55,7 +47,7 @@ export function LiveTelemetry() {
             const penalized = !!info.penalty_until
             const dotStatus = penalized ? 'penalized' : 'up'
             return (
-              <tr key={key} className="border-b border-gray-50 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50">
+              <tr key={key} className="border-b border-border/50 hover:bg-muted/30">
                 <td className="py-2 pr-4 font-mono font-medium">{key}</td>
                 <td className="py-2 pr-4">
                   <RateBar current={info.rpm_current ?? 0} limit={60} label={`${info.rpm_current ?? 0}`} />
@@ -73,7 +65,7 @@ export function LiveTelemetry() {
             )
           })}
           {filtered.length === 0 && (
-            <tr><td colSpan={4} className="py-8 text-center text-gray-400 text-sm">No data yet. Run router.generate() first.</td></tr>
+            <tr><td colSpan={4} className="py-8 text-center text-muted-foreground text-sm">No data yet. Run router.generate() first.</td></tr>
           )}
         </tbody>
       </table>
