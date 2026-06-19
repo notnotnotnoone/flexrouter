@@ -107,6 +107,35 @@ class RoutingEngine:
                     min_wait = min(min_wait, secs)
         return max(0.0, min_wait) if min_wait != float("inf") else 0.0
 
+    def health_snapshot(self) -> dict:
+        models: dict[str, dict] = {}
+        providers: dict[str, dict] = {}
+        seen: set[str] = set()
+        for tier_models in self._cfg.tiers.values():
+            for m in tier_models:
+                key = f"{m.provider}/{m.model}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                penalized = self._penalties.is_penalized(m.provider, m.model)
+                until = self._penalties.penalty_until(m.provider, m.model)
+                w = self._windows.get(key)
+                rpm = w.current_rpm() if w else 0
+                tpm = w.current_tpm() if w else 0
+                models[key] = {
+                    "status": "penalized" if penalized else "up",
+                    "rpm": rpm,
+                    "tpm": tpm,
+                    "penalized": penalized,
+                    "penalty_until": until,
+                    "latency_ewma_ms": None,
+                }
+                pv = providers.setdefault(m.provider, {"models_up": 0, "models_total": 0})
+                pv["models_total"] += 1
+                if not penalized:
+                    pv["models_up"] += 1
+        return {"models": models, "providers": providers}
+
     # --- internals ---
 
     def _try_session(
