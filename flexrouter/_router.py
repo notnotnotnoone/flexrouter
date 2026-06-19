@@ -9,9 +9,13 @@ from flexrouter.audit import AuditLogger
 from flexrouter.client import AsyncClient, RateLimitError, ProviderError
 from flexrouter.config import FlexConfig, load_config, discover_config
 from flexrouter.engine import RoutingEngine
+from flexrouter.events import EventLogger
 from flexrouter.exceptions import ConfigError, RouterBusy, RouterError
+from flexrouter.health_history import HealthHistory
 from flexrouter.hooks import HookRunner, HookContext
 from flexrouter.rate_limits import RateLimitStore
+from flexrouter.recovery import PenaltyBox
+from flexrouter.sampler import PassiveSampler
 
 
 class FlexRouter:
@@ -26,8 +30,19 @@ class FlexRouter:
         self._config_path = path
         self._cfg: FlexConfig = load_config(path)
         self._rate_limit_store = RateLimitStore(self._cfg.state_dir)
-        self._engine = RoutingEngine(self._cfg, rate_limit_store=self._rate_limit_store)
+        self._events = EventLogger(self._cfg.state_dir)
+        self._penalties = PenaltyBox(
+            self._cfg.penalty_base_seconds, self._cfg.penalty_max_seconds,
+            state_dir=self._cfg.state_dir, on_event=self._events.record,
+        )
+        self._engine = RoutingEngine(
+            self._cfg, rate_limit_store=self._rate_limit_store, penalties=self._penalties)
         self._audit = AuditLogger(self._cfg.state_dir)
+        self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
+        self._sampler = PassiveSampler(
+            self._engine.health_snapshot, self._history.record,
+            self._cfg.sample_interval_seconds)
+        self._sampler.start()
         self._client = AsyncClient(rate_limit_store=self._rate_limit_store)
         self._hooks = HookRunner()
         self._loop = asyncio.new_event_loop()
@@ -86,12 +101,16 @@ class FlexRouter:
                 result = await self._client.chat(route, messages, **kwargs)
             except RateLimitError:
                 self._engine.penalize(route.provider, route.model)
+                self._events.record(
+                    route.provider, route.model, "rate_limited",
+                    penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
                 self._audit.log(
                     tier=tier, provider=route.provider, model=route.model,
                     prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
                     latency_ms=int((time.monotonic() - start) * 1000),
                     status="rate_limited",
                 )
+                self._history.record(self._engine.health_snapshot())
                 if attempt == retries:
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
@@ -100,12 +119,16 @@ class FlexRouter:
                 raise
             except ProviderError:
                 self._engine.penalize(route.provider, route.model)
+                self._events.record(
+                    route.provider, route.model, "server_error",
+                    penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
                 self._audit.log(
                     tier=tier, provider=route.provider, model=route.model,
                     prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
                     latency_ms=int((time.monotonic() - start) * 1000),
                     status="error",
                 )
+                self._history.record(self._engine.health_snapshot())
                 if attempt == retries:
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
@@ -128,6 +151,7 @@ class FlexRouter:
                 latency_ms=latency_ms,
                 status="ok",
             )
+            self._history.record(self._engine.health_snapshot())
             return result
 
         raise RouterBusy(f"All models in tier {tier!r} are unavailable after {retries} retries")
@@ -139,8 +163,10 @@ class FlexRouter:
         self._engine._rate_limit_store = self._rate_limit_store
         self._client._rate_limit_store = self._rate_limit_store
         self._audit = AuditLogger(self._cfg.state_dir)
+        self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
 
     def close(self) -> None:
+        self._sampler.stop()
         self._loop.close()
 
     def __enter__(self) -> "FlexRouter":

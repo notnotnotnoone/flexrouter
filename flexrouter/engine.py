@@ -22,10 +22,11 @@ class RouteResult:
 
 
 class RoutingEngine:
-    def __init__(self, cfg: FlexConfig, rate_limit_store=None) -> None:
+    def __init__(self, cfg: FlexConfig, rate_limit_store=None, penalties: Optional[PenaltyBox] = None) -> None:
         self._cfg = cfg
         self._rate_limit_store = rate_limit_store
-        self._penalties = PenaltyBox(cfg.penalty_base_seconds, cfg.penalty_max_seconds)
+        self._penalties = penalties if penalties is not None else PenaltyBox(
+            cfg.penalty_base_seconds, cfg.penalty_max_seconds)
         self._budget = DailyBudget(cfg.provider_budget)
         self._windows: dict[str, SlidingWindow] = {}
         self._key_counters: dict[str, int] = {}
