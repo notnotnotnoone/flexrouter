@@ -123,9 +123,14 @@ def load_config(path: Path | str) -> FlexConfig:
     )
 
 
-_NON_CHAT_PATTERNS = ("whisper", "tts", "orpheus", "image", "lyria", "guard",
-                      "native-audio", "-live", "embedding", "rerank")
+NON_CHAT_PATTERNS = ("whisper", "tts", "orpheus", "image", "lyria", "guard",
+                     "native-audio", "-live", "embedding", "rerank")
 _LOCAL_HOST_HINTS = ("localhost", "127.0.0.1", "::1")
+
+
+def is_probably_chat_model(model_id: str) -> bool:
+    mid = (model_id or "").lower()
+    return not any(p in mid for p in NON_CHAT_PATTERNS)
 
 
 def validate_config(raw: dict) -> dict:
@@ -177,7 +182,7 @@ def validate_config(raw: dict) -> dict:
                 warnings.append(
                     f"{where}.context_window: {ctx} is suspiciously low — "
                     f"{model!r} may not be a chat model")
-            if model and any(p in str(model).lower() for p in _NON_CHAT_PATTERNS):
+            if model and not is_probably_chat_model(str(model)):
                 warnings.append(
                     f"{where}: {model!r} matches a non-chat name pattern — "
                     f"likely not a chat-completions model")

@@ -42,6 +42,13 @@ def test_empty_keys_non_local_warns():
     r = validate_config(raw)
     assert any("groq" in w and "api_keys" in w for w in r["warnings"])
 
+def test_is_probably_chat_model():
+    from flexrouter.config import is_probably_chat_model
+    assert is_probably_chat_model("llama-3.1-8b-instant") is True
+    assert is_probably_chat_model("whisper-large-v3") is False
+    assert is_probably_chat_model("models/gemini-2.5-flash-image") is False
+    assert is_probably_chat_model("google/lyria-3-pro-preview") is False
+
 def test_collects_multiple_errors():
     raw = _base()
     raw["tiers"]["default"][0]["provider"] = "nope"
