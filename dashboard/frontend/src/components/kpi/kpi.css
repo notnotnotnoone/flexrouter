@@ -1,0 +1,17 @@
+.kpi-bg-svg { position:absolute; inset:0; width:100%; height:100%; z-index:0; pointer-events:none; opacity:0.6; }
+.star-dim { fill: var(--color-muted-foreground); opacity:0.15; transition: all 1.5s ease-in-out; }
+.star-bright { fill: var(--color-brand); animation: twinkle 3s infinite alternate; transition: all 1.5s ease-in-out; }
+.constellation-line { stroke: var(--color-brand); stroke-width:0.5; opacity:0.3; transition: all 1.5s ease-in-out; }
+.constellation-line-hidden { stroke: var(--color-brand); stroke-width:0.5; opacity:0; transition: all 1.5s ease-in-out; }
+.net-node-dim { fill: var(--color-muted-foreground); opacity:0.15; transition: all 1.5s ease-in-out; }
+.net-node-bright { fill: var(--color-success); filter: drop-shadow(0 0 2px var(--color-success)); animation: pulse-node 4s infinite alternate; transition: all 1.5s ease-in-out; }
+.net-link { stroke: var(--color-muted-foreground); stroke-width:0.5; opacity:0.1; transition: all 1.5s ease-in-out; }
+.net-link-active { stroke: var(--color-success); stroke-width:1; opacity:0.6; animation: dash 30s linear infinite; stroke-dasharray:4; transition: all 1.5s ease-in-out; }
+.net-hub { fill: var(--color-foreground); filter: drop-shadow(0 0 4px var(--color-foreground)); }
+.current-core { fill:none; stroke: var(--color-brand); stroke-width:1; opacity:0.2; transform-origin:center; animation: spin-slow 30s linear infinite; }
+.current-pulse { fill: var(--color-brand); opacity:0.1; transform-origin:center; animation: heart-beat 4s ease-in-out infinite alternate; }
+@keyframes twinkle { 0%{opacity:0.4} 100%{opacity:1; filter:drop-shadow(0 0 2px var(--color-brand))} }
+@keyframes pulse-node { 0%{opacity:0.5; transform:scale(0.9)} 100%{opacity:1; transform:scale(1.1)} }
+@keyframes dash { to { stroke-dashoffset:-100 } }
+@keyframes spin-slow { 0%{transform:rotate(0)} 100%{transform:rotate(360deg)} }
+@keyframes heart-beat { 0%{transform:scale(0.8); opacity:0.05} 100%{transform:scale(1.2); opacity:0.25} }
