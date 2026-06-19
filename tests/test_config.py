@@ -71,3 +71,28 @@ def test_discover_config_finds_cwd(tmp_path, monkeypatch):
     found = discover_config()
     assert found is not None
     assert found.name == "flexrouter.yaml"
+
+
+def test_sampler_settings_defaults(tmp_path):
+    from flexrouter.config import load_config
+    p = tmp_path / "f.yaml"
+    p.write_text(
+        "providers:\n  groq:\n    base_url: http://x\n    api_keys: [k]\n"
+        "tiers:\n  default:\n    - {provider: groq, model: m, score: 50, rpm: 1, tpm: 1}\n"
+    )
+    cfg = load_config(p)
+    assert cfg.sample_interval_seconds == 60
+    assert cfg.health_history_days == 30
+
+
+def test_sampler_settings_override(tmp_path):
+    from flexrouter.config import load_config
+    p = tmp_path / "f.yaml"
+    p.write_text(
+        "providers:\n  groq:\n    base_url: http://x\n    api_keys: [k]\n"
+        "tiers:\n  default:\n    - {provider: groq, model: m, score: 50, rpm: 1, tpm: 1}\n"
+        "settings:\n  sample_interval_seconds: 15\n  health_history_days: 7\n"
+    )
+    cfg = load_config(p)
+    assert cfg.sample_interval_seconds == 15
+    assert cfg.health_history_days == 7

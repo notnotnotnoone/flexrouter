@@ -44,8 +44,9 @@ def test_penalty_expires():
     assert pb.is_penalized("groq", "llama") is False
 
 def test_penalty_until_returns_timestamp():
+    import time as _t
     pb = PenaltyBox(base_seconds=30, max_seconds=1800)
     pb.penalize("groq", "llama")
     until = pb.penalty_until("groq", "llama")
     assert until is not None
-    assert until > time.monotonic()
+    assert until > _t.time()  # wall-clock epoch, survives restart

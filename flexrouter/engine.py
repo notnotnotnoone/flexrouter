@@ -22,10 +22,11 @@ class RouteResult:
 
 
 class RoutingEngine:
-    def __init__(self, cfg: FlexConfig, rate_limit_store=None) -> None:
+    def __init__(self, cfg: FlexConfig, rate_limit_store=None, penalties: Optional[PenaltyBox] = None) -> None:
         self._cfg = cfg
         self._rate_limit_store = rate_limit_store
-        self._penalties = PenaltyBox(cfg.penalty_base_seconds, cfg.penalty_max_seconds)
+        self._penalties = penalties if penalties is not None else PenaltyBox(
+            cfg.penalty_base_seconds, cfg.penalty_max_seconds)
         self._budget = DailyBudget(cfg.provider_budget)
         self._windows: dict[str, SlidingWindow] = {}
         self._key_counters: dict[str, int] = {}
@@ -106,6 +107,35 @@ class RoutingEngine:
                     secs = w.seconds_until_available(self._model_rpm(m), self._model_tpm(m))
                     min_wait = min(min_wait, secs)
         return max(0.0, min_wait) if min_wait != float("inf") else 0.0
+
+    def health_snapshot(self) -> dict:
+        models: dict[str, dict] = {}
+        providers: dict[str, dict] = {}
+        seen: set[str] = set()
+        for tier_models in self._cfg.tiers.values():
+            for m in tier_models:
+                key = f"{m.provider}/{m.model}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                penalized = self._penalties.is_penalized(m.provider, m.model)
+                until = self._penalties.penalty_until(m.provider, m.model)
+                w = self._windows.get(key)
+                rpm = w.current_rpm() if w else 0
+                tpm = w.current_tpm() if w else 0
+                models[key] = {
+                    "status": "penalized" if penalized else "up",
+                    "rpm": rpm,
+                    "tpm": tpm,
+                    "penalized": penalized,
+                    "penalty_until": until,
+                    "latency_ewma_ms": None,
+                }
+                pv = providers.setdefault(m.provider, {"models_up": 0, "models_total": 0})
+                pv["models_total"] += 1
+                if not penalized:
+                    pv["models_up"] += 1
+        return {"models": models, "providers": providers}
 
     # --- internals ---
 

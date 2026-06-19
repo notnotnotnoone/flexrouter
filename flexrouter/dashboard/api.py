@@ -1,7 +1,9 @@
 from __future__ import annotations
 import json
 from pathlib import Path
-from flexrouter.config import discover_config, load_config
+from flexrouter.config import discover_config, load_config, validate_config
+from flexrouter.dashboard.stats import compute_stats
+from flexrouter.dashboard.uptime import compute_uptime
 from flexrouter.exceptions import ConfigError
 
 
@@ -34,3 +36,15 @@ def post_config(raw: dict) -> None:
     path = discover_config() or Path("flexrouter.yaml")
     import yaml
     path.write_text(yaml.dump(raw, default_flow_style=False))
+
+
+def get_stats(state_dir: str) -> dict:
+    return compute_stats(state_dir)
+
+
+def get_uptime(state_dir: str) -> dict:
+    return compute_uptime(state_dir)
+
+
+def get_config_validation() -> dict:
+    return validate_config(get_config())
