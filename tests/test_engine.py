@@ -159,3 +159,18 @@ def test_update_config_updates_penalty_params():
     engine.update_config(new_cfg)
     assert engine._penalties.base_seconds == 60
     assert engine._penalties.max_seconds == 3600
+
+
+def test_exhausted_model_skipped(tmp_path):
+    import time
+    from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig
+    from flexrouter.engine import RoutingEngine
+    from flexrouter.rate_limits import RateLimitStore
+    store = RateLimitStore(str(tmp_path))
+    store.update_headroom("groq", "llama", remaining_requests=0, reset_requests_at=time.time() + 60)
+    cfg = FlexConfig(
+        tiers={"default": [ModelConfig("groq", "llama", 50, 30, 6000)]},
+        providers={"groq": ProviderConfig(base_url="http://x", api_keys=["k"])},
+    )
+    eng = RoutingEngine(cfg, rate_limit_store=store)
+    assert eng.select("default", 10, False) is None  # only model is exhausted

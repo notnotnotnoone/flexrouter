@@ -101,6 +101,10 @@ class RoutingEngine:
                 until = self._penalties.penalty_until(m.provider, m.model)
                 if until:
                     min_wait = min(min_wait, until - time.monotonic())
+            elif self._rate_limit_store is not None and self._rate_limit_store.is_exhausted(m.provider, m.model):
+                avail = self._rate_limit_store.available_at(m.provider, m.model)
+                if avail is not None:
+                    min_wait = min(min_wait, avail - time.time())
             else:
                 w = self._windows.get(f"{m.provider}/{m.model}")
                 if w:
@@ -170,6 +174,8 @@ class RoutingEngine:
                 continue
             if self._penalties.is_penalized(m.provider, m.model):
                 continue
+            if self._rate_limit_store is not None and self._rate_limit_store.is_exhausted(m.provider, m.model):
+                continue
             if not self._budget.is_available(m.provider):
                 continue
             if estimated_tokens > 0 and estimated_tokens >= m.context_window:
@@ -230,6 +236,8 @@ class RoutingEngine:
         if vision and not m.vision:
             return False
         if self._penalties.is_penalized(m.provider, m.model):
+            return False
+        if self._rate_limit_store is not None and self._rate_limit_store.is_exhausted(m.provider, m.model):
             return False
         if not self._budget.is_available(m.provider):
             return False
