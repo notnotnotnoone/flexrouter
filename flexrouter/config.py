@@ -42,6 +42,8 @@ class FlexConfig:
     penalty_max_seconds: int = 1800
     session_ttl_minutes: int = 30
     dashboard_port: int = 7352
+    sample_interval_seconds: int = 60
+    health_history_days: int = 30
     retry: RetryConfig = field(default_factory=RetryConfig)
     provider_budget: dict[str, float] = field(default_factory=dict)
     hooks: list[str] = field(default_factory=list)
@@ -113,6 +115,8 @@ def load_config(path: Path | str) -> FlexConfig:
         penalty_max_seconds=int(settings.get("penalty_max_seconds", 1800)),
         session_ttl_minutes=int(settings.get("session_ttl_minutes", 30)),
         dashboard_port=int(settings.get("dashboard_port", 7352)),
+        sample_interval_seconds=int(settings.get("sample_interval_seconds", 60)),
+        health_history_days=int(settings.get("health_history_days", 30)),
         retry=retry,
         provider_budget=settings.get("provider_budget", {}),
         hooks=settings.get("hooks", []),
