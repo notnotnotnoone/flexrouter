@@ -3,12 +3,23 @@ import json
 import mimetypes
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import Optional
 
 from flexrouter.config import discover_config, load_config
 from flexrouter.dashboard.api import (
     get_config, get_config_validation, get_health_current, get_last_refresh, get_logs,
     get_stats, get_status, get_uptime, post_config, run_refresh,
 )
+
+_router: Optional[object] = None
+
+
+def _get_router():
+    global _router
+    if _router is None:
+        from flexrouter._router import FlexRouter
+        _router = FlexRouter()
+    return _router
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -51,6 +62,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            if self.path == "/v1/chat/completions":
+                self._handle_chat()
+                return
             if self.path == "/api/config":
                 length = int(self.headers.get("Content-Length", 0))
                 if length == 0:
@@ -63,6 +77,23 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(run_refresh(_state_dir()))
             else:
                 self._send_json({"error": "not found"}, 404)
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, 500)
+
+    def _handle_chat(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+            messages = body.get("messages", [])
+            model = body.get("model", "auto-default")
+            tier = model.removeprefix("auto-") if model.startswith("auto-") else "default"
+            router = _get_router()
+            # fallback to first available tier if named tier doesn't exist
+            available = list(router._cfg.tiers.keys())
+            if tier not in available:
+                tier = available[0] if available else "default"
+            result = router.generate(messages, tier)
+            self._send_json(result)
         except Exception as exc:
             self._send_json({"error": str(exc)}, 500)
 
