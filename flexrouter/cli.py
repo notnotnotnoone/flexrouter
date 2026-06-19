@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import webbrowser
 import click
 import yaml
@@ -7,6 +8,7 @@ from pathlib import Path
 
 from flexrouter.config import discover_config, load_config
 from flexrouter.exceptions import ConfigError
+from flexrouter.refresh import refresh_config
 
 
 @click.group()
@@ -54,6 +56,23 @@ def status():
     click.echo(f"Total cost: ${health['total_cost_usd']:.4f}")
     for provider, info in health.get("providers", {}).items():
         click.echo(f"  {provider}: ${info['daily_cost_usd']:.4f} today")
+
+
+@cli.command()
+def refresh():
+    """Re-discover models + rate limits and rewrite flexrouter.yaml (with backup)."""
+    path = discover_config()
+    if not path:
+        click.echo("No flexrouter.yaml found.", err=True)
+        raise SystemExit(1)
+    cfg = load_config(path)
+    aa_key = os.environ.get("AA_API_KEY")
+    result = refresh_config(str(path), cfg.state_dir, aa_key=aa_key)
+    click.echo(f"Refreshed: +{len(result.added)} added, "
+               f"-{len(result.removed)} removed, {len(result.changed)} changed")
+    click.echo(f"Backup: {result.backup_path}")
+    for err in result.provider_errors:
+        click.echo(f"  ! {err['provider']}: {err['error']}", err=True)
 
 
 @cli.group()
