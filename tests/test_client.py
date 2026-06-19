@@ -146,3 +146,18 @@ async def test_no_store_still_works():
     async with AsyncClient() as client:
         result = await client.chat(ROUTE, MESSAGES)
     assert result["choices"][0]["message"]["content"] == "hi"
+
+
+import pytest
+from flexrouter.client import _parse_duration_ms
+
+@pytest.mark.parametrize("s,expected", [
+    ("45s", 45000),
+    ("1m30s", 90000),
+    ("12ms", 12),
+    ("2", 2000),       # bare number = seconds
+    ("", None),
+    ("garbage", None),
+])
+def test_parse_duration_ms(s, expected):
+    assert _parse_duration_ms(s) == expected

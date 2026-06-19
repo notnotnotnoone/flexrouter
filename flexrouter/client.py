@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re as _re
 import httpx
 from flexrouter.engine import RouteResult
 from flexrouter.exceptions import RouterError
@@ -9,6 +10,29 @@ class RateLimitError(Exception):
 
 class ProviderError(Exception):
     pass
+
+
+def _parse_duration_ms(s) -> int | None:
+    if s is None:
+        return None
+    text = str(s).strip()
+    if not text:
+        return None
+    try:
+        return int(float(text) * 1000)  # bare number = seconds
+    except ValueError:
+        pass
+    m = _re.fullmatch(r"(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?(?:(\d+)ms)?", text)
+    if not m or not any(m.groups()):
+        return None
+    ms = 0.0
+    if m.group(1):
+        ms += int(m.group(1)) * 60_000
+    if m.group(2):
+        ms += float(m.group(2)) * 1000
+    if m.group(3):
+        ms += int(m.group(3))
+    return int(ms) if ms else None
 
 
 def _parse_int_header(headers, name: str) -> int | None:
@@ -52,6 +76,18 @@ class AsyncClient:
             tpm = _parse_int_header(resp.headers, "x-ratelimit-limit-tokens")
             if rpm is not None or tpm is not None:
                 self._rate_limit_store.update(route.provider, route.model, rpm, tpm)
+            import time as _time
+            rem_r = _parse_int_header(resp.headers, "x-ratelimit-remaining-requests")
+            rem_t = _parse_int_header(resp.headers, "x-ratelimit-remaining-tokens")
+            reset_r = _parse_duration_ms(resp.headers.get("x-ratelimit-reset-requests"))
+            reset_t = _parse_duration_ms(resp.headers.get("x-ratelimit-reset-tokens"))
+            now = _time.time()
+            self._rate_limit_store.update_headroom(
+                route.provider, route.model,
+                remaining_requests=rem_r, remaining_tokens=rem_t,
+                reset_requests_at=(now + reset_r / 1000) if reset_r is not None else None,
+                reset_tokens_at=(now + reset_t / 1000) if reset_t is not None else None,
+            )
 
         try:
             return resp.json()
