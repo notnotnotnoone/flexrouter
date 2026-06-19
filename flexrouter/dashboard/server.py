@@ -5,7 +5,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from flexrouter.config import discover_config, load_config
-from flexrouter.dashboard.api import get_config, get_logs, get_status, post_config
+from flexrouter.dashboard.api import (
+    get_config, get_config_validation, get_logs, get_stats, get_status, get_uptime, post_config,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -70,6 +72,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(get_logs(state))
             elif self.path == "/api/config":
                 self._send_json(get_config())
+            elif self.path == "/api/stats":
+                self._send_json(get_stats(state))
+            elif self.path == "/api/uptime":
+                self._send_json(get_uptime(state))
+            elif self.path == "/api/config/validate":
+                self._send_json(get_config_validation())
             else:
                 self._send_json({"error": "not found"}, 404)
         except Exception as exc:
