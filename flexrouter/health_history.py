@@ -41,6 +41,10 @@ class HealthHistory:
             out.append(obj)
         return out
 
+    def latest(self) -> Optional[dict]:
+        samples = self.read()
+        return samples[-1] if samples else None
+
     def compact(self, now: Optional[datetime] = None) -> None:
         now = now or datetime.now(timezone.utc)
         retention_cutoff = now - timedelta(days=self._retention_days)

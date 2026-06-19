@@ -6,7 +6,7 @@ from pathlib import Path
 
 from flexrouter.config import discover_config, load_config
 from flexrouter.dashboard.api import (
-    get_config, get_config_validation, get_logs, get_stats, get_status, get_uptime, post_config,
+    get_config, get_config_validation, get_health_current, get_logs, get_stats, get_status, get_uptime, post_config,
 )
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -78,6 +78,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(get_uptime(state))
             elif self.path == "/api/config/validate":
                 self._send_json(get_config_validation())
+            elif self.path == "/api/health/current":
+                self._send_json(get_health_current(state))
             else:
                 self._send_json({"error": "not found"}, 404)
         except Exception as exc:

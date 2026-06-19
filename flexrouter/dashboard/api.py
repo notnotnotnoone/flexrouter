@@ -5,6 +5,7 @@ from flexrouter.config import discover_config, load_config, validate_config
 from flexrouter.dashboard.stats import compute_stats
 from flexrouter.dashboard.uptime import compute_uptime
 from flexrouter.exceptions import ConfigError
+from flexrouter.health_history import HealthHistory
 
 
 def get_status(state_dir: str) -> dict:
@@ -48,3 +49,10 @@ def get_uptime(state_dir: str) -> dict:
 
 def get_config_validation() -> dict:
     return validate_config(get_config())
+
+
+def get_health_current(state_dir: str) -> dict:
+    latest = HealthHistory(state_dir).latest()
+    if not latest:
+        return {"models": {}, "providers": {}}
+    return {"models": latest.get("models", {}), "providers": latest.get("providers", {})}
