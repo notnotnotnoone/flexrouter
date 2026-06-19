@@ -7,7 +7,7 @@ export function Chat() {
   const [tiers, setTiers] = useState<string[]>(['default'])
   const [tier, setTier] = useState('default')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [, setError] = useState<string | null>(null)
 
   useEffect(() => {
     fetchConfig().then((cfg: any) => {
@@ -25,10 +25,13 @@ export function Chat() {
     setError(null)
     try {
       const result = await chatCompletion([...messages, userMsg], `auto-${tier}`)
-      const reply = result?.choices?.[0]?.message?.content ?? result?.error ?? '(no response)'
+      if (result?.error) throw new Error(result.error)
+      const reply = result?.choices?.[0]?.message?.content ?? '(no response)'
       setMessages(m => [...m, { role: 'assistant', content: reply }])
     } catch (e: any) {
-      setError(e?.message ?? 'Request failed')
+      const msg = e?.message ?? 'Request failed'
+      setError(msg)
+      setMessages(m => [...m, { role: 'error', content: msg }])
     } finally {
       setLoading(false)
     }
@@ -47,13 +50,16 @@ export function Chat() {
           </button>
         ))}
       </div>
-      {error && <div className="text-xs text-[var(--color-destructive)] mb-2 px-1">{error}</div>}
       <div className="flex-1 overflow-y-auto border border-border rounded-xl p-3 space-y-3 bg-muted/20">
         {messages.length === 0 && <p className="text-muted-foreground text-sm text-center mt-8">Start a conversation…</p>}
         {messages.map((m, i) => (
-          <div key={i} className={`p-3 rounded-lg text-sm font-mono whitespace-pre-wrap border-l-2 bg-card ${
-            m.role === 'user' ? 'border-[var(--color-success)]' : 'border-[var(--color-brand)]'}`}>
-            <span className="text-xs font-sans text-muted-foreground block mb-1">{m.role}</span>
+          <div key={i} className={`p-3 rounded-lg text-sm font-mono whitespace-pre-wrap border-l-4 ${
+            m.role === 'user'  ? 'bg-card border-[var(--color-success)]' :
+            m.role === 'error' ? 'bg-red-950/30 border-[var(--color-destructive)] text-red-400' :
+                                 'bg-card border-[var(--color-brand)]'}`}>
+            <span className={`text-xs font-sans block mb-1 ${m.role === 'error' ? 'text-red-400 font-bold uppercase tracking-wide' : 'text-muted-foreground'}`}>
+              {m.role === 'error' ? '⚠ error' : m.role}
+            </span>
             {m.content}
           </div>
         ))}
