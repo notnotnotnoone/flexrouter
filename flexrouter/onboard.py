@@ -245,12 +245,14 @@ def build_yaml(
             lines.append("    api_keys: []")
 
     def model_block(m: dict, pdef: ProviderDef) -> list[str]:
+        rpm = m["rpm"] if isinstance(m.get("rpm"), int) and m["rpm"] > 0 else pdef.default_rpm
+        tpm = m["tpm"] if isinstance(m.get("tpm"), int) and m["tpm"] > 0 else pdef.default_tpm
         return [
             f"    - provider: {m['_provider']}",
             f"      model: {m['id']}",
             f"      score: {m['score']}",
-            f"      rpm: {pdef.default_rpm}",
-            f"      tpm: {pdef.default_tpm}",
+            f"      rpm: {rpm}",
+            f"      tpm: {tpm}",
             f"      context_window: {_context_window(m)}",
         ]
 

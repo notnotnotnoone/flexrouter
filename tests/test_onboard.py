@@ -562,3 +562,18 @@ def test_run_onboard_aa_fallback_score_50(capsys, monkeypatch):
     mock_path_cls.return_value.write_text.assert_called_once()
     written_text = mock_path_cls.return_value.write_text.call_args[0][0]
     assert "score: 50" in written_text
+
+
+def test_build_yaml_uses_per_model_rpm_override():
+    from flexrouter.onboard import build_yaml, PROVIDERS
+    free = [{"_provider": "groq", "id": "llama", "score": 50, "rpm": 999, "tpm": 7777}]
+    out = build_yaml({"groq": "k"}, free, [], PROVIDERS)
+    assert "rpm: 999" in out
+    assert "tpm: 7777" in out
+
+def test_build_yaml_falls_back_to_provider_defaults():
+    from flexrouter.onboard import build_yaml, PROVIDERS
+    free = [{"_provider": "groq", "id": "llama", "score": 50}]
+    out = build_yaml({"groq": "k"}, free, [], PROVIDERS)
+    assert "rpm: 30" in out  # groq default_rpm
+    assert "tpm: 6000" in out  # groq default_tpm
