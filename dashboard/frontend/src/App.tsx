@@ -5,6 +5,8 @@ import { RequestLogs } from './tabs/RequestLogs'
 import { AccountStatus } from './tabs/AccountStatus'
 import { Settings } from './tabs/Settings'
 import { Setup } from './tabs/Setup'
+import { StatsTab } from './tabs/Stats'
+import { Uptime } from './tabs/Uptime'
 import { StatusBar } from './components/StatusBar'
 import { UnreachableBanner } from './components/UnreachableBanner'
 import { DiagnosticsConsole } from './components/DiagnosticsConsole'
@@ -18,6 +20,8 @@ import { getDiagnostics, subscribeDiagnostics } from './lib/diagnostics'
 
 const TABS = [
   { id: 'telemetry', label: 'Live Telemetry', component: LiveTelemetry },
+  { id: 'stats', label: 'Stats', component: StatsTab },
+  { id: 'uptime', label: 'Uptime', component: Uptime },
   { id: 'chat', label: 'Chat', component: Chat },
   { id: 'logs', label: 'Request Logs', component: RequestLogs },
   { id: 'accounts', label: 'Account Status', component: AccountStatus },
