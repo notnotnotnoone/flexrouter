@@ -56,3 +56,17 @@ def get_health_current(state_dir: str) -> dict:
     if not latest:
         return {"models": {}, "providers": {}}
     return {"models": latest.get("models", {}), "providers": latest.get("providers", {})}
+
+
+def get_last_refresh(state_dir: str) -> dict:
+    path = Path(state_dir) / "last_refresh.json"
+    if not path.exists():
+        return {"timestamp": None}
+    return json.loads(path.read_text())
+
+
+def run_refresh(state_dir: str) -> dict:
+    from dataclasses import asdict
+    from flexrouter.refresh import refresh_config
+    path = discover_config() or Path("flexrouter.yaml")
+    return asdict(refresh_config(str(path), state_dir))
