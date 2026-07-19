@@ -183,3 +183,83 @@ from flexrouter.client import _parse_duration_ms
 ])
 def test_parse_duration_ms(s, expected):
     assert _parse_duration_ms(s) == expected
+
+
+# --- stream_chat() ---
+
+class _DropAfterOneChunk(httpx.AsyncByteStream):
+    """Yields one real SSE delta, then blows up mid-stream (simulates a
+    dropped connection after content has already started arriving)."""
+    async def __aiter__(self):
+        yield b'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n'
+        raise httpx.ReadError("connection dropped mid-stream")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_stream_chat_yields_multiple_chunks_and_stops_at_done():
+    sse_body = (
+        b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+        b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
+        b'data: {"choices":[{"delta":{"content":", "}}]}\n\n'
+        b'data: {"choices":[{"delta":{"content":"world!"}}]}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(200, content=sse_body)
+    )
+    from flexrouter.client import AsyncClient as _AC
+    chunks = []
+    async with _AC() as client:
+        async for delta in client.stream_chat(ROUTE, MESSAGES):
+            chunks.append(delta)
+    assert chunks == ["Hello", ", ", "world!"]
+    assert "".join(chunks) == "Hello, world!"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_stream_chat_429_raises_rate_limit_error_before_any_content():
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(429, json={"error": {"message": "rate limited"}})
+    )
+    from flexrouter.client import RateLimitError
+    collected = []
+    async with AsyncClient() as client:
+        with pytest.raises(RateLimitError):
+            async for delta in client.stream_chat(ROUTE, MESSAGES):
+                collected.append(delta)
+    assert collected == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_stream_chat_malformed_sse_raises_provider_error():
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(200, content=b"data: {not valid json}\n\n")
+    )
+    from flexrouter.client import ProviderError
+    collected = []
+    async with AsyncClient() as client:
+        with pytest.raises(ProviderError):
+            async for delta in client.stream_chat(ROUTE, MESSAGES):
+                collected.append(delta)
+    assert collected == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_stream_chat_drop_after_first_delta_raises_not_swallowed():
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(200, stream=_DropAfterOneChunk())
+    )
+    from flexrouter.client import ProviderError
+    collected = []
+    async with AsyncClient() as client:
+        with pytest.raises(ProviderError):
+            async for delta in client.stream_chat(ROUTE, MESSAGES):
+                collected.append(delta)
+    # We must have actually received the real delta before the failure —
+    # a silently truncated (empty) stream would also "pass" a bare
+    # pytest.raises check, so assert forward progress explicitly.
+    assert collected == ["Hel"]
