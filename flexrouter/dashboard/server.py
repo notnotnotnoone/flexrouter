@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import mimetypes
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Optional
@@ -12,12 +13,79 @@ from flexrouter.dashboard.api import (
 )
 
 _router: Optional[object] = None
+_cwd_normalized = False
+
+
+def _find_config_upwards() -> Optional[Path]:
+    """Walk from cwd up through parent directories looking for flexrouter.yaml.
+
+    discover_config() only checks the exact cwd (then the home directory), so
+    it misses the common case of the dashboard being started from a
+    subdirectory of the project (e.g. `dashboard/frontend`) instead of the
+    project root.
+    """
+    for parent in [Path.cwd(), *Path.cwd().parents]:
+        candidate = parent / "flexrouter.yaml"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _resolve_config_path() -> Optional[Path]:
+    """Resolve the flexrouter.yaml a real caller would use.
+
+    The dashboard is typically started as its own process (a new terminal, a
+    service, a launcher script) whose working directory is not guaranteed to
+    match the working directory of the app actually generating traffic. Real
+    consumers commonly avoid this ambiguity by pointing at an explicit config
+    path (e.g. via an env var such as FLEXROUTER_CONFIG). Mirror that so the
+    dashboard doesn't silently fall back to a different, usually-empty
+    state_dir. Resolution order:
+      1. FLEXROUTER_CONFIG env var, if set and it exists
+      2. discover_config()'s existing cwd / home-dir search
+      3. Walking upward from cwd (covers being started from a subdirectory)
+    """
+    env_path = os.environ.get("FLEXROUTER_CONFIG")
+    if env_path:
+        p = Path(env_path)
+        if p.exists():
+            return p
+
+    found = discover_config()
+    if found:
+        return found
+
+    return _find_config_upwards()
+
+
+def _normalize_cwd() -> None:
+    """Move this process's cwd to the resolved config's directory (once).
+
+    `state_dir` in flexrouter.yaml is typically a relative path, resolved
+    relative to whatever the current process's cwd happens to be at the time
+    (see AuditLogger/RateLimitStore/etc.). Without this, even after finding
+    the right flexrouter.yaml, a relative state_dir would still resolve
+    against the dashboard's own (possibly unrelated) cwd instead of the
+    directory real traffic actually uses -- so router writes and stats reads
+    would land in two different places. Normalizing cwd once, up front, keeps
+    every relative-path consumer in this process consistent with each other
+    and with a real caller who runs from the config's own directory (the
+    documented, intended usage).
+    """
+    global _cwd_normalized
+    if _cwd_normalized:
+        return
+    path = _resolve_config_path()
+    if path:
+        os.chdir(path.resolve().parent)
+    _cwd_normalized = True
 
 
 def _get_router():
     global _router
     if _router is None:
         from flexrouter._router import FlexRouter
+        _normalize_cwd()
         _router = FlexRouter()
     return _router
 
@@ -25,6 +93,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _state_dir() -> str:
+    _normalize_cwd()
     path = discover_config()
     if path:
         try:
