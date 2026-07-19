@@ -7,3 +7,8 @@ dist/
 .env
 dashboard/frontend/node_modules/
 dashboard/frontend/dist/
+
+# Contains live provider API keys. Never tracked in this repo's history —
+# this makes that explicit instead of relying on every contributor
+# remembering not to `git add` it by hand.
+flexrouter.yaml
