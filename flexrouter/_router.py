@@ -325,6 +325,16 @@ class FlexRouter:
         self._audit = AuditLogger(self._cfg.state_dir)
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
 
+    def remaining_capacity(self, tier: str) -> dict[str, dict]:
+        """For every model in `tier` currently in the running for selection, return
+        {"provider/model": {"rpm_remaining": int, "tpm_remaining": int}} — how much of that
+        model's per-minute allowance is still free right now. Read-only: does not affect
+        routing/selection, does not consume any allowance itself. Raises KeyError for an
+        unknown tier, same as generate()/agenerate().
+        """
+        self._maybe_hot_reload()
+        return self._engine.remaining_capacity(tier)
+
     def close(self) -> None:
         self._sampler.stop()
         self._loop.close()

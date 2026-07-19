@@ -64,3 +64,16 @@ def test_flexrouter_creates_rate_limit_store(config_file):
     assert router._client._rate_limit_store is router._rate_limit_store
     assert router._engine._rate_limit_store is router._rate_limit_store
     router.close()
+
+
+def test_remaining_capacity_returns_headroom_for_configured_tier(config_file):
+    router = FlexRouter(str(config_file))
+    cap = router.remaining_capacity("low")
+    assert cap["groq/llama-3.1-8b-instant"]["tpm_remaining"] == 60000
+    assert cap["groq/llama-3.1-8b-instant"]["rpm_remaining"] == 60
+
+
+def test_remaining_capacity_unknown_tier_raises_key_error(config_file):
+    router = FlexRouter(str(config_file))
+    with pytest.raises(KeyError):
+        router.remaining_capacity("nonexistent")
