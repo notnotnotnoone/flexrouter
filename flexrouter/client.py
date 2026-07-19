@@ -58,9 +58,17 @@ class AsyncClient:
     ) -> dict:
         url = f"{route.base_url.rstrip('/')}/chat/completions"
         payload = {"model": route.model, "messages": messages, **kwargs}
-        headers = {"Authorization": f"Bearer {route.api_key}"}
+        headers = {"Authorization": f"Bearer {route.api_key}"} if route.api_key else {}
 
-        resp = await self._client.post(url, json=payload, headers=headers)
+        try:
+            resp = await self._client.post(url, json=payload, headers=headers)
+        except httpx.HTTPError as exc:
+            # Connection failures, malformed requests, timeouts — anything below
+            # the HTTP-response level. Must surface as ProviderError so the
+            # router's retry loop (which only catches RateLimitError/
+            # ProviderError/RouterError) rotates to another model instead of
+            # this one dead route crashing the whole call.
+            raise ProviderError(f"{route.provider}/{route.model}: {exc}") from exc
 
         if resp.status_code == 429:
             raise RateLimitError(f"429 from {route.provider}/{route.model}")
