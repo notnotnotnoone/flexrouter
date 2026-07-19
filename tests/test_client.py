@@ -76,6 +76,28 @@ async def test_500_raises_provider_error():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_200_missing_choices_raises_provider_error():
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={"usage": {"total_tokens": 8}})
+    )
+    from flexrouter.client import ProviderError
+    async with AsyncClient() as client:
+        with pytest.raises(ProviderError, match="malformed response"):
+            await client.chat(ROUTE, MESSAGES)
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_200_empty_choices_raises_provider_error():
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": []})
+    )
+    from flexrouter.client import ProviderError
+    async with AsyncClient() as client:
+        with pytest.raises(ProviderError, match="malformed response"):
+            await client.chat(ROUTE, MESSAGES)
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_passes_extra_kwargs():
     captured = {}
     def capture(request, *args, **kwargs):

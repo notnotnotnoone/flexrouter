@@ -98,9 +98,17 @@ class AsyncClient:
             )
 
         try:
-            return resp.json()
+            data = resp.json()
         except Exception as exc:
             raise ProviderError(f"Invalid JSON from {route.provider}/{route.model}: {exc}") from exc
+
+        try:
+            _ = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ProviderError(
+                f"{route.provider}/{route.model}: malformed response, missing choices[0].message.content ({exc})"
+            ) from exc
+        return data
 
     async def aclose(self) -> None:
         await self._client.aclose()
