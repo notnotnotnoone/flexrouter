@@ -141,6 +141,37 @@ class RoutingEngine:
                     pv["models_up"] += 1
         return {"models": models, "providers": providers}
 
+    def remaining_capacity(self, tier: str) -> dict[str, dict]:
+        """For every model in `tier` currently in the running for selection — the same
+        top-20%-by-score-among-available pool _pick() would choose from — return
+        {"provider/model": {"rpm_remaining": int, "tpm_remaining": int}}, computed from each
+        model's configured rpm/tpm limit minus its current SlidingWindow usage.
+
+        Read-only: does not record usage, penalize, or otherwise affect routing/selection.
+        Raises KeyError for an unknown tier, same as select(). estimated_tokens=0 is passed to
+        _score_candidates so no model is excluded on context-window grounds — this method
+        answers "how much room is there," not "would a specific prompt fit."
+        """
+        models = self._cfg.tiers[tier]  # raises KeyError for unknown tier
+        scored = self._score_candidates(models, estimated_tokens=0, vision=False)
+        if not scored:
+            return {}
+        best_score = max(score for score, _ in scored)
+        threshold = best_score * 0.8
+        pool = [m for score, m in scored if score >= threshold]
+
+        result: dict[str, dict] = {}
+        for m in pool:
+            key = f"{m.provider}/{m.model}"
+            w = self._windows.get(key)
+            used_rpm = w.current_rpm() if w else 0
+            used_tpm = w.current_tpm() if w else 0
+            result[key] = {
+                "rpm_remaining": max(0, self._model_rpm(m) - used_rpm),
+                "tpm_remaining": max(0, self._model_tpm(m) - used_tpm),
+            }
+        return result
+
     # --- internals ---
 
     def _try_session(
