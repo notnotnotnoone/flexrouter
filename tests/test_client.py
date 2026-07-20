@@ -170,19 +170,31 @@ async def test_no_store_still_works():
     assert result["choices"][0]["message"]["content"] == "hi"
 
 
-import pytest
-from flexrouter.client import _parse_duration_ms
+# Duration parsing lives in flexrouter/headers.py now — see tests/test_headers.py.
 
-@pytest.mark.parametrize("s,expected", [
-    ("45s", 45000),
-    ("1m30s", 90000),
-    ("12ms", 12),
-    ("2", 2000),       # bare number = seconds
-    ("", None),
-    ("garbage", None),
-])
-def test_parse_duration_ms(s, expected):
-    assert _parse_duration_ms(s) == expected
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_google_header_parser_uses_goog_prefixed_headers(tmp_path):
+    google_route = RouteResult(
+        provider="google",
+        model="gemini-pro",
+        api_key="test-key",
+        base_url="https://api.groq.com/openai/v1",
+        tier="low",
+        header_parser="google",
+    )
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json=OK_RESPONSE,
+            headers={"x-goog-ratelimit-remaining-requests": "3"},
+        )
+    )
+    store = RateLimitStore(str(tmp_path))
+    async with AsyncClient(rate_limit_store=store) as client:
+        await client.chat(google_route, MESSAGES)
+    assert store._data["google/gemini-pro"]["remaining_requests"] == 3
 
 
 # --- stream_chat() ---

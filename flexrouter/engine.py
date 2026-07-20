@@ -19,6 +19,7 @@ class RouteResult:
     api_key: str
     base_url: str
     tier: str
+    header_parser: str = "openai_compatible"
 
 
 class RoutingEngine:
@@ -249,6 +250,7 @@ class RoutingEngine:
             api_key=api_key,
             base_url=provider_cfg.base_url,
             tier=tier,
+            header_parser=provider_cfg.header_parser,
         )
 
     def _model_rpm(self, m: ModelConfig) -> int:

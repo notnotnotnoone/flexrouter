@@ -96,3 +96,30 @@ def test_sampler_settings_override(tmp_path):
     cfg = load_config(p)
     assert cfg.sample_interval_seconds == 15
     assert cfg.health_history_days == 7
+
+
+def test_provider_header_parser_defaults_to_openai_compatible(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    cfg_dict = {
+        "tiers": {"low": [{"provider": "groq", "model": "m", "score": 50, "rpm": 1, "tpm": 1}]},
+        "providers": {"groq": {"base_url": "https://x", "api_keys": [{"env": "GROQ_API_KEY"}]}},
+    }
+    p = tmp_path / "flexrouter.yaml"
+    p.write_text(yaml.dump(cfg_dict))
+    cfg = load_config(p)
+    assert cfg.providers["groq"].header_parser == "openai_compatible"
+
+
+def test_provider_header_parser_explicit_value_is_read(tmp_path, monkeypatch):
+    monkeypatch.setenv("CEREBRAS_KEY", "k")
+    cfg_dict = {
+        "tiers": {"low": [{"provider": "cb", "model": "m", "score": 50, "rpm": 1, "tpm": 1}]},
+        "providers": {"cb": {
+            "base_url": "https://x", "api_keys": [{"env": "CEREBRAS_KEY"}],
+            "header_parser": "cerebras",
+        }},
+    }
+    p = tmp_path / "flexrouter.yaml"
+    p.write_text(yaml.dump(cfg_dict))
+    cfg = load_config(p)
+    assert cfg.providers["cb"].header_parser == "cerebras"

@@ -26,6 +26,7 @@ class ModelConfig:
 class ProviderConfig:
     base_url: str
     api_keys: list[str]  # resolved values (not env var names)
+    header_parser: str = "openai_compatible"
 
 @dataclass
 class RetryConfig:
@@ -88,7 +89,11 @@ def load_config(path: Path | str) -> FlexConfig:
                 if not val:
                     raise ConfigError(f"Env var {env_name!r} not set (required by provider {name!r})")
                 resolved.append(val)
-        providers[name] = ProviderConfig(base_url=praw["base_url"], api_keys=resolved)
+        providers[name] = ProviderConfig(
+            base_url=praw["base_url"],
+            api_keys=resolved,
+            header_parser=praw.get("header_parser", "openai_compatible"),
+        )
 
     # Parse tiers
     tiers: dict[str, list[ModelConfig]] = {}
