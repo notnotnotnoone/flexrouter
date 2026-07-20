@@ -174,3 +174,23 @@ def test_exhausted_model_skipped(tmp_path):
     )
     eng = RoutingEngine(cfg, rate_limit_store=store)
     assert eng.select("default", 10, False) is None  # only model is exhausted
+
+
+def test_score_candidates_skips_quota_exhausted_model():
+    from flexrouter.quota import QuotaTracker
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        tracker = QuotaTracker(d)
+        tracker.record("groq", "m1")
+        m1 = ModelConfig(provider="groq", model="m1", score=90, rpm=100, tpm=100000, quotas={"rpd": 1})
+        m2 = ModelConfig(provider="groq", model="m2", score=50, rpm=100, tpm=100000)
+        cfg = FlexConfig(
+            tiers={"low": [m1, m2]},
+            providers={"groq": ProviderConfig("http://groq", ["key"])},
+        )
+        engine = RoutingEngine(cfg, quota_tracker=tracker)
+        scored = engine._score_candidates([m1, m2], estimated_tokens=0, vision=False)
+        chosen_models = [m.model for _, m in scored]
+        assert "m1" not in chosen_models
+        assert "m2" in chosen_models

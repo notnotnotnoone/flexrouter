@@ -123,3 +123,30 @@ def test_provider_header_parser_explicit_value_is_read(tmp_path, monkeypatch):
     p.write_text(yaml.dump(cfg_dict))
     cfg = load_config(p)
     assert cfg.providers["cb"].header_parser == "cerebras"
+
+
+def test_model_quotas_default_to_empty_dict(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    cfg_dict = {
+        "tiers": {"low": [{"provider": "groq", "model": "m", "score": 50, "rpm": 1, "tpm": 1}]},
+        "providers": {"groq": {"base_url": "https://x", "api_keys": [{"env": "GROQ_API_KEY"}]}},
+    }
+    p = tmp_path / "flexrouter.yaml"
+    p.write_text(yaml.dump(cfg_dict))
+    cfg = load_config(p)
+    assert cfg.tiers["low"][0].quotas == {}
+
+
+def test_model_quotas_explicit_rpd_rph_is_read(tmp_path, monkeypatch):
+    monkeypatch.setenv("OR_KEY", "k")
+    cfg_dict = {
+        "tiers": {"low": [{
+            "provider": "or", "model": "m", "score": 50, "rpm": 1, "tpm": 1,
+            "quotas": {"rpd": 50, "rph": 10},
+        }]},
+        "providers": {"or": {"base_url": "https://x", "api_keys": [{"env": "OR_KEY"}]}},
+    }
+    p = tmp_path / "flexrouter.yaml"
+    p.write_text(yaml.dump(cfg_dict))
+    cfg = load_config(p)
+    assert cfg.tiers["low"][0].quotas == {"rpd": 50, "rph": 10}

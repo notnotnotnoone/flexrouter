@@ -21,6 +21,7 @@ class ModelConfig:
     tpm: int
     context_window: int = 200000
     vision: bool = False
+    quotas: dict[str, int] = field(default_factory=dict)
 
 @dataclass
 class ProviderConfig:
@@ -107,6 +108,7 @@ def load_config(path: Path | str) -> FlexConfig:
                 tpm=m["tpm"],
                 context_window=m.get("context_window", 200000),
                 vision=m.get("vision", False),
+                quotas=m.get("quotas", {}),
             )
             for m in models
         ]

@@ -14,6 +14,7 @@ from flexrouter.events import EventLogger
 from flexrouter.exceptions import ConfigError, RouterBusy, RouterError
 from flexrouter.health_history import HealthHistory
 from flexrouter.hooks import HookRunner, HookContext
+from flexrouter.quota import QuotaTracker
 from flexrouter.rate_limits import RateLimitStore
 from flexrouter.recovery import PenaltyBox
 from flexrouter.sampler import PassiveSampler
@@ -61,13 +62,15 @@ class FlexRouter:
         self._config_path = path
         self._cfg: FlexConfig = load_config(path)
         self._rate_limit_store = RateLimitStore(self._cfg.state_dir)
+        self._quota_tracker = QuotaTracker(self._cfg.state_dir)
         self._events = EventLogger(self._cfg.state_dir)
         self._penalties = PenaltyBox(
             self._cfg.penalty_base_seconds, self._cfg.penalty_max_seconds,
             state_dir=self._cfg.state_dir, on_event=self._events.record,
         )
         self._engine = RoutingEngine(
-            self._cfg, rate_limit_store=self._rate_limit_store, penalties=self._penalties)
+            self._cfg, rate_limit_store=self._rate_limit_store, penalties=self._penalties,
+            quota_tracker=self._quota_tracker)
         self._audit = AuditLogger(self._cfg.state_dir)
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
         self._sampler = PassiveSampler(
@@ -172,6 +175,7 @@ class FlexRouter:
             total_tokens = usage.get("total_tokens", 0)
 
             self._engine.record_request(route.provider, route.model, total_tokens)
+            self._quota_tracker.record(route.provider, route.model)
             self._audit.log(
                 tier=tier,
                 provider=route.provider,
@@ -300,6 +304,7 @@ class FlexRouter:
             total_tokens = usage.get("total_tokens", 0)
 
             self._engine.record_request(route.provider, route.model, total_tokens)
+            self._quota_tracker.record(route.provider, route.model)
             self._audit.log(
                 tier=tier,
                 provider=route.provider,
@@ -319,8 +324,10 @@ class FlexRouter:
     def reload(self) -> None:
         self._cfg = load_config(self._config_path)
         self._rate_limit_store = RateLimitStore(self._cfg.state_dir)
+        self._quota_tracker = QuotaTracker(self._cfg.state_dir)
         self._engine.update_config(self._cfg)
         self._engine._rate_limit_store = self._rate_limit_store
+        self._engine._quota_tracker = self._quota_tracker
         self._client._rate_limit_store = self._rate_limit_store
         self._audit = AuditLogger(self._cfg.state_dir)
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)

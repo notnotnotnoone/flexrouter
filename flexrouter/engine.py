@@ -23,9 +23,11 @@ class RouteResult:
 
 
 class RoutingEngine:
-    def __init__(self, cfg: FlexConfig, rate_limit_store=None, penalties: Optional[PenaltyBox] = None) -> None:
+    def __init__(self, cfg: FlexConfig, rate_limit_store=None, penalties: Optional[PenaltyBox] = None,
+                 quota_tracker=None) -> None:
         self._cfg = cfg
         self._rate_limit_store = rate_limit_store
+        self._quota_tracker = quota_tracker
         self._penalties = penalties if penalties is not None else PenaltyBox(
             cfg.penalty_base_seconds, cfg.penalty_max_seconds)
         self._budget = DailyBudget(cfg.provider_budget)
@@ -106,6 +108,8 @@ class RoutingEngine:
                 avail = self._rate_limit_store.available_at(m.provider, m.model)
                 if avail is not None:
                     min_wait = min(min_wait, avail - time.time())
+            elif self._quota_tracker is not None and m.quotas and not self._quota_tracker.is_available(m.provider, m.model, m.quotas):
+                min_wait = min(min_wait, self._quota_tracker.seconds_until_available(m.provider, m.model, m.quotas))
             else:
                 w = self._windows.get(f"{m.provider}/{m.model}")
                 if w:
@@ -208,6 +212,8 @@ class RoutingEngine:
                 continue
             if self._rate_limit_store is not None and self._rate_limit_store.is_exhausted(m.provider, m.model):
                 continue
+            if self._quota_tracker is not None and m.quotas and not self._quota_tracker.is_available(m.provider, m.model, m.quotas):
+                continue
             if not self._budget.is_available(m.provider):
                 continue
             if estimated_tokens > 0 and estimated_tokens >= m.context_window:
@@ -271,6 +277,8 @@ class RoutingEngine:
         if self._penalties.is_penalized(m.provider, m.model):
             return False
         if self._rate_limit_store is not None and self._rate_limit_store.is_exhausted(m.provider, m.model):
+            return False
+        if self._quota_tracker is not None and m.quotas and not self._quota_tracker.is_available(m.provider, m.model, m.quotas):
             return False
         if not self._budget.is_available(m.provider):
             return False
