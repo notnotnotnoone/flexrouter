@@ -2,7 +2,7 @@
 import pytest
 import respx
 import httpx
-from flexrouter.client import AsyncClient
+from flexrouter.client import AsyncClient, StreamChunk
 from flexrouter.engine import RouteResult
 from flexrouter.rate_limits import RateLimitStore
 
@@ -225,8 +225,8 @@ async def test_stream_chat_yields_multiple_chunks_and_stops_at_done():
     async with _AC() as client:
         async for delta in client.stream_chat(ROUTE, MESSAGES):
             chunks.append(delta)
-    assert chunks == ["Hello", ", ", "world!"]
-    assert "".join(chunks) == "Hello, world!"
+    assert [c.content for c in chunks] == ["Hello", ", ", "world!"]
+    assert "".join(c.content for c in chunks) == "Hello, world!"
 
 
 @pytest.mark.asyncio
@@ -274,4 +274,31 @@ async def test_stream_chat_drop_after_first_delta_raises_not_swallowed():
     # We must have actually received the real delta before the failure —
     # a silently truncated (empty) stream would also "pass" a bare
     # pytest.raises check, so assert forward progress explicitly.
-    assert collected == ["Hel"]
+    assert [c.content for c in collected] == ["Hel"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_stream_chat_yields_content_reasoning_tool_call_and_usage():
+    sse_body = (
+        b'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n'
+        b'data: {"choices":[{"delta":{"reasoning_content":"thinking..."}}]}\n\n'
+        b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"get_weather","arguments":"{\\"city\\":"}}]}}]}\n\n'
+        b'data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(200, content=sse_body)
+    )
+    chunks = []
+    async with AsyncClient() as client:
+        async for chunk in client.stream_chat(ROUTE, MESSAGES):
+            chunks.append(chunk)
+
+    assert chunks[0].content == "Hel"
+    assert chunks[1].reasoning == "thinking..."
+    assert chunks[2].tool_call_delta == {
+        "index": 0, "id": "c1",
+        "function": {"name": "get_weather", "arguments": '{"city":'},
+    }
+    assert chunks[3].usage == {"prompt_tokens": 10, "completion_tokens": 5}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json as _json
+from dataclasses import dataclass
 from typing import AsyncIterator
 import httpx
 from flexrouter.engine import RouteResult
@@ -12,6 +13,14 @@ class RateLimitError(Exception):
 
 class ProviderError(Exception):
     pass
+
+
+@dataclass
+class StreamChunk:
+    content: str | None = None
+    reasoning: str | None = None
+    tool_call_delta: dict | None = None
+    usage: dict | None = None
 
 
 class AsyncClient:
@@ -76,7 +85,7 @@ class AsyncClient:
         route: RouteResult,
         messages: list[dict],
         **kwargs,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[StreamChunk]:
         """Yields text deltas as they arrive. Raises the same RateLimitError /
         RouterError / ProviderError as chat(), and — critically — only before
         the first delta is yielded. Once this generator has yielded at least
@@ -85,7 +94,8 @@ class AsyncClient:
         that errors), NOT swallowed or retried here. Retry policy is the
         router's job, not the client's — see Issue 02."""
         url = f"{route.base_url.rstrip('/')}/chat/completions"
-        payload = {"model": route.model, "messages": messages, "stream": True, **kwargs}
+        payload = {"model": route.model, "messages": messages, "stream": True,
+                   "stream_options": {"include_usage": True}, **kwargs}
         headers = {"Authorization": f"Bearer {route.api_key}"} if route.api_key else {}
 
         try:
@@ -125,16 +135,23 @@ class AsyncClient:
                             f"{route.provider}/{route.model}: malformed SSE chunk: {exc}"
                         ) from exc
 
-                    try:
-                        delta = chunk["choices"][0]["delta"]
-                    except (KeyError, IndexError, TypeError) as exc:
-                        raise ProviderError(
-                            f"{route.provider}/{route.model}: malformed response, missing choices[0].delta ({exc})"
-                        ) from exc
+                    usage = chunk.get("usage")
+                    choices = chunk.get("choices") or []
+                    delta = choices[0].get("delta") if choices else None
+                    if delta is None and usage is None:
+                        continue
 
                     content = delta.get("content") if isinstance(delta, dict) else None
-                    if content:
-                        yield content
+                    reasoning = delta.get("reasoning_content") if isinstance(delta, dict) else None
+                    tool_calls = delta.get("tool_calls") if isinstance(delta, dict) else None
+
+                    if tool_calls:
+                        for tc in tool_calls:
+                            yield StreamChunk(tool_call_delta=tc)
+                        continue
+
+                    if content or reasoning or usage:
+                        yield StreamChunk(content=content or None, reasoning=reasoning or None, usage=usage)
         except httpx.HTTPError as exc:
             # Connection failures, malformed requests, timeouts, or a dropped
             # connection mid-stream — anything below the HTTP-response level.

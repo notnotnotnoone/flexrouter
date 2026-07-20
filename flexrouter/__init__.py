@@ -3,6 +3,8 @@ from flexrouter._router import (
     AttemptEvent,
     AttemptFailedEvent,
     DeltaEvent,
+    ReasoningDeltaEvent,
+    ToolCallDeltaEvent,
     DoneEvent,
 )
 from flexrouter.exceptions import RouterBusy, RouterError, ConfigError, ContextWindowWarning
@@ -16,5 +18,7 @@ __all__ = [
     "AttemptEvent",
     "AttemptFailedEvent",
     "DeltaEvent",
+    "ReasoningDeltaEvent",
+    "ToolCallDeltaEvent",
     "DoneEvent",
 ]

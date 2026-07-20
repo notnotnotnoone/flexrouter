@@ -43,11 +43,24 @@ class DeltaEvent:
 
 
 @dataclass
+class ReasoningDeltaEvent:
+    text: str
+
+
+@dataclass
+class ToolCallDeltaEvent:
+    index: int
+    id: Optional[str]
+    name: Optional[str]
+    arguments: Optional[str]
+
+
+@dataclass
 class DoneEvent:
     result: dict
 
 
-StreamEvent = AttemptEvent | AttemptFailedEvent | DeltaEvent | DoneEvent
+StreamEvent = AttemptEvent | AttemptFailedEvent | DeltaEvent | ReasoningDeltaEvent | ToolCallDeltaEvent | DoneEvent
 
 
 class FlexRouter:
@@ -284,19 +297,40 @@ class FlexRouter:
             # exception out of this generator — no except clause below, so
             # nothing here can turn it into a retry.
             accumulated: list[str] = []
-            if first_chunk is not None:
-                accumulated.append(first_chunk)
-                yield DeltaEvent(text=first_chunk)
+            final_usage: dict = {}
 
-            async for chunk in stream:
-                accumulated.append(chunk)
-                yield DeltaEvent(text=chunk)
+            def _events_for(sc) -> list:
+                events: list = []
+                if sc.content:
+                    accumulated.append(sc.content)
+                    events.append(DeltaEvent(text=sc.content))
+                if sc.reasoning:
+                    events.append(ReasoningDeltaEvent(text=sc.reasoning))
+                if sc.tool_call_delta:
+                    fn = sc.tool_call_delta.get("function") or {}
+                    events.append(ToolCallDeltaEvent(
+                        index=sc.tool_call_delta.get("index", 0),
+                        id=sc.tool_call_delta.get("id"),
+                        name=fn.get("name"),
+                        arguments=fn.get("arguments"),
+                    ))
+                if sc.usage:
+                    final_usage.update(sc.usage)
+                return events
+
+            if first_chunk is not None:
+                for ev in _events_for(first_chunk):
+                    yield ev
+
+            async for sc in stream:
+                for ev in _events_for(sc):
+                    yield ev
 
             latency_ms = int((time.monotonic() - start) * 1000)
             full_text = "".join(accumulated)
             result = {
                 "choices": [{"message": {"role": "assistant", "content": full_text}}],
-                "usage": {},
+                "usage": final_usage,
             }
             usage = result.get("usage", {})
             prompt_tokens = usage.get("prompt_tokens", 0)

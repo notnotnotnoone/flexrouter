@@ -1,8 +1,11 @@
 # tests/test_agenerate_stream.py
 import pytest
 
-from flexrouter import FlexRouter, RouterBusy, AttemptEvent, AttemptFailedEvent, DeltaEvent, DoneEvent
-from flexrouter.client import RateLimitError, ProviderError
+from flexrouter import (
+    FlexRouter, RouterBusy, AttemptEvent, AttemptFailedEvent, DeltaEvent,
+    ReasoningDeltaEvent, ToolCallDeltaEvent, DoneEvent,
+)
+from flexrouter.client import RateLimitError, ProviderError, StreamChunk
 from flexrouter.engine import RouteResult
 
 
@@ -37,7 +40,7 @@ def _select_sequence(routes):
 def _ok_stream(chunks):
     async def stream_chat(route, messages, **kwargs):
         for c in chunks:
-            yield c
+            yield StreamChunk(content=c)
     return stream_chat
 
 
@@ -51,7 +54,7 @@ def _fail_stream(exc):
 
 def _drop_after_one_stream(first_chunk, exc):
     async def stream_chat(route, messages, **kwargs):
-        yield first_chunk
+        yield StreamChunk(content=first_chunk)
         raise exc
 
     return stream_chat
@@ -165,3 +168,62 @@ async def test_mid_stream_failure_propagates_without_retry(config_file, monkeypa
     assert len(events) == 2
     assert isinstance(events[0], AttemptEvent)
     assert isinstance(events[1], DeltaEvent) and events[1].text == "Hel"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_delta_is_yielded_as_separate_event(config_file, monkeypatch):
+    router = _router(config_file)
+    monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE]))
+
+    async def _stream(route, messages, **kwargs):
+        yield StreamChunk(reasoning="thinking")
+        yield StreamChunk(content="answer")
+
+    monkeypatch.setattr(
+        router._client, "stream_chat", _stream_chat_sequence([_stream])
+    )
+
+    events = [e async for e in router.agenerate_stream(MESSAGES, tier="low")]
+    reasoning_events = [e for e in events if isinstance(e, ReasoningDeltaEvent)]
+    assert len(reasoning_events) == 1
+    assert reasoning_events[0].text == "thinking"
+
+
+@pytest.mark.asyncio
+async def test_tool_call_delta_is_yielded_and_not_accumulated_into_content(config_file, monkeypatch):
+    router = _router(config_file)
+    monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE]))
+
+    async def _stream(route, messages, **kwargs):
+        yield StreamChunk(tool_call_delta={
+            "index": 0, "id": "c1", "function": {"name": "f", "arguments": "{}"},
+        })
+
+    monkeypatch.setattr(
+        router._client, "stream_chat", _stream_chat_sequence([_stream])
+    )
+
+    events = [e async for e in router.agenerate_stream(MESSAGES, tier="low")]
+    tc_events = [e for e in events if isinstance(e, ToolCallDeltaEvent)]
+    assert len(tc_events) == 1
+    assert tc_events[0].name == "f"
+    done = [e for e in events if isinstance(e, DoneEvent)][0]
+    assert done.result["choices"][0]["message"]["content"] == ""  # tool call didn't add to text
+
+
+@pytest.mark.asyncio
+async def test_final_usage_chunk_populates_done_event_usage(config_file, monkeypatch):
+    router = _router(config_file)
+    monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE]))
+
+    async def _stream(route, messages, **kwargs):
+        yield StreamChunk(content="hi")
+        yield StreamChunk(usage={"prompt_tokens": 3, "completion_tokens": 1})
+
+    monkeypatch.setattr(
+        router._client, "stream_chat", _stream_chat_sequence([_stream])
+    )
+
+    events = [e async for e in router.agenerate_stream(MESSAGES, tier="low")]
+    done = [e for e in events if isinstance(e, DoneEvent)][0]
+    assert done.result["usage"] == {"prompt_tokens": 3, "completion_tokens": 1}
