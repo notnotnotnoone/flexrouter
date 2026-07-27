@@ -142,13 +142,7 @@ class AsyncClient:
                         continue
 
                     content = delta.get("content") if isinstance(delta, dict) else None
-                    # OpenAI-compatible providers vary on the key for reasoning
-                    # text: most use "reasoning_content", Cerebras (zai-glm-4.7,
-                    # live-verified) uses "reasoning". Check both.
-                    reasoning = (
-                        delta.get("reasoning_content") or delta.get("reasoning")
-                        if isinstance(delta, dict) else None
-                    )
+                    reasoning = delta.get("reasoning_content") if isinstance(delta, dict) else None
                     tool_calls = delta.get("tool_calls") if isinstance(delta, dict) else None
 
                     if tool_calls:

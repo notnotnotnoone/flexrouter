@@ -35,7 +35,6 @@ class AttemptFailedEvent:
     provider: str
     model: str
     reason: Literal["rate_limited", "provider_error"]
-    detail: str = ""
 
 
 @dataclass
@@ -249,30 +248,8 @@ class FlexRouter:
             try:
                 first_chunk = await stream.__anext__()
             except StopAsyncIteration:
-                # Empty stream — no content at all. Treat as a provider
-                # error so the retry loop rotates to the next model.
-                self._engine.penalize(route.provider, route.model)
-                self._events.record(
-                    route.provider, route.model, "server_error",
-                    detail="empty stream response",
-                    penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
-                self._audit.log(
-                    tier=tier, provider=route.provider, model=route.model,
-                    prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
-                    latency_ms=int((time.monotonic() - start) * 1000),
-                    status="empty_response",
-                )
-                self._history.record(self._engine.health_snapshot())
-                yield AttemptFailedEvent(
-                    attempt=attempt + 1, max_attempts=max_attempts,
-                    provider=route.provider, model=route.model, reason="provider_error",
-                    detail="empty stream response",
-                )
-                if attempt == retries:
-                    raise RouterBusy(f"All retries exhausted for tier {tier!r}")
-                await asyncio.sleep(backoff)
-                continue
-            except RateLimitError as exc:
+                first_chunk = None
+            except RateLimitError:
                 self._engine.penalize(route.provider, route.model)
                 self._events.record(
                     route.provider, route.model, "rate_limited",
@@ -287,7 +264,6 @@ class FlexRouter:
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
                     provider=route.provider, model=route.model, reason="rate_limited",
-                    detail=str(exc),
                 )
                 if attempt == retries:
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
@@ -295,7 +271,7 @@ class FlexRouter:
                 continue
             except RouterError:
                 raise
-            except ProviderError as exc:
+            except ProviderError:
                 self._engine.penalize(route.provider, route.model)
                 self._events.record(
                     route.provider, route.model, "server_error",
@@ -310,7 +286,6 @@ class FlexRouter:
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
                     provider=route.provider, model=route.model, reason="provider_error",
-                    detail=str(exc),
                 )
                 if attempt == retries:
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
@@ -323,12 +298,8 @@ class FlexRouter:
             # nothing here can turn it into a retry.
             accumulated: list[str] = []
             final_usage: dict = {}
-            has_tool_calls = False
-            # index -> {"id": ..., "name": ..., "arguments": ...}
-            tool_calls_by_index: dict[int, dict] = {}
 
             def _events_for(sc) -> list:
-                nonlocal has_tool_calls
                 events: list = []
                 if sc.content:
                     accumulated.append(sc.content)
@@ -336,20 +307,10 @@ class FlexRouter:
                 if sc.reasoning:
                     events.append(ReasoningDeltaEvent(text=sc.reasoning))
                 if sc.tool_call_delta:
-                    has_tool_calls = True
-                    tc = sc.tool_call_delta
-                    idx = tc.get("index", 0)
-                    entry = tool_calls_by_index.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-                    if tc.get("id"):
-                        entry["id"] = tc["id"]
-                    fn = tc.get("function") or {}
-                    if fn.get("name"):
-                        entry["name"] = fn["name"]
-                    if fn.get("arguments"):
-                        entry["arguments"] += fn["arguments"]
+                    fn = sc.tool_call_delta.get("function") or {}
                     events.append(ToolCallDeltaEvent(
-                        index=idx,
-                        id=tc.get("id"),
+                        index=sc.tool_call_delta.get("index", 0),
+                        id=sc.tool_call_delta.get("id"),
                         name=fn.get("name"),
                         arguments=fn.get("arguments"),
                     ))
@@ -367,59 +328,8 @@ class FlexRouter:
 
             latency_ms = int((time.monotonic() - start) * 1000)
             full_text = "".join(accumulated)
-
-            # A stream that ends with no content and no tool calls has shown
-            # the consumer nothing (no DeltaEvent, no ToolCallDeltaEvent —
-            # both are only yielded when accumulated/has_tool_calls end up
-            # non-empty), so it's safe to retry against the next provider
-            # exactly like the pre-first-chunk failures above, instead of
-            # treating "we received at least one chunk" as an irreversible
-            # commit. Without this, a model that spends its whole token
-            # budget on reasoning (nothing usable back) looks identical to a
-            # real success and the caller is left with a silent empty reply.
-            if not full_text and not has_tool_calls:
-                self._engine.penalize(route.provider, route.model)
-                self._events.record(
-                    route.provider, route.model, "server_error",
-                    detail="empty response (no content, no tool calls)",
-                    penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
-                self._audit.log(
-                    tier=tier, provider=route.provider, model=route.model,
-                    prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
-                    latency_ms=latency_ms, status="empty_response",
-                )
-                self._history.record(self._engine.health_snapshot())
-                yield AttemptFailedEvent(
-                    attempt=attempt + 1, max_attempts=max_attempts,
-                    provider=route.provider, model=route.model, reason="provider_error",
-                    detail="empty response (no content, no tool calls)",
-                )
-                if attempt == retries:
-                    raise RouterBusy(f"All retries exhausted for tier {tier!r}")
-                await asyncio.sleep(backoff)
-                continue
-
-            # Assemble tool calls in index order
-            assembled_tool_calls = []
-            if tool_calls_by_index:
-                for idx in sorted(tool_calls_by_index.keys()):
-                    tc = tool_calls_by_index[idx]
-                    assembled_tool_calls.append({
-                        "id": tc["id"],
-                        "type": "function",
-                        "function": {
-                            "name": tc["name"],
-                            "arguments": tc["arguments"],
-                        },
-                    })
-
-            # Build result with content + tool_calls
-            msg: dict = {"role": "assistant", "content": full_text}
-            if assembled_tool_calls:
-                msg["tool_calls"] = assembled_tool_calls
-
             result = {
-                "choices": [{"message": msg}],
+                "choices": [{"message": {"role": "assistant", "content": full_text}}],
                 "usage": final_usage,
             }
             usage = result.get("usage", {})

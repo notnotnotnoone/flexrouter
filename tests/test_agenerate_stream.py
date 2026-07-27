@@ -212,6 +212,39 @@ async def test_tool_call_delta_is_yielded_and_not_accumulated_into_content(confi
 
 
 @pytest.mark.asyncio
+async def test_empty_committed_stream_retries_next_provider_instead_of_terminating(
+    config_file, monkeypatch
+):
+    # A stream that yields a chunk (so it's past the pre-first-chunk retry
+    # window) but ends with no content and no tool calls — e.g. a reasoning
+    # model that burns its whole token budget on reasoning — must still
+    # rotate to the next provider instead of being treated as a committed,
+    # terminal success with a silently empty reply.
+    router = _router(config_file)
+    monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE, ROUTE]))
+
+    async def _empty_stream(route, messages, **kwargs):
+        yield StreamChunk(reasoning="thinking forever")
+
+    monkeypatch.setattr(
+        router._client,
+        "stream_chat",
+        _stream_chat_sequence([_empty_stream, _ok_stream(["real answer"])]),
+    )
+
+    events = [e async for e in router.agenerate_stream(MESSAGES, tier="low")]
+
+    kinds = [type(e).__name__ for e in events]
+    assert kinds == [
+        "AttemptEvent", "ReasoningDeltaEvent", "AttemptFailedEvent",
+        "AttemptEvent", "DeltaEvent", "DoneEvent",
+    ]
+    assert events[2].reason == "provider_error"
+    assert events[2].attempt == 1
+    assert events[-1].result["choices"][0]["message"]["content"] == "real answer"
+
+
+@pytest.mark.asyncio
 async def test_final_usage_chunk_populates_done_event_usage(config_file, monkeypatch):
     router = _router(config_file)
     monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE]))

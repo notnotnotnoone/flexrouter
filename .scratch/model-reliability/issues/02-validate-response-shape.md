@@ -62,3 +62,12 @@ Also confirm the existing happy-path test (well-formed response) still
 passes unchanged.
 
 ## Comments
+
+- `stream_chat()` did not exist in `flexrouter/client.py` at the time this
+  issue was picked up (only `chat()` was present, along with an unrelated
+  in-flight change wrapping the `httpx.AsyncClient.post()` call in a
+  try/except for connection-level errors). Only `chat()` was fixed here.
+  When `stream_chat()` from the sibling `sse-streaming` feature lands, it
+  will need the same shape validation applied to each parsed SSE chunk
+  (`choices[0].delta` before extracting `.content`), raising `ProviderError`
+  on a malformed chunk per the same principle described above.

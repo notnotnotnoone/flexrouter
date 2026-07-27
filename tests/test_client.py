@@ -302,3 +302,28 @@ async def test_stream_chat_yields_content_reasoning_tool_call_and_usage():
         "function": {"name": "get_weather", "arguments": '{"city":'},
     }
     assert chunks[3].usage == {"prompt_tokens": 10, "completion_tokens": 5}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_stream_chat_accepts_reasoning_key_variant():
+    # Cerebras (zai-glm-4.7, live-verified) sends the delta's reasoning text
+    # under "reasoning", not the OpenAI-standard "reasoning_content" key.
+    # Before this, those chunks matched no `if content or reasoning or usage`
+    # branch and were silently dropped — invisible to callers, and on a
+    # model that spends its whole token budget on reasoning, this made
+    # stream_chat() look like it produced nothing at all.
+    sse_body = (
+        b'data: {"choices":[{"delta":{"reasoning":"thinking..."}}]}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(200, content=sse_body)
+    )
+    chunks = []
+    async with AsyncClient() as client:
+        async for chunk in client.stream_chat(ROUTE, MESSAGES):
+            chunks.append(chunk)
+
+    assert len(chunks) == 1
+    assert chunks[0].reasoning == "thinking..."

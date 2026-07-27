@@ -1,6 +1,6 @@
 # Issue 01: Give `default`-tier models real, differentiated scores
 
-Status: ready-for-agent
+Status: ready-for-human
 
 ## What
 
@@ -70,3 +70,94 @@ exists, a small one is worth adding: parse the shipped `flexrouter.yaml`'s
 `default` tier and assert `len(set(scores)) > 1`.
 
 ## Comments
+
+Applied the suggested scoring scheme mechanically to all 55 `default`-tier
+models in `flexrouter.yaml`:
+
+| Provider | Score | Count | Rule applied |
+|---|---|---|---|
+| cerebras | 90 | 2 | matches table exactly |
+| groq | 80 | 10 | matches table exactly |
+| googleai | 75 | 12 | matches table exactly |
+| openrouter (no `:free` suffix) | 55 | 2 | `openrouter/owl-alpha`, `openrouter/free` |
+| openrouter (`:free` suffix) | 20 | 21 | matches table exactly |
+| ollama | 15 | 8 | see below — deviates from the table, which left this TBD |
+
+Config loads cleanly (`load_config('flexrouter.yaml')`), all 55 models get
+distinct-enough scores (6 distinct values), `best_score` is now 90 so
+`_pick`'s threshold is 72, narrowing the "top" pool to cerebras+groq+googleai
+as the PRD predicted.
+
+**Ollama reachability — verified, but the result is ambiguous, hence
+`ready-for-human`:**
+
+`providers.ollama.base_url` is `http://localhost:11434/v1`. `curl
+http://localhost:11434/api/tags` succeeded and listed all 8 configured
+models by exact name/tag (`evalengine/unbound-e2b:latest`,
+`dolphin-phi:latest`, `phi4:14b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`,
+`qwen3:0.6b`, `llama3.2:3b`, `qwen2.5:0.5b`) — so Ollama is up and these are
+not stale/wrong model IDs.
+
+But a manual timing check (`/v1/chat/completions`, `max_tokens: 5`) showed
+very inconsistent responsiveness, plausibly explaining the PRD's "669ms to
+134 seconds" observation:
+- `qwen2.5:0.5b`: 3.3s cold, 1.2s on immediate re-request (warm)
+- `llama3.2:3b`: 29s (requested right after a different model, i.e. cold)
+- `phi4:14b`: 47s
+- `deepseek-r1:8b`: **timed out at 60s with no response at all**
+
+The pattern looks like this Ollama instance only keeps one model resident in
+memory at a time, so any request for a model other than the currently-loaded
+one pays a full (multi-second-to-a-minute-plus) load penalty — and the
+router's random-choice-among-top-scored-candidates selection pattern means
+that if multiple ollama models land in the same "top" band, most calls will
+hit a model-swap tax or worse. That's a real, verified finding, not a guess
+— but it's a judgment call how to translate it into a single score. I scored
+all 8 uniformly at **15** (reachable and functional, so above the issue's
+suggested "unreachable → 10", but low enough to stay well clear of the
+cerebras/groq/googleai top band at threshold 72) rather than differentiating
+by model size, since the load-time penalty dominated even for a small model
+(3B) once it wasn't the resident one, so size-based differentiation didn't
+look justified by the data I collected. A human who knows whether this
+Ollama box is expected to run with more headroom (e.g.
+`OLLAMA_MAX_LOADED_MODELS` > 1, or dedicated per-model instances) should
+sanity-check this score / consider whether `ollama` belongs in `default` at
+all vs. its own tier — flagging per the issue's guidance rather than
+guessing.
+
+**Dead-model reachability sweep — could NOT be completed for
+cerebras/groq/googleai/openrouter:**
+
+Attempted live requests (minimal `max_tokens: 1` completions) against a
+sample from each remote provider (all 10 groq models, plus one openrouter
+and one googleai and one cerebras model). Every single request came back
+`401`/`400` "invalid/missing API key" — the keys committed in
+`flexrouter.yaml` are rejected uniformly by all four providers, which means
+they're placeholder/non-live credentials in this environment, not a
+per-model problem. There's no environment-variable override in place either
+(checked `config.py`'s env-key resolution — flexrouter.yaml uses literal
+`key:` values here, and no matching env vars are set). Result: I could not
+distinguish a genuinely dead/stale model ID (404) from this blanket
+auth failure for any of the 47 non-ollama models, so **I did not remove or
+change any of them** — per the instruction to only act on confirmed-dead
+entries, not guessed ones. Only `ollama` (no auth required) was actually
+testable, and all 8 of its entries resolved to real, present models (see
+above) — no dead ollama entries found.
+
+**One naming judgment call:** `openrouter/free` does not end in the literal
+`:free` suffix (it's `/free`, a different model namespace), so by the
+mechanical rule in the table above it scored 55 (paid/normal), same as
+`openrouter/owl-alpha`, even though the name itself suggests a free/shared
+routing pool. Flagging this explicitly rather than silently guessing either
+way — a human who knows what `openrouter/free` actually resolves to should
+confirm whether 55 or 20 is correct here.
+
+**Test coverage:** no existing test parsed the shipped `flexrouter.yaml`
+directly (the `config_file` fixture in `tests/conftest.py` builds a separate
+minimal synthetic config). Added `tests/test_shipped_config_scores.py` with
+two tests: `default`-tier scores aren't all identical (the exact regression
+this issue fixes), and every model in every tier has a positive score.
+Verified both pass against the fixed `flexrouter.yaml`, and separately
+verified (via a throwaway copy with all scores forced back to 50) that the
+"not all identical" assertion fails against the original flat-50 shape, i.e.
+it would have caught this exact bug. Full suite: 183 passed, 0 failed.
