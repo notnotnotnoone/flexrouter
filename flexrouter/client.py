@@ -1,11 +1,14 @@
 from __future__ import annotations
 import json as _json
+import logging
 from dataclasses import dataclass
 from typing import AsyncIterator
 import httpx
 from flexrouter.engine import RouteResult
 from flexrouter.exceptions import RouterError
 from flexrouter.headers import parse_headers
+
+logger = logging.getLogger(__name__)
 
 
 class RateLimitError(Exception):
@@ -135,6 +138,30 @@ class AsyncClient:
                             f"{route.provider}/{route.model}: malformed SSE chunk: {exc}"
                         ) from exc
 
+                    # Groq (live-verified) reports a malformed tool-call
+                    # generation as an HTTP-200 stream carrying an in-band
+                    # `data: {"error": {...}}` chunk with no "choices" key at
+                    # all. Left unhandled, that chunk falls through to the
+                    # `delta is None and usage is None: continue` branch below
+                    # and is silently dropped — indistinguishable from the
+                    # model having generated nothing, which masks a real,
+                    # named failure as a generic empty response.
+                    if "error" in chunk:
+                        err = chunk["error"]
+                        detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                        code = err.get("code") if isinstance(err, dict) else None
+                        logger.warning(
+                            "in-band stream error",
+                            extra={
+                                "event": "client.stream.inband_error",
+                                "provider": route.provider, "model": route.model,
+                                "code": code, "detail": detail,
+                            },
+                        )
+                        raise ProviderError(
+                            f"{route.provider}/{route.model}: {code or 'stream error'}: {detail}"
+                        )
+
                     usage = chunk.get("usage")
                     choices = chunk.get("choices") or []
                     delta = choices[0].get("delta") if choices else None
@@ -153,6 +180,14 @@ class AsyncClient:
 
                     if tool_calls:
                         for tc in tool_calls:
+                            logger.debug(
+                                "raw tool_call delta",
+                                extra={
+                                    "event": "client.stream.tool_call_delta",
+                                    "provider": route.provider, "model": route.model,
+                                    "raw": tc,
+                                },
+                            )
                             yield StreamChunk(tool_call_delta=tc)
                         continue
 

@@ -212,6 +212,40 @@ async def test_tool_call_delta_is_yielded_and_not_accumulated_into_content(confi
 
 
 @pytest.mark.asyncio
+async def test_multiple_tool_calls_sharing_index_zero_are_kept_separate(config_file, monkeypatch):
+    # Gemini's OpenAI-compat endpoint (live-verified) doesn't increment
+    # "index" per tool call the way OpenAI/Groq/Cerebras do. Every call in
+    # a multi-call turn arrives at index 0, each with its own unique "id"
+    # and its *complete* arguments in a single chunk (not an incremental
+    # fragment). Keying accumulation on index alone merges them into one
+    # entry and concatenates their JSON into an unparseable blob.
+    router = _router(config_file)
+    monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE]))
+
+    async def _stream(route, messages, **kwargs):
+        yield StreamChunk(tool_call_delta={
+            "index": 0, "id": "call-a",
+            "function": {"name": "add_memory_note", "arguments": '{"content":"x"}'},
+        })
+        yield StreamChunk(tool_call_delta={
+            "index": 0, "id": "call-b",
+            "function": {"name": "add_vice", "arguments": '{"name":"vaping"}'},
+        })
+
+    monkeypatch.setattr(router._client, "stream_chat", _stream_chat_sequence([_stream]))
+
+    events = [e async for e in router.agenerate_stream(MESSAGES, tier="low")]
+    done = [e for e in events if isinstance(e, DoneEvent)][0]
+    tool_calls = done.result["choices"][0]["message"]["tool_calls"]
+
+    assert len(tool_calls) == 2
+    assert tool_calls[0]["function"]["name"] == "add_memory_note"
+    assert tool_calls[0]["function"]["arguments"] == '{"content":"x"}'
+    assert tool_calls[1]["function"]["name"] == "add_vice"
+    assert tool_calls[1]["function"]["arguments"] == '{"name":"vaping"}'
+
+
+@pytest.mark.asyncio
 async def test_empty_committed_stream_retries_next_provider_instead_of_terminating(
     config_file, monkeypatch
 ):

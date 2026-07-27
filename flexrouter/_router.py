@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -18,6 +19,8 @@ from flexrouter.quota import QuotaTracker
 from flexrouter.rate_limits import RateLimitStore
 from flexrouter.recovery import PenaltyBox
 from flexrouter.sampler import PassiveSampler
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -324,8 +327,19 @@ class FlexRouter:
             accumulated: list[str] = []
             final_usage: dict = {}
             has_tool_calls = False
-            # index -> {"id": ..., "name": ..., "arguments": ...}
-            tool_calls_by_index: dict[int, dict] = {}
+            # key -> {"id": ..., "name": ..., "arguments": ...}. Keyed on the
+            # chunk's own "id" rather than "index": per the OpenAI streaming
+            # tool_calls spec, a non-empty id always marks the *start* of a
+            # new logical call (continuation chunks omit it), which holds
+            # even for providers that don't bump "index" per call. Gemini's
+            # OpenAI-compat endpoint (live-verified) sends every call in a
+            # multi-call turn at index 0, each with a unique id and its
+            # *complete* arguments in one chunk — keying on index alone
+            # merged them into one entry and concatenated their JSON into an
+            # unparseable blob.
+            tool_calls_by_key: dict[str, dict] = {}
+            tool_call_order: list[str] = []
+            last_key_by_index: dict[int, str] = {}
 
             def _events_for(sc) -> list:
                 nonlocal has_tool_calls
@@ -339,9 +353,23 @@ class FlexRouter:
                     has_tool_calls = True
                     tc = sc.tool_call_delta
                     idx = tc.get("index", 0)
-                    entry = tool_calls_by_index.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-                    if tc.get("id"):
-                        entry["id"] = tc["id"]
+                    call_id = tc.get("id")
+                    if call_id:
+                        key = call_id
+                        if key not in tool_calls_by_key:
+                            tool_calls_by_key[key] = {"id": call_id, "name": "", "arguments": ""}
+                            tool_call_order.append(key)
+                        last_key_by_index[idx] = key
+                    else:
+                        key = last_key_by_index.get(idx)
+                        if key is None:
+                            # No id and no prior chunk at this index — start
+                            # a fresh entry rather than dropping the chunk.
+                            key = f"idx:{idx}"
+                            tool_calls_by_key[key] = {"id": "", "name": "", "arguments": ""}
+                            tool_call_order.append(key)
+                            last_key_by_index[idx] = key
+                    entry = tool_calls_by_key[key]
                     fn = tc.get("function") or {}
                     if fn.get("name"):
                         entry["name"] = fn["name"]
@@ -368,6 +396,19 @@ class FlexRouter:
             latency_ms = int((time.monotonic() - start) * 1000)
             full_text = "".join(accumulated)
 
+            logger.info(
+                "stream accumulation complete",
+                extra={
+                    "event": "router.stream.accumulated",
+                    "provider": route.provider, "model": route.model,
+                    "attempt": attempt + 1, "max_attempts": max_attempts,
+                    "full_text_len": len(full_text),
+                    "has_tool_calls": has_tool_calls,
+                    "tool_call_count": len(tool_calls_by_key),
+                    "tool_calls_raw": tool_calls_by_key,
+                },
+            )
+
             # A stream that ends with no content and no tool calls has shown
             # the consumer nothing (no DeltaEvent, no ToolCallDeltaEvent —
             # both are only yielded when accumulated/has_tool_calls end up
@@ -378,6 +419,14 @@ class FlexRouter:
             # budget on reasoning (nothing usable back) looks identical to a
             # real success and the caller is left with a silent empty reply.
             if not full_text and not has_tool_calls:
+                logger.warning(
+                    "empty completion, retrying next provider",
+                    extra={
+                        "event": "router.stream.empty_completion",
+                        "provider": route.provider, "model": route.model,
+                        "attempt": attempt + 1, "max_attempts": max_attempts,
+                    },
+                )
                 self._engine.penalize(route.provider, route.model)
                 self._events.record(
                     route.provider, route.model, "server_error",
@@ -399,19 +448,32 @@ class FlexRouter:
                 await asyncio.sleep(backoff)
                 continue
 
-            # Assemble tool calls in index order
+            # Assemble tool calls in first-seen order
             assembled_tool_calls = []
-            if tool_calls_by_index:
-                for idx in sorted(tool_calls_by_index.keys()):
-                    tc = tool_calls_by_index[idx]
-                    assembled_tool_calls.append({
-                        "id": tc["id"],
-                        "type": "function",
-                        "function": {
-                            "name": tc["name"],
-                            "arguments": tc["arguments"],
-                        },
-                    })
+            for key in tool_call_order:
+                tc = tool_calls_by_key[key]
+                assembled_tool_calls.append({
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {
+                        "name": tc["name"],
+                        "arguments": tc["arguments"],
+                    },
+                })
+
+            if assembled_tool_calls:
+                logger.info(
+                    "committing stream with tool calls",
+                    extra={
+                        "event": "router.stream.tool_calls_committed",
+                        "provider": route.provider, "model": route.model,
+                        "attempt": attempt + 1, "max_attempts": max_attempts,
+                        "tool_calls": [
+                            {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}
+                            for tc in assembled_tool_calls
+                        ],
+                    },
+                )
 
             # Build result with content + tool_calls
             msg: dict = {"role": "assistant", "content": full_text}

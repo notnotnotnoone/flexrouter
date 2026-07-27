@@ -327,3 +327,29 @@ async def test_stream_chat_accepts_reasoning_key_variant():
 
     assert len(chunks) == 1
     assert chunks[0].reasoning == "thinking..."
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_stream_chat_raises_on_inband_error_event():
+    # Groq (live-verified) reports a malformed tool-call generation as an
+    # HTTP-200 stream containing an SSE "event: error" line whose data has
+    # no "choices" key at all. Before this, that data line parsed as valid
+    # JSON, choices defaulted to [], delta/usage were both None, and the
+    # whole chunk was silently `continue`d past — indistinguishable from a
+    # model that generated nothing. That masked a real, named failure
+    # ("tool_use_failed") as a generic empty response.
+    sse_body = (
+        b'event: error\n'
+        b'data: {"error":{"message":"Failed to call a function.",'
+        b'"type":"invalid_request_error","code":"tool_use_failed",'
+        b'"status_code":400}}\n\n'
+    )
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(200, content=sse_body)
+    )
+    from flexrouter.client import ProviderError
+    async with AsyncClient() as client:
+        with pytest.raises(ProviderError, match="tool_use_failed"):
+            async for _ in client.stream_chat(ROUTE, MESSAGES):
+                pass
