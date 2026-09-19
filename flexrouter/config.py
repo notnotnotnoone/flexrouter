@@ -148,13 +148,58 @@ def resolve_keys(provider: str, praw: dict, vault: dict[str, list[KeyRecord]],
             for i, s in enumerate(inline)]
 
 
+def _bare_api_keys_string(praw: dict) -> list[str]:
+    """`api_keys: <bare string>`, which cannot be told apart from a secret.
+
+    Credential *resolution* reads this shape as an environment variable name
+    (see `_env_names`), and that stays as it is — changing it would start
+    sending a variable name to a provider as if it were a key. But a person
+    who types their key into the wrong slot ends up here too, and nothing in
+    the text says which of the two it is. Since showing a real key can never
+    be taken back while hiding a variable name costs nothing but a little
+    clarity, every string in this position is treated as a secret when we
+    decide what may be shown.
+    """
+    value = praw.get("api_keys")
+    return [value] if isinstance(value, str) and value else []
+
+
 def _all_inline_secrets(raw: dict) -> list[str]:
     """Every secret typed straight into a parsed settings structure."""
     found: list[str] = []
-    for praw in (raw.get("providers") or {}).values():
+    providers = raw.get("providers") or {}
+    if not isinstance(providers, dict):
+        return found
+    for praw in providers.values():
         if isinstance(praw, dict):
             found.extend(_inline_secrets(praw))
+            found.extend(_bare_api_keys_string(praw))
     return found
+
+
+def _every_string(node, _seen: set[int] | None = None):
+    """Every string anywhere in a parsed YAML structure, keys included.
+
+    Anchors and aliases can make the same object appear twice, and a
+    self-referencing anchor can make it appear forever, so containers are
+    only walked once.
+    """
+    if _seen is None:
+        _seen = set()
+    if isinstance(node, str):
+        yield node
+        return
+    if isinstance(node, (dict, list, tuple, set)):
+        if id(node) in _seen:
+            return
+        _seen.add(id(node))
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield from _every_string(k, _seen)
+            yield from _every_string(v, _seen)
+    elif isinstance(node, (list, tuple, set)):
+        for v in node:
+            yield from _every_string(v, _seen)
 
 
 def redact_config(raw: dict) -> dict:
@@ -174,8 +219,12 @@ def redact_config(raw: dict) -> dict:
         if praw.get("api_key"):
             praw["api_key"] = mask(str(praw["api_key"]))
         entries = praw.get("api_keys")
-        if entries is None or isinstance(entries, str):
-            # A bare string here is an env var name, not a secret.
+        if entries is None:
+            continue
+        if isinstance(entries, str):
+            # Resolution reads this as an env var name, but it is exactly
+            # where a mistyped key lands, and the two look identical. Mask it.
+            praw["api_keys"] = mask(entries)
             continue
         redacted = []
         for e in entries or []:
@@ -210,10 +259,31 @@ def redact_settings_text(text: str) -> str:
             f"{type(e).__name__}") from e
     if not isinstance(raw, dict):
         return text
+    secrets = {s for s in _all_inline_secrets(raw) if s}
     out = text
-    for secret in sorted(set(_all_inline_secrets(raw)), key=len, reverse=True):
-        if secret:
-            out = out.replace(secret, mask(secret))
+    for secret in sorted(secrets, key=len, reverse=True):
+        out = out.replace(secret, mask(secret))
+
+    # Replacing text only hides a secret whose *parsed* value appears
+    # verbatim in the source. A folded block, a quoted escape, a doubled
+    # quote — each parses to something the source text does not contain, so
+    # the replacement silently does nothing and the live key sails through.
+    # Rather than chase every spelling YAML allows, read the redacted text
+    # back and check the whole structure: if any original secret is still in
+    # there, anywhere, refuse the export the same way an unreadable settings
+    # file already makes us refuse.
+    if secrets:
+        try:
+            checked = yaml.safe_load(out)
+        except Exception as e:
+            raise ConfigError(
+                f"Cannot read your settings back to check them for keys: "
+                f"{type(e).__name__}") from e
+        for value in _every_string(checked):
+            if any(secret in value for secret in secrets):
+                raise ConfigError(
+                    "One of the keys in your settings file is written in a "
+                    "form this copy cannot safely hide")
     return out
 
 

@@ -117,7 +117,28 @@ def config():
 def config_export():
     """Print a shareable copy of your settings. Any key in it is hidden."""
     path = home.config_path()
-    text = redact_settings_text(path.read_text(encoding="utf-8"))
+    try:
+        text = redact_settings_text(path.read_text(encoding="utf-8"))
+    except ConfigError:
+        # Every other command explains itself in one plain sentence when it
+        # gives up. A refused export must do the same, not print a page of
+        # Python at someone who does not write it.
+        click.echo(
+            "Nothing was shared. A copy is only safe to pass on once every "
+            "key inside it has been hidden, and this time that could not be "
+            "done — either your settings file has a mistake in it, or a key "
+            "in it is written in a form that cannot be hidden reliably.",
+            err=True)
+        click.echo("", err=True)
+        click.echo("Two things to try:", err=True)
+        click.echo("  1. Check the file for mistakes: flexrouter doctor",
+                   err=True)
+        click.echo(
+            f"  2. Take any key out of {path} and add it back with: "
+            f"flexrouter keys add <provider>. Your keys go on working "
+            f"exactly as before — they just move somewhere that is never "
+            f"shared.", err=True)
+        raise SystemExit(1)
     click.echo(base64.b64encode(text.encode("utf-8")).decode())
 
 
