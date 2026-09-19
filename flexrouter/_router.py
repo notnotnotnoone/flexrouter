@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import dataclasses
 import logging
 import threading
 import time
@@ -84,6 +85,7 @@ class FlexRouter:
         self._engine = RoutingEngine(
             self._cfg, rate_limit_store=self._rate_limit_store, penalties=self._penalties,
             quota_tracker=self._quota_tracker)
+        self._pin_engine = self._build_pin_engine()
         self._audit = AuditLogger(self._cfg.state_dir)
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
         self._sampler = PassiveSampler(
@@ -205,7 +207,7 @@ class FlexRouter:
         last_auth_error: RouterError | None = None
 
         for attempt in range(retries + 1):
-            route = self._engine.select(tier, estimated_tokens, vision, session_id)
+            route = self._engine_for(tier).select(tier, estimated_tokens, vision, session_id)
 
             if route is None:
                 if last_auth_error is not None:
@@ -215,7 +217,7 @@ class FlexRouter:
                     raise RouterBusy(blocked)
                 if not wait:
                     raise RouterBusy(f"All models in tier {tier!r} are unavailable")
-                secs = self._engine.seconds_until_available(tier)
+                secs = self._engine_for(tier).seconds_until_available(tier)
                 await asyncio.sleep(max(secs, 1.0))
                 continue
 
@@ -311,7 +313,7 @@ class FlexRouter:
         max_attempts = retries + 1
 
         for attempt in range(retries + 1):
-            route = self._engine.select(tier, estimated_tokens, vision, session_id)
+            route = self._engine_for(tier).select(tier, estimated_tokens, vision, session_id)
 
             if route is None:
                 # Unlike the sync path this loop has no wait=False escape, so
@@ -321,7 +323,7 @@ class FlexRouter:
                 blocked = self._quarantine_block_reason(tier)
                 if blocked:
                     raise RouterBusy(blocked)
-                secs = self._engine.seconds_until_available(tier)
+                secs = self._engine_for(tier).seconds_until_available(tier)
                 await asyncio.sleep(max(secs, 1.0))
                 continue
 
@@ -609,6 +611,40 @@ class FlexRouter:
 
         raise RouterBusy(f"All models in tier {tier!r} are unavailable after {retries} retries")
 
+    def _build_pin_engine(self) -> RoutingEngine:
+        """A second engine whose buckets are one model each, named
+        "provider/model".
+
+        This exists because a request may name one specific model instead of a
+        bucket, and `RoutingEngine.select` looks its candidates up by bucket
+        name in the config it was given. `engine.py` is reused unchanged by
+        spec decree, so instead of teaching it about pins we hand a second
+        instance a shadow config. Both share the same rate-limit store,
+        penalty box and quota tracker, so a pinned call consumes and respects
+        exactly the same allowances as a bucket call, and a model quarantined
+        through one is quarantined through the other.
+        """
+        pinned: dict[str, list] = {}
+        for model_configs in self._cfg.tiers.values():
+            for mc in model_configs:
+                pinned.setdefault(f"{mc.provider}/{mc.model}", [mc])
+        shadow = dataclasses.replace(self._cfg, tiers=pinned)
+        return RoutingEngine(
+            shadow,
+            rate_limit_store=self._rate_limit_store,
+            penalties=self._penalties,
+            quota_tracker=self._quota_tracker,
+        )
+
+    def _engine_for(self, tier: str) -> RoutingEngine:
+        """The engine that knows about `tier`.
+
+        A name with a "/" in it is one specific model; bucket names never
+        contain one. See `flexrouter/wire.py`, which is what produces these
+        strings from a request.
+        """
+        return self._pin_engine if "/" in tier else self._engine
+
     def reload(self) -> None:
         # Load first, assign after: a settings file that has gone bad
         # must leave the router exactly as it was, not half swapped.
@@ -619,6 +655,7 @@ class FlexRouter:
         self._engine.update_config(self._cfg)
         self._engine._rate_limit_store = self._rate_limit_store
         self._engine._quota_tracker = self._quota_tracker
+        self._pin_engine = self._build_pin_engine()
         self._client._rate_limit_store = self._rate_limit_store
         self._audit = AuditLogger(self._cfg.state_dir)
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
@@ -631,7 +668,7 @@ class FlexRouter:
         unknown tier, same as generate()/agenerate().
         """
         self._maybe_hot_reload()
-        return self._engine.remaining_capacity(tier)
+        return self._engine_for(tier).remaining_capacity(tier)
 
     def close(self) -> None:
         self._sampler.stop()
