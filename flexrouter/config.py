@@ -51,8 +51,8 @@ class FlexConfig:
     penalty_base_seconds: int = 30
     penalty_max_seconds: int = 1800
     session_ttl_minutes: int = 30
-    port: int = 4891
-    dashboard_port: int = 7352  # deprecated alias for `port`
+    port: int | None = None          # None means "left at the default"
+    dashboard_port: int | None = None  # deprecated alias for `port`
     sample_interval_seconds: int = 60
     health_history_days: int = 30
     retry: RetryConfig = field(default_factory=RetryConfig)
@@ -63,10 +63,16 @@ class FlexConfig:
         # `port` is the real field; `dashboard_port` is a deprecated alias that
         # must always end up equal to `port`. A caller may legitimately pass
         # either one: if `dashboard_port` was set explicitly while `port` was
-        # left at its default, that value flows into `port`. Otherwise `port`
-        # wins and `dashboard_port` is brought into line with it.
-        if self.port == 4891 and self.dashboard_port != 7352:
-            self.port = self.dashboard_port
+        # left alone, that value flows into `port`. Otherwise `port` wins and
+        # `dashboard_port` is brought into line with it.
+        #
+        # Both default to None rather than to a number, because comparing
+        # against the number cannot tell "left at the default" apart from
+        # "explicitly passed the default value" — which silently discarded an
+        # explicit port of 4891 in favour of the alias.
+        if self.port is None:
+            self.port = (home.DEFAULT_PORT if self.dashboard_port is None
+                         else self.dashboard_port)
         self.dashboard_port = self.port
 
 
@@ -331,6 +337,18 @@ def is_probably_chat_model(model_id: str) -> bool:
     return not any(p in mid for p in NON_CHAT_PATTERNS)
 
 
+def _has_a_credential(name: str, praw: dict,
+                      vault: dict[str, list[KeyRecord]]) -> bool:
+    """Whether this provider can be reached at all, by any of the three
+    routes: a key saved with `flexrouter keys add`, an environment variable
+    the settings name, or a key typed into the settings file."""
+    if any(r.enabled and r.secret for r in vault.get(name, [])):
+        return True
+    if any(os.environ.get(n) for n in _env_names(praw)):
+        return True
+    return bool(_inline_secrets(praw))
+
+
 def validate_config(raw: dict) -> dict:
     errors: list[str] = []
     warnings: list[str] = []
@@ -339,6 +357,11 @@ def validate_config(raw: dict) -> dict:
     if not providers:
         errors.append("providers: no providers defined")
 
+    try:
+        vault = load_keys()
+    except Exception:
+        vault = {}
+
     for name, praw in providers.items():
         if not isinstance(praw, dict) or not praw.get("base_url"):
             errors.append(f"providers.{name}: missing base_url")
@@ -346,18 +369,26 @@ def validate_config(raw: dict) -> dict:
         base_url = str(praw.get("base_url", ""))
         if not base_url.startswith(("http://", "https://")):
             errors.append(f"providers.{name}.base_url: must start with http:// or https://")
-        keys = praw.get("api_keys", [])
         is_local = any(h in base_url for h in _LOCAL_HOST_HINTS)
-        if not keys and not is_local:
-            warnings.append(f"providers.{name}.api_keys: empty for a non-local provider")
+        # An empty `api_keys` in the settings file is now the *correct* state:
+        # credentials live in keys.json, not here. Only warn if there is no
+        # way at all to reach this provider.
+        if not is_local and not _has_a_credential(name, praw, vault):
+            warnings.append(
+                f"providers.{name}: no key found — add one with: "
+                f"flexrouter keys add {name}")
 
-    tiers = raw.get("tiers") or {}
-    if not tiers:
-        errors.append("tiers: no tiers defined")
+    # `buckets:` is the preferred spelling, `tiers:` the accepted fallback,
+    # exactly as load_config reads them. Reading only `tiers:` reported the
+    # tool's own starter settings file as a hard error.
+    bucket_key = "buckets" if raw.get("buckets") is not None else "tiers"
+    buckets = raw.get(bucket_key) or {}
+    if not buckets:
+        errors.append(f"{bucket_key}: no {bucket_key} defined")
 
-    for tier_name, models in tiers.items():
+    for tier_name, models in buckets.items():
         for i, m in enumerate(models or []):
-            where = f"tiers.{tier_name}[{i}]"
+            where = f"{bucket_key}.{tier_name}[{i}]"
             if not isinstance(m, dict):
                 errors.append(f"{where}: not a mapping")
                 continue

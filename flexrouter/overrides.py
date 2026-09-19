@@ -87,6 +87,19 @@ def clear_override(section: str, key: str, path: Path | str | None = None) -> bo
     return True
 
 
+def _is_off(value) -> bool:
+    """Whether a model's `enabled` field means "off".
+
+    This arrives in a JSON body, so "off" can turn up as `false`, `0`, `null`
+    or the string `"false"` depending on what wrote it. Testing `is False`
+    recognised only the first of those and quietly left the model enabled —
+    the opposite of what the owner asked for.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() in {"false", "0", "no", "off", ""}
+    return not value
+
+
 def _bucket_key(raw: dict) -> str | None:
     if raw.get("buckets"):
         return "buckets"
@@ -117,7 +130,7 @@ def apply_overrides(raw: dict, ov: dict) -> dict:
             for entry in models or []:
                 ident = f"{entry.get('provider')}/{entry.get('model')}"
                 fields = dict(model_ov.get(ident) or {})
-                if fields.pop("enabled", True) is False:
+                if _is_off(fields.pop("enabled", True)):
                     continue
                 entry.update(fields)
                 kept.append(entry)

@@ -27,7 +27,7 @@ settings:
 # Add providers here, or let the daily catalogue check discover their models.
 providers: {}
 
-# Buckets are the names your code asks for, e.g. router.generate(bucket="smart").
+# Buckets are the names your code asks for, e.g. router.generate(tier="smart").
 buckets:
   smart: []
   fast: []
@@ -36,8 +36,14 @@ buckets:
 
 
 def home_dir() -> Path:
-    """The flexrouter home. FLEXROUTER_HOME overrides it, always."""
-    env = os.environ.get("FLEXROUTER_HOME")
+    """The flexrouter home. FLEXROUTER_HOME overrides it, always.
+
+    An empty or whitespace-only FLEXROUTER_HOME counts as not set, and the
+    platform default is used. `Path("")` is the current directory, so honouring
+    an empty value would put the home wherever the process happened to be
+    standing — the per-project layout this module exists to abolish.
+    """
+    env = (os.environ.get("FLEXROUTER_HOME") or "").strip()
     if env:
         return Path(env).expanduser()
     if os.name == "nt":

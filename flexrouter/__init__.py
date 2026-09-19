@@ -9,6 +9,7 @@ from flexrouter._router import (
 )
 from flexrouter.exceptions import (
     ConfigError,
+    ConfigFieldError,
     ContextWindowWarning,
     RouterBusy,
     RouterError,
@@ -18,6 +19,7 @@ __all__ = [
     "AttemptEvent",
     "AttemptFailedEvent",
     "ConfigError",
+    "ConfigFieldError",
     "ContextWindowWarning",
     "DeltaEvent",
     "DoneEvent",

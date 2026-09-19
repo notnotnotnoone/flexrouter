@@ -15,7 +15,9 @@ def test_get_uptime_shape(tmp_path):
     assert set(u) == {"models", "incidents", "system", "providers"}
 
 def test_get_config_validation_shape(monkeypatch):
-    monkeypatch.setattr(api, "get_config", lambda: {
+    # Validation reads the unredacted structure: it never leaves the process,
+    # and a masked key would just look like a different key.
+    monkeypatch.setattr(api, "_config_unredacted", lambda: {
         "providers": {"groq": {"base_url": "https://x.com/v1", "api_keys": ["k"]}},
         "tiers": {"default": [{"provider": "groq", "model": "m", "score": 50, "rpm": 1, "tpm": 1}]},
     })

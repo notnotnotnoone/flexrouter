@@ -99,3 +99,21 @@ def test_apply_overrides_with_nothing_set_is_a_faithful_copy():
 def test_save_overrides_round_trips():
     save_overrides({"settings": {"port": 1}})
     assert load_overrides() == {"settings": {"port": 1}}
+
+
+@pytest.mark.parametrize("off", [False, 0, "false", "False", "0", "off", "no", None])
+def test_a_model_is_disabled_by_any_spelling_of_off(off):
+    """`enabled` arrives in a JSON body, so "off" turns up in whatever shape
+    the caller sent. Testing `is False` recognised only one of them."""
+    merged = apply_overrides(
+        BASE, {"models": {"openrouter/gone-model": {"enabled": off}}})
+    models = [m["model"] for m in merged["buckets"]["smart"]]
+    assert "gone-model" not in models
+
+
+@pytest.mark.parametrize("on", [True, 1, "true", "yes"])
+def test_a_model_stays_when_enabled_says_so(on):
+    merged = apply_overrides(
+        BASE, {"models": {"openrouter/gone-model": {"enabled": on}}})
+    models = [m["model"] for m in merged["buckets"]["smart"]]
+    assert "gone-model" in models

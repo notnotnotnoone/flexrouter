@@ -15,8 +15,15 @@ def _home(tmp_path, monkeypatch):
 
 def test_mask_shows_only_the_last_four():
     assert mask("sk-or-v1-abcdefgh") == "…efgh"
-    assert mask("ab") == "…ab"
     assert mask("") == ""
+
+
+def test_mask_shows_nothing_at_all_below_four_characters():
+    """Under four characters there is nothing to show without showing the
+    whole thing, so nothing is shown."""
+    assert mask("ab") == "…"
+    assert mask("abc") == "…"
+    assert mask("abcd") == "…abcd"
 
 
 def test_load_keys_is_empty_when_there_is_no_file():

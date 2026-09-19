@@ -6,10 +6,12 @@ datastore is needed (spec: Architecture Overview).
 """
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import subprocess
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +57,17 @@ def harden(path: Path | str) -> None:
         return
     user = os.environ.get("USERNAME")
     if not user:
+        # Without a user name there is nobody to grant to, and the file would
+        # silently keep whatever permissions it inherited from its folder.
+        try:
+            user = getpass.getuser()
+        except Exception:
+            user = ""
+    if not user:
+        warnings.warn(
+            f"Could not work out which Windows account owns {p.name}, so its "
+            f"permissions were left as they were. Anyone who can read the "
+            f"folder it is in can read it.", RuntimeWarning, stacklevel=2)
         return
     try:
         subprocess.run(

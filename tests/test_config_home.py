@@ -110,6 +110,20 @@ def test_flexconfig_port_alias_both_passed_and_equal():
     assert cfg.dashboard_port == 9000
 
 
+def test_flexconfig_port_alias_both_passed_and_different():
+    """An explicit port wins over the deprecated alias, even when that port
+    happens to be the same number as the default. Comparing against the
+    default number could not tell those two cases apart, so an explicit
+    4891 used to be silently discarded."""
+    cfg = FlexConfig(tiers={}, providers={}, port=4891, dashboard_port=9000)
+    assert cfg.port == 4891
+    assert cfg.dashboard_port == 4891
+
+    cfg = FlexConfig(tiers={}, providers={}, port=9000, dashboard_port=7352)
+    assert cfg.port == 9000
+    assert cfg.dashboard_port == 9000
+
+
 def test_stored_key_beats_an_env_var(written_home, monkeypatch):
     add_key("openrouter", "from-vault")
     monkeypatch.setenv("OR_KEY", "from-env")

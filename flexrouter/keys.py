@@ -34,9 +34,14 @@ class KeyRecord:
 
 
 def mask(secret: str) -> str:
+    """The only form of a secret that may reach a human or an HTTP response.
+
+    Below four characters there is nothing left to show without showing the
+    whole thing, so nothing is shown.
+    """
     if not secret:
         return ""
-    return f"…{secret[-4:]}" if len(secret) >= 4 else f"…{secret}"
+    return f"…{secret[-4:]}" if len(secret) >= 4 else "…"
 
 
 def allows(record: KeyRecord, model_id: str) -> bool:

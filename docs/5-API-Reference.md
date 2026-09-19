@@ -21,7 +21,7 @@ FlexRouter(config_path: str | None = None)
 ```
 
 **Parameters:**
-- `config_path` (str, optional): Path to a settings file. If not given, flexrouter reads the one shared settings file for this machine — run `flexrouter doctor` to see where that is. Pass a path only to point at a different file on purpose.
+- `config_path` (str, optional): Path to a settings file. If not given, flexrouter reads the one shared settings file for this machine — run `flexrouter doctor` to see where that is. Pass a path only to point at a different file on purpose. Note that this swaps the settings file alone: your saved keys, the changes made from the dashboard, and everything flexrouter records as it runs still come from the shared place, so setting `FLEXROUTER_HOME` is the only way to keep one setup completely separate from another.
 
 **Raises:**
 - `ConfigError`: If the settings file can't be found or read.
