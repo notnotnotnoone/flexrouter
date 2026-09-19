@@ -25,14 +25,15 @@ def test_ordinary_words_survive_untouched():
 
 def test_a_long_plain_word_is_not_mistaken_for_a_key():
     # Amended rule (round 1 fix): the mixed-alpha-and-digit gate is gone, so
-    # a pure-letter run this long (20+ chars) is caught the same as a mixed
-    # one now - "uncharacteristically" is exactly 20 characters. That is the
-    # accepted trade stated in the module docstring, not a bug: a false
-    # positive here costs readability, a false negative on a same-shaped
-    # credential costs a key. A short ordinary word must still survive.
-    out = scrub("uncharacteristically disproportionate")
+    # a pure-letter run this long is caught the same as a mixed one now -
+    # "uncharacteristically" is 20 characters, well past even the round-2
+    # 16-character floor. That is the accepted trade stated in the module
+    # docstring, not a bug: a false positive here costs readability, a
+    # false negative on a same-shaped credential costs a key. A short
+    # ordinary word (under the 16-character floor) must still survive.
+    out = scrub("uncharacteristically legitimate")
     assert "uncharacteristically" not in out
-    assert "disproportionate" in out
+    assert "legitimate" in out
 
 
 def test_empty_text_is_safe():
@@ -70,11 +71,22 @@ def test_a_short_key_named_after_a_cue_word_is_cut_down():
 
 def test_a_short_bare_credential_is_cut_down_when_a_cue_word_names_it():
     # Finding 2: same shape, a Hugging Face style token ("hf_...") short
-    # enough (19 chars) to be under the Rule A floor even with the widened
-    # character class - it still has to be caught via the cue word that
-    # names it in a real provider error.
+    # enough (19 chars) that round 1's 20-char floor still missed it -
+    # caught here via the cue word that names it in a real provider error.
     token = "hf_QWERTYuiopASDFGH"
     out = scrub(f"invalid token: {token}")
+    assert token not in out
+
+
+def test_a_bare_short_credential_survives_no_longer():
+    # Round 2, gap 1: this exact bare call - no surrounding cue word at all
+    # - was the literal review reproduction that round 1's 20-char floor
+    # still let through in full (19 characters, one short). The floor
+    # dropped to 16 specifically to close this without leaning on a cue
+    # word being present. Kept alongside the cue-context test above, per
+    # the controller ruling: both are worth having.
+    token = "hf_QWERTYuiopASDFGH"
+    out = scrub(token)
     assert token not in out
 
 
@@ -96,8 +108,11 @@ def test_a_long_pure_digit_run_is_cut_down():
 def test_a_short_token_of_eight_or_fewer_chars_leaves_no_tail():
     # A tail of the last four characters of an 8-or-fewer character token
     # would leak half of it or more. Below that length the token becomes a
-    # bare ellipsis instead.
-    out = scrub("api_key=abc12345")
+    # bare ellipsis instead. (Note: the cue and value are separated by
+    # "api_key: " rather than "api_key=" so the whole cue+value span isn't
+    # itself one contiguous 16+ character run that Rule A would catch as a
+    # single unit before Rule B ever gets a look at just the value part.)
+    out = scrub("api_key: abc12345")
     assert "abc12345" not in out
     assert "…" in out
     # No four-character tail survives from this particular short token.
@@ -107,3 +122,38 @@ def test_a_short_token_of_eight_or_fewer_chars_leaves_no_tail():
 def test_an_ordinary_sentence_with_no_cue_and_no_long_run_survives():
     text = "the provider is temporarily overloaded, please retry shortly"
     assert scrub(text) == text
+
+
+def test_two_cue_introduced_credentials_in_one_message_are_both_cut_down():
+    # Round 2, gap 2: "only the last is scrubbed" was a hole, not a
+    # cosmetic issue - a provider error naming two rejected credentials
+    # would leak the first whole. Literal review reproduction.
+    first = "sk-AAAABBBBCCCC1111"
+    second = "gsk_DDDDEEEEFFFF2222"
+    out = scrub(f"key {first} and token {second} both rejected")
+    assert first not in out
+    assert second not in out
+
+
+def test_two_short_cue_introduced_credentials_are_both_cut_down():
+    # Same shape as above, but both credentials are short enough (under the
+    # 16-character Rule A floor) that this can only pass if Rule B itself -
+    # not Rule A's length floor - catches both. Each cue word gets its own
+    # bounded search so the first cue's match can't run past the second
+    # cue and swallow it as filler.
+    first = "sk-AAA111"
+    second = "gsk_BBB222"
+    out = scrub(f"key {first} and token {second} both rejected")
+    assert first not in out
+    assert second not in out
+
+
+def test_a_cue_introduced_credential_and_a_separate_bare_run_are_both_cut_down():
+    # A cue-caught short credential (Rule B) and an unrelated long bare run
+    # (Rule A) in the same message - both mechanisms have to fire
+    # independently without one interfering with the other.
+    cued = "sk-AAA111"
+    bare = "zzzzzzzzzzzzzzzzzzzzzzzz9999"
+    out = scrub(f"key {cued} rejected; also saw {bare} in the log")
+    assert cued not in out
+    assert bare not in out
