@@ -179,13 +179,16 @@ def keys_rm(provider: str, key_id: str):
     click.echo(f"Removed {key_id} from {provider}.")
 
 
-def _import_keys_from(path: Path) -> list[tuple[str, str]]:
-    """Lift plain secrets out of an old settings file. Env references are
-    left alone — they already resolve. The old file is never modified."""
+def _scan_old_settings(path: Path) -> tuple[list[tuple[str, str]], bool]:
+    """Parse an old settings file and lift its plain secrets in. Env
+    references are left alone — they already resolve. The old file is
+    never modified. Returns (added, saw_env_reference) so callers can
+    tell "nothing importable here" apart from "only env references here"."""
     import yaml
 
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     added: list[tuple[str, str]] = []
+    saw_env = False
     for provider, praw in (raw.get("providers") or {}).items():
         if not isinstance(praw, dict):
             continue
@@ -200,8 +203,17 @@ def _import_keys_from(path: Path) -> list[tuple[str, str]]:
                 secrets.append(e)
             elif isinstance(e, dict) and e.get("key"):
                 secrets.append(str(e["key"]))
+            elif isinstance(e, dict) and e.get("env"):
+                saw_env = True
         for s in secrets:
             added.append((provider, keyvault.add_key(provider, s, label="imported").id))
+    return added, saw_env
+
+
+def _import_keys_from(path: Path) -> list[tuple[str, str]]:
+    """Lift plain secrets out of an old settings file. Env references are
+    left alone — they already resolve. The old file is never modified."""
+    added, _ = _scan_old_settings(path)
     return added
 
 
@@ -209,10 +221,14 @@ def _import_keys_from(path: Path) -> list[tuple[str, str]]:
 @click.argument("old_file", type=click.Path(exists=True, dir_okay=False))
 def keys_import(old_file: str):
     """Copy the keys out of an old flexrouter.yaml into the shared home."""
-    added = _import_keys_from(Path(old_file))
+    added, saw_env = _scan_old_settings(Path(old_file))
     if not added:
-        click.echo("Found no keys to copy — that file only references "
-                   "environment variables, which already work as they are.")
+        if saw_env:
+            click.echo("Found no keys to copy — that file only references "
+                       "environment variables, which already work as they are.")
+        else:
+            click.echo("Found no keys to copy — nothing importable was found "
+                       "in that file.")
         return
     for provider, key_id in added:
         click.echo(f"Copied {provider} -> {key_id}")

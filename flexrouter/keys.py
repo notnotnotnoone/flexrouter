@@ -77,12 +77,27 @@ def save_keys(mapping: dict[str, list[KeyRecord]],
     harden(target)
 
 
+def _next_id(existing: list[KeyRecord], provider: str) -> str:
+    """Next `<provider>-<n>` id, collision-proof against any add/remove
+    history. Derived from the highest existing numeric suffix for this
+    provider, not the surviving count — a record whose id doesn't match
+    the `<provider>-<n>` shape (e.g. hand-imported) is simply ignored."""
+    prefix = f"{provider}-"
+    highest = 0
+    for r in existing:
+        if r.id.startswith(prefix):
+            suffix = r.id[len(prefix):]
+            if suffix.isdigit():
+                highest = max(highest, int(suffix))
+    return f"{prefix}{highest + 1}"
+
+
 def add_key(provider: str, secret: str, label: str = "",
             path: Path | str | None = None) -> KeyRecord:
     mapping = load_keys(path)
     existing = mapping.setdefault(provider, [])
     record = KeyRecord(
-        id=f"{provider}-{len(existing) + 1}",
+        id=_next_id(existing, provider),
         secret=secret,
         label=label,
         added_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

@@ -78,6 +78,34 @@ def test_keys_import_skips_env_var_references(tmp_path):
     assert load_keys() == {}
 
 
+def test_keys_rm_then_add_produces_a_fresh_unused_id():
+    CliRunner().invoke(cli.cli, ["keys", "add", "groq", "--secret", "gsk-a"])
+    CliRunner().invoke(cli.cli, ["keys", "add", "groq", "--secret", "gsk-b"])
+    CliRunner().invoke(cli.cli, ["keys", "add", "groq", "--secret", "gsk-c"])
+    CliRunner().invoke(cli.cli, ["keys", "rm", "groq", "groq-2"])
+    result = CliRunner().invoke(cli.cli, ["keys", "add", "groq", "--secret", "gsk-d"])
+    assert result.exit_code == 0
+    assert "groq-4" in result.output
+    ids = [r.id for r in load_keys()["groq"]]
+    assert len(ids) == len(set(ids))
+    rm_result = CliRunner().invoke(cli.cli, ["keys", "rm", "groq", "groq-4"])
+    assert rm_result.exit_code == 0
+    assert [r.id for r in load_keys()["groq"]] == ["groq-1", "groq-3"]
+
+
+def test_keys_import_is_honest_when_the_file_has_no_env_refs_either(tmp_path):
+    old = tmp_path / "old-flexrouter.yaml"
+    old.write_text(yaml.dump({
+        "providers": {"groq": {"base_url": "https://x/v1",
+                               "api_keys": "gsk-not-a-list"}}
+    }), encoding="utf-8")
+    result = CliRunner().invoke(cli.cli, ["keys", "import", str(old)])
+    assert result.exit_code == 0
+    assert load_keys() == {}
+    assert "environment variables" not in result.output
+    assert "no keys to copy" in result.output.lower()
+
+
 def test_keys_import_does_not_modify_the_old_file(tmp_path):
     old = tmp_path / "old-flexrouter.yaml"
     old.write_text("providers:\n  groq:\n    base_url: https://x/v1\n"

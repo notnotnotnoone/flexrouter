@@ -56,6 +56,36 @@ def test_remove_key_reports_when_nothing_matched():
     assert remove_key("openrouter", "nope") is False
 
 
+def test_add_key_after_removing_middle_gets_a_fresh_unused_id():
+    add_key("groq", "a")
+    add_key("groq", "b")
+    add_key("groq", "c")
+    remove_key("groq", "groq-2")
+    rec = add_key("groq", "d")
+    assert rec.id == "groq-4"
+    ids = [r.id for r in load_keys()["groq"]]
+    assert len(ids) == len(set(ids))
+
+
+def test_add_key_ids_stay_unique_across_add_remove_add():
+    ids = []
+    for secret in ("a", "b", "c"):
+        ids.append(add_key("groq", secret).id)
+    remove_key("groq", ids[1])
+    ids.append(add_key("groq", "d").id)
+    remove_key("groq", ids[0])
+    ids.append(add_key("groq", "e").id)
+    assert len(ids) == len(set(ids))
+
+
+def test_add_key_ignores_non_conforming_ids_when_allocating():
+    save_keys({"groq": [KeyRecord(id="imported-by-hand", secret="gsk-x")]})
+    rec = add_key("groq", "fresh")
+    assert rec.id == "groq-1"
+    ids = [r.id for r in load_keys()["groq"]]
+    assert len(ids) == len(set(ids))
+
+
 def test_saved_file_is_json_with_the_expected_shape(_home):
     add_key("openrouter", "sk-secret", label="Main")
     raw = json.loads((_home / "keys.json").read_text(encoding="utf-8"))
