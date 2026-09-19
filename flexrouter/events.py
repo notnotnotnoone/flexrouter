@@ -4,7 +4,8 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
-_EVENT_TYPES = {"penalized", "recovered", "rate_limited", "timeout", "server_error"}
+_EVENT_TYPES = {"penalized", "recovered", "rate_limited", "timeout", "server_error",
+                "quarantined"}
 
 
 class EventLogger:

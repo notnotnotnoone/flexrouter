@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator
 import httpx
 from flexrouter.engine import RouteResult
+from flexrouter.errors import describe_http_error
 from flexrouter.exceptions import RouterError
 from flexrouter.headers import parse_headers
 
@@ -14,8 +15,37 @@ logger = logging.getLogger(__name__)
 class RateLimitError(Exception):
     pass
 
+# Statuses that mean "this route will never work again", as opposed to "try
+# again later". A model the provider has deleted answers 404 forever, so
+# backing off 30s and retrying it is an infinite loop, not a recovery.
+PERMANENT_STATUSES = frozenset({404, 410})
+
+# Failures that are true of the whole account, not one model: 402 means the
+# billing tab needs attention, and every model on that provider will answer
+# the same way. Retrying each of them in turn just multiplies the wait.
+PROVIDER_WIDE_STATUSES = frozenset({402})
+
+
 class ProviderError(Exception):
-    pass
+    """A provider-side failure.
+
+    ``status_code`` is the HTTP status when the failure came from a response,
+    and None when it came from below the HTTP layer (connection reset,
+    timeout, unparseable body). The router uses it to decide between a
+    temporary penalty and a quarantine.
+    """
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+    @property
+    def is_permanent(self) -> bool:
+        return self.status_code in PERMANENT_STATUSES
+
+    @property
+    def is_provider_wide(self) -> bool:
+        return self.status_code in PROVIDER_WIDE_STATUSES
 
 
 @dataclass
@@ -56,9 +86,13 @@ class AsyncClient:
         if resp.status_code in (401, 403):
             raise RouterError(f"Auth failure for provider {route.provider!r}: {resp.status_code}")
         if resp.status_code >= 500:
-            raise ProviderError(f"{resp.status_code} from {route.provider}/{route.model}")
+            raise ProviderError(
+                describe_http_error(resp.status_code, route.provider, route.model, resp.text),
+                status_code=resp.status_code)
         if resp.status_code >= 400:
-            raise ProviderError(f"{resp.status_code} from {route.provider}: {resp.text[:200]}")
+            raise ProviderError(
+                describe_http_error(resp.status_code, route.provider, route.model, resp.text),
+                status_code=resp.status_code)
 
         if self._rate_limit_store is not None:
             parsed = parse_headers(route.header_parser, resp.headers)
@@ -101,28 +135,49 @@ class AsyncClient:
                    "stream_options": {"include_usage": True}, **kwargs}
         headers = {"Authorization": f"Bearer {route.api_key}"} if route.api_key else {}
 
+        # Deliberately NOT `async with self._client.stream(...)`. That helper
+        # is an @asynccontextmanager, and if this generator gets GeneratorExit
+        # thrown into it while suspended inside that context manager's aexit
+        # (e.g. the HTTP client on the other end disconnects mid-stream), the
+        # inner generator can fail to unwind synchronously, and contextlib
+        # raises "RuntimeError: generator didn't stop after athrow()" —
+        # which corrupts this AsyncClient's connection pool for every request
+        # after it (live-verified: this instance-level poisoning outlives the
+        # request that caused it and silently hangs unrelated future calls).
+        # A plain try/finally around client.send(..., stream=True) has no
+        # such intermediate generator to fail to unwind, so cancellation just
+        # runs the finally block like any other coroutine.
+        request = self._client.build_request("POST", url, json=payload, headers=headers)
         try:
-            async with self._client.stream("POST", url, json=payload, headers=headers) as resp:
-                if resp.status_code == 429:
-                    raise RateLimitError(f"429 from {route.provider}/{route.model}")
-                if resp.status_code in (401, 403):
-                    raise RouterError(f"Auth failure for provider {route.provider!r}: {resp.status_code}")
-                if resp.status_code >= 500:
-                    raise ProviderError(f"{resp.status_code} from {route.provider}/{route.model}")
-                if resp.status_code >= 400:
-                    body = await resp.aread()
-                    raise ProviderError(f"{resp.status_code} from {route.provider}: {body[:200]!r}")
+            resp = await self._client.send(request, stream=True)
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"{route.provider}/{route.model}: {exc}") from exc
 
-                if self._rate_limit_store is not None:
-                    parsed = parse_headers(route.header_parser, resp.headers)
-                    if parsed.limit_requests is not None or parsed.limit_tokens is not None:
-                        self._rate_limit_store.update(route.provider, route.model, parsed.limit_requests, parsed.limit_tokens)
-                    self._rate_limit_store.update_headroom(
-                        route.provider, route.model,
-                        remaining_requests=parsed.remaining_requests, remaining_tokens=parsed.remaining_tokens,
-                        reset_requests_at=parsed.reset_requests_at, reset_tokens_at=parsed.reset_tokens_at,
-                    )
+        try:
+            if resp.status_code == 429:
+                raise RateLimitError(f"429 from {route.provider}/{route.model}")
+            if resp.status_code in (401, 403):
+                raise RouterError(f"Auth failure for provider {route.provider!r}: {resp.status_code}")
+            if resp.status_code >= 400:
+                # Read the body for 5xx too: a streamed 500 often carries the
+                # only explanation we will ever get about why this model is
+                # failing, and it used to be discarded.
+                body = await resp.aread()
+                raise ProviderError(
+                    describe_http_error(resp.status_code, route.provider, route.model, body),
+                    status_code=resp.status_code)
 
+            if self._rate_limit_store is not None:
+                parsed = parse_headers(route.header_parser, resp.headers)
+                if parsed.limit_requests is not None or parsed.limit_tokens is not None:
+                    self._rate_limit_store.update(route.provider, route.model, parsed.limit_requests, parsed.limit_tokens)
+                self._rate_limit_store.update_headroom(
+                    route.provider, route.model,
+                    remaining_requests=parsed.remaining_requests, remaining_tokens=parsed.remaining_tokens,
+                    reset_requests_at=parsed.reset_requests_at, reset_tokens_at=parsed.reset_tokens_at,
+                )
+
+            try:
                 async for line in resp.aiter_lines():
                     line = line.strip()
                     if not line or not line.startswith("data: "):
@@ -193,15 +248,17 @@ class AsyncClient:
 
                     if content or reasoning or usage:
                         yield StreamChunk(content=content or None, reasoning=reasoning or None, usage=usage)
-        except httpx.HTTPError as exc:
-            # Connection failures, malformed requests, timeouts, or a dropped
-            # connection mid-stream — anything below the HTTP-response level.
-            # Whether this happens before or after content has been yielded,
-            # it must surface as ProviderError from the generator (not be
-            # swallowed): if it's before the first delta, the router's retry
-            # loop rotates to another model; if it's after, the partial
-            # stream must fail loudly rather than be silently truncated.
-            raise ProviderError(f"{route.provider}/{route.model}: {exc}") from exc
+            except httpx.HTTPError as exc:
+                # Connection failures, malformed requests, timeouts, or a dropped
+                # connection mid-stream — anything below the HTTP-response level.
+                # Whether this happens before or after content has been yielded,
+                # it must surface as ProviderError from the generator (not be
+                # swallowed): if it's before the first delta, the router's retry
+                # loop rotates to another model; if it's after, the partial
+                # stream must fail loudly rather than be silently truncated.
+                raise ProviderError(f"{route.provider}/{route.model}: {exc}") from exc
+        finally:
+            await resp.aclose()
 
     async def aclose(self) -> None:
         await self._client.aclose()
