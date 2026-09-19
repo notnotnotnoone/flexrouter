@@ -132,3 +132,89 @@ def config_import(token: str):
     click.echo("flexrouter never overwrites your settings file. Here it is — "
                f"paste what you want into {home.config_path()}:\n")
     click.echo(data)
+
+
+from flexrouter import keys as keyvault
+
+
+@cli.group()
+def keys():
+    """Add, list, and remove your API keys."""
+
+
+@keys.command("list")
+def keys_list():
+    """Show your saved keys (masked — the full value is never printed)."""
+    vault = keyvault.load_keys()
+    if not any(vault.values()):
+        click.echo("No keys saved yet. Add one with: flexrouter keys add <provider>")
+        return
+    for provider, records in sorted(vault.items()):
+        click.echo(provider)
+        for r in records:
+            state = "" if r.enabled else "  (off)"
+            label = f"  {r.label}" if r.label else ""
+            click.echo(f"  {r.id:<16} {keyvault.mask(r.secret)}{label}{state}")
+
+
+@keys.command("add")
+@click.argument("provider")
+@click.option("--secret", prompt=True, hide_input=True,
+              help="The key itself. Leave it off and you'll be asked without it showing.")
+@click.option("--label", default="", help="A name to recognise it by.")
+def keys_add(provider: str, secret: str, label: str):
+    """Save a key for PROVIDER."""
+    record = keyvault.add_key(provider, secret.strip(), label=label)
+    click.echo(f"Saved {record.id} for {provider}: {keyvault.mask(record.secret)}")
+
+
+@keys.command("rm")
+@click.argument("provider")
+@click.argument("key_id")
+def keys_rm(provider: str, key_id: str):
+    """Remove a saved key."""
+    if not keyvault.remove_key(provider, key_id):
+        click.echo(f"No key {key_id!r} for {provider}.", err=True)
+        raise SystemExit(1)
+    click.echo(f"Removed {key_id} from {provider}.")
+
+
+def _import_keys_from(path: Path) -> list[tuple[str, str]]:
+    """Lift plain secrets out of an old settings file. Env references are
+    left alone — they already resolve. The old file is never modified."""
+    import yaml
+
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    added: list[tuple[str, str]] = []
+    for provider, praw in (raw.get("providers") or {}).items():
+        if not isinstance(praw, dict):
+            continue
+        secrets: list[str] = []
+        if praw.get("api_key"):
+            secrets.append(str(praw["api_key"]))
+        entries = praw.get("api_keys", [])
+        if isinstance(entries, str):
+            entries = []
+        for e in entries or []:
+            if isinstance(e, str) and e:
+                secrets.append(e)
+            elif isinstance(e, dict) and e.get("key"):
+                secrets.append(str(e["key"]))
+        for s in secrets:
+            added.append((provider, keyvault.add_key(provider, s, label="imported").id))
+    return added
+
+
+@keys.command("import")
+@click.argument("old_file", type=click.Path(exists=True, dir_okay=False))
+def keys_import(old_file: str):
+    """Copy the keys out of an old flexrouter.yaml into the shared home."""
+    added = _import_keys_from(Path(old_file))
+    if not added:
+        click.echo("Found no keys to copy — that file only references "
+                   "environment variables, which already work as they are.")
+        return
+    for provider, key_id in added:
+        click.echo(f"Copied {provider} -> {key_id}")
+    click.echo(f"\nCopied {len(added)} key(s). Your old file was not changed; "
+               f"delete it when you're happy.")
