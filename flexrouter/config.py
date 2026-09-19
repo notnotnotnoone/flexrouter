@@ -1,10 +1,16 @@
 from __future__ import annotations
+
 import os
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+
 import yaml
+
+from flexrouter import home
 from flexrouter.exceptions import ConfigError
+from flexrouter.keys import KeyRecord, load_keys
+from flexrouter.overrides import apply_overrides, load_overrides
 
 RETRY_PRESETS = {
     "conservative": {"retries": 2, "backoff_seconds": 5.0},
@@ -26,8 +32,9 @@ class ModelConfig:
 @dataclass
 class ProviderConfig:
     base_url: str
-    api_keys: list[str]  # resolved values (not env var names)
+    api_keys: list[str]  # resolved secret strings, in selection order
     header_parser: str = "openai_compatible"
+    keys: list[KeyRecord] = field(default_factory=list)
 
 @dataclass
 class RetryConfig:
@@ -43,7 +50,8 @@ class FlexConfig:
     penalty_base_seconds: int = 30
     penalty_max_seconds: int = 1800
     session_ttl_minutes: int = 30
-    dashboard_port: int = 7352
+    port: int = 4891
+    dashboard_port: int = 7352  # deprecated alias for `port`
     sample_interval_seconds: int = 60
     health_history_days: int = 30
     retry: RetryConfig = field(default_factory=RetryConfig)
@@ -51,18 +59,93 @@ class FlexConfig:
     hooks: list[str] = field(default_factory=list)
 
 
-def load_config(path: Path | str) -> FlexConfig:
+def _line_of(text: str, needle: str) -> int | None:
+    for i, line in enumerate(text.splitlines(), 1):
+        if needle in line:
+            return i
+    return None
+
+
+def _env_names(praw: dict) -> list[str]:
+    """Env var names this provider declares, in order."""
+    names: list[str] = []
+    single = praw.get("api_key_env")
+    if single:
+        names.append(single)
+    raw_keys = praw.get("api_keys", [])
+    if isinstance(raw_keys, str):
+        raw_keys = [{"env": raw_keys}]
+    for k in raw_keys or []:
+        if isinstance(k, dict) and k.get("env"):
+            names.append(k["env"])
+    return names
+
+
+def _inline_secrets(praw: dict) -> list[str]:
+    """Secrets typed straight into the settings file. Deprecated."""
+    found: list[str] = []
+    if praw.get("api_key"):
+        found.append(str(praw["api_key"]))
+    raw_keys = praw.get("api_keys", [])
+    if isinstance(raw_keys, str):
+        raw_keys = []
+    for k in raw_keys or []:
+        if isinstance(k, str) and k:
+            found.append(k)
+        elif isinstance(k, dict) and k.get("key"):
+            found.append(str(k["key"]))
+    return found
+
+
+def resolve_keys(provider: str, praw: dict, vault: dict[str, list[KeyRecord]],
+                 source_path: Path | None) -> list[KeyRecord]:
+    """Credential resolution order (spec 1): stored key, then environment
+    variable, then an inline secret - which is deprecated and warns."""
+    stored = [r for r in vault.get(provider, []) if r.enabled and r.secret]
+    if stored:
+        return stored
+
+    from_env: list[KeyRecord] = []
+    for name in _env_names(praw):
+        value = os.environ.get(name)
+        if value:
+            from_env.append(KeyRecord(id=f"env:{name}", secret=value,
+                                      label=name, source="env"))
+    if from_env:
+        return from_env
+
+    inline = _inline_secrets(praw)
+    if not inline:
+        return []
+
+    text = source_path.read_text(encoding="utf-8") if source_path else ""
+    where = _line_of(text, inline[0]) if text else None
+    filename = source_path.name if source_path else "config.yaml"
+    warnings.warn(
+        f"Provider {provider!r} has its key typed straight into {filename}"
+        f"{f', line {where}' if where else ''}. That file is meant to be "
+        f"shareable. Move it with: flexrouter keys add {provider}",
+        DeprecationWarning, stacklevel=2,
+    )
+    return [KeyRecord(id=f"{provider}-inline-{i + 1}", secret=s, source="inline")
+            for i, s in enumerate(inline)]
+
+
+def load_config(path: Path | str | None = None) -> FlexConfig:
+    """Load settings from the flexrouter home, with overrides layered on top."""
+    home.ensure_home()
+    source = Path(path) if path else home.config_path()
     try:
-        raw = yaml.safe_load(Path(path).read_text())
+        raw = yaml.safe_load(source.read_text(encoding="utf-8"))
     except Exception as e:
-        raise ConfigError(f"Cannot read {path}: {e}") from e
+        raise ConfigError(f"Cannot read {source}: {e}") from e
 
     if not raw:
-        raise ConfigError(f"{path} is empty")
+        raise ConfigError(f"{source} is empty")
 
-    settings = raw.get("settings", {})
+    raw = apply_overrides(raw, load_overrides())
+    settings = raw.get("settings") or {}
 
-    # Parse retry
     preset_name = settings.get("retry_policy", "balanced")
     preset = RETRY_PRESETS.get(preset_name, RETRY_PRESETS["balanced"])
     retry = RetryConfig(
@@ -70,36 +153,24 @@ def load_config(path: Path | str) -> FlexConfig:
         backoff_seconds=float(settings.get("backoff_seconds", preset["backoff_seconds"])),
     )
 
-    # Parse providers — resolve env vars
+    vault = load_keys()
     providers: dict[str, ProviderConfig] = {}
     for name, praw in (raw.get("providers") or {}).items():
-        keys_raw = praw.get("api_keys", [])
-        if isinstance(keys_raw, str):
-            keys_raw = [{"env": keys_raw}]
-        resolved: list[str] = []
-        for k in keys_raw:
-            if isinstance(k, str):
-                if k:
-                    resolved.append(k)
-            elif "key" in k:
-                if k["key"]:
-                    resolved.append(k["key"])
-            elif "env" in k:
-                env_name = k["env"]
-                val = os.environ.get(env_name)
-                if not val:
-                    raise ConfigError(f"Env var {env_name!r} not set (required by provider {name!r})")
-                resolved.append(val)
+        praw = praw or {}
+        records = resolve_keys(name, praw, vault, source)
         providers[name] = ProviderConfig(
             base_url=praw["base_url"],
-            api_keys=resolved,
+            api_keys=[r.secret for r in records],
             header_parser=praw.get("header_parser", "openai_compatible"),
+            keys=records,
         )
 
-    # Parse tiers
+    buckets_raw = raw.get("buckets")
+    if buckets_raw is None:
+        buckets_raw = raw.get("tiers")
     tiers: dict[str, list[ModelConfig]] = {}
-    for tier_name, models in (raw.get("tiers") or {}).items():
-        tiers[tier_name] = [
+    for bucket_name, models in (buckets_raw or {}).items():
+        tiers[bucket_name] = [
             ModelConfig(
                 provider=m["provider"],
                 model=m["model"],
@@ -110,18 +181,20 @@ def load_config(path: Path | str) -> FlexConfig:
                 vision=m.get("vision", False),
                 quotas=m.get("quotas", {}),
             )
-            for m in models
+            for m in (models or [])
         ]
 
+    port = int(settings.get("port", settings.get("dashboard_port", home.DEFAULT_PORT)))
     return FlexConfig(
         tiers=tiers,
         providers=providers,
-        state_dir=settings.get("state_dir", ".flexrouter"),
+        state_dir=settings.get("state_dir", str(home.state_dir())),
         window_seconds=int(settings.get("window_seconds", 60)),
         penalty_base_seconds=int(settings.get("penalty_base_seconds", 30)),
         penalty_max_seconds=int(settings.get("penalty_max_seconds", 1800)),
         session_ttl_minutes=int(settings.get("session_ttl_minutes", 30)),
-        dashboard_port=int(settings.get("dashboard_port", 7352)),
+        port=port,
+        dashboard_port=port,
         sample_interval_seconds=int(settings.get("sample_interval_seconds", 60)),
         health_history_days=int(settings.get("health_history_days", 30)),
         retry=retry,
@@ -195,14 +268,3 @@ def validate_config(raw: dict) -> dict:
                     f"likely not a chat-completions model")
 
     return {"errors": errors, "warnings": warnings}
-
-
-def discover_config() -> Optional[Path]:
-    """Search CWD then home directory for flexrouter.yaml."""
-    cwd_path = Path("flexrouter.yaml")
-    if cwd_path.exists():
-        return cwd_path
-    home_path = Path.home() / ".flexrouter.yaml"
-    if home_path.exists():
-        return home_path
-    return None

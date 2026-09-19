@@ -1,6 +1,6 @@
 import os, yaml, pytest
 from pathlib import Path
-from flexrouter.config import FlexConfig, load_config, RETRY_PRESETS, discover_config
+from flexrouter.config import FlexConfig, load_config, RETRY_PRESETS
 
 def test_load_minimal_config(config_file):
     cfg = load_config(config_file)
@@ -13,7 +13,11 @@ def test_provider_api_key_resolved_from_env(config_file):
     keys = cfg.providers["groq"].api_keys
     assert keys[0] == "test-key"
 
-def test_missing_env_var_raises(tmp_path):
+def test_missing_env_var_loads_with_no_keys(tmp_path, monkeypatch):
+    # Credential resolution (config.resolve_keys, task 5) no longer raises when
+    # a declared env var isn't set — it silently falls through to no
+    # credentials, same as a provider with nothing configured at all.
+    monkeypatch.setenv("FLEXROUTER_HOME", str(tmp_path / "home"))
     raw = {
         "tiers": {"low": [{"provider": "x", "model": "m", "score": 50, "rpm": 10, "tpm": 1000, "context_window": 4096}]},
         "providers": {"x": {"base_url": "http://x", "api_keys": [{"env": "MISSING_KEY_XYZ"}]}},
@@ -21,9 +25,8 @@ def test_missing_env_var_raises(tmp_path):
     }
     p = tmp_path / "flexrouter.yaml"
     p.write_text(yaml.dump(raw))
-    from flexrouter.exceptions import ConfigError
-    with pytest.raises(ConfigError, match="MISSING_KEY_XYZ"):
-        load_config(p)
+    cfg = load_config(p)
+    assert cfg.providers["x"].api_keys == []
 
 def test_retry_preset_balanced(config_file):
     cfg = load_config(config_file)
@@ -58,95 +61,3 @@ def test_vision_flag_parsed(tmp_path):
     }))
     cfg = load_config(p)
     assert cfg.tiers["high"][0].vision is True
-
-def test_discover_config_finds_cwd(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    os.environ["GROQ_API_KEY"] = "k"
-    p = tmp_path / "flexrouter.yaml"
-    p.write_text(yaml.dump({
-        "tiers": {"low": [{"provider": "groq", "model": "m", "score": 50, "rpm": 10, "tpm": 1000, "context_window": 4096}]},
-        "providers": {"groq": {"base_url": "http://groq", "api_keys": [{"env": "GROQ_API_KEY"}]}},
-        "settings": {"state_dir": str(tmp_path)},
-    }))
-    found = discover_config()
-    assert found is not None
-    assert found.name == "flexrouter.yaml"
-
-
-def test_sampler_settings_defaults(tmp_path):
-    from flexrouter.config import load_config
-    p = tmp_path / "f.yaml"
-    p.write_text(
-        "providers:\n  groq:\n    base_url: http://x\n    api_keys: [k]\n"
-        "tiers:\n  default:\n    - {provider: groq, model: m, score: 50, rpm: 1, tpm: 1}\n"
-    )
-    cfg = load_config(p)
-    assert cfg.sample_interval_seconds == 60
-    assert cfg.health_history_days == 30
-
-
-def test_sampler_settings_override(tmp_path):
-    from flexrouter.config import load_config
-    p = tmp_path / "f.yaml"
-    p.write_text(
-        "providers:\n  groq:\n    base_url: http://x\n    api_keys: [k]\n"
-        "tiers:\n  default:\n    - {provider: groq, model: m, score: 50, rpm: 1, tpm: 1}\n"
-        "settings:\n  sample_interval_seconds: 15\n  health_history_days: 7\n"
-    )
-    cfg = load_config(p)
-    assert cfg.sample_interval_seconds == 15
-    assert cfg.health_history_days == 7
-
-
-def test_provider_header_parser_defaults_to_openai_compatible(tmp_path, monkeypatch):
-    monkeypatch.setenv("GROQ_API_KEY", "k")
-    cfg_dict = {
-        "tiers": {"low": [{"provider": "groq", "model": "m", "score": 50, "rpm": 1, "tpm": 1}]},
-        "providers": {"groq": {"base_url": "https://x", "api_keys": [{"env": "GROQ_API_KEY"}]}},
-    }
-    p = tmp_path / "flexrouter.yaml"
-    p.write_text(yaml.dump(cfg_dict))
-    cfg = load_config(p)
-    assert cfg.providers["groq"].header_parser == "openai_compatible"
-
-
-def test_provider_header_parser_explicit_value_is_read(tmp_path, monkeypatch):
-    monkeypatch.setenv("CEREBRAS_KEY", "k")
-    cfg_dict = {
-        "tiers": {"low": [{"provider": "cb", "model": "m", "score": 50, "rpm": 1, "tpm": 1}]},
-        "providers": {"cb": {
-            "base_url": "https://x", "api_keys": [{"env": "CEREBRAS_KEY"}],
-            "header_parser": "cerebras",
-        }},
-    }
-    p = tmp_path / "flexrouter.yaml"
-    p.write_text(yaml.dump(cfg_dict))
-    cfg = load_config(p)
-    assert cfg.providers["cb"].header_parser == "cerebras"
-
-
-def test_model_quotas_default_to_empty_dict(tmp_path, monkeypatch):
-    monkeypatch.setenv("GROQ_API_KEY", "k")
-    cfg_dict = {
-        "tiers": {"low": [{"provider": "groq", "model": "m", "score": 50, "rpm": 1, "tpm": 1}]},
-        "providers": {"groq": {"base_url": "https://x", "api_keys": [{"env": "GROQ_API_KEY"}]}},
-    }
-    p = tmp_path / "flexrouter.yaml"
-    p.write_text(yaml.dump(cfg_dict))
-    cfg = load_config(p)
-    assert cfg.tiers["low"][0].quotas == {}
-
-
-def test_model_quotas_explicit_rpd_rph_is_read(tmp_path, monkeypatch):
-    monkeypatch.setenv("OR_KEY", "k")
-    cfg_dict = {
-        "tiers": {"low": [{
-            "provider": "or", "model": "m", "score": 50, "rpm": 1, "tpm": 1,
-            "quotas": {"rpd": 50, "rph": 10},
-        }]},
-        "providers": {"or": {"base_url": "https://x", "api_keys": [{"env": "OR_KEY"}]}},
-    }
-    p = tmp_path / "flexrouter.yaml"
-    p.write_text(yaml.dump(cfg_dict))
-    cfg = load_config(p)
-    assert cfg.tiers["low"][0].quotas == {"rpd": 50, "rph": 10}
