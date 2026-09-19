@@ -2,12 +2,13 @@ import base64
 import json
 import os
 import webbrowser
-import click
-import yaml
 from pathlib import Path
 
-from flexrouter.config import discover_config, load_config
-from flexrouter.exceptions import ConfigError
+import click
+
+from flexrouter import home
+from flexrouter.config import load_config, redact_settings_text
+from flexrouter.exceptions import ConfigError, ConfigFieldError
 from flexrouter.refresh import refresh_config
 
 
@@ -16,37 +17,68 @@ def cli():
     """flexrouter — universal LLM router."""
 
 
-@cli.command()
-def init():
-    """Interactive terminal wizard to generate flexrouter.yaml."""
-    from flexrouter.onboard import run_onboard
-    run_onboard()
+def _resolve_port(config_path, override):
+    """Single port for everything: API, dashboard, and dashboard data.
 
-
-@cli.command()
-def dashboard():
-    """Start the live dashboard at http://localhost:<port>."""
-    path = discover_config()
-    port = 7352
+    Defaults to the config's port (accepting a legacy dashboard_port in the
+    config file as an alias) so existing configs keep working; the separate
+    7353 API port is gone — there is one server now.
+    """
+    if override is not None:
+        return override
+    path = Path(config_path) if config_path else home.config_path()
     if path:
         try:
-            cfg = load_config(path)
-            port = cfg.dashboard_port
+            return load_config(path).port
         except ConfigError:
             pass
-    from flexrouter.dashboard.server import start_server
-    click.echo(f"Dashboard running at http://localhost:{port}")
-    webbrowser.open(f"http://localhost:{port}")
-    start_server(port=port, open_tab=False)
+    return home.DEFAULT_PORT
+
+
+def _run_daemon(port, config_path, open_browser):
+    import uvicorn
+    from flexrouter.app import create_app
+
+    click.echo(f"Settings: {home.config_path()}")
+
+    url = f"http://localhost:{port}"
+    click.echo(f"flexrouter running at {url}")
+    click.echo(f"  dashboard   {url}")
+    click.echo(f"  OpenAI API  {url}/v1")
+    click.echo(f"  API docs    {url}/docs")
+    if open_browser:
+        webbrowser.open(url)
+    uvicorn.run(create_app(config_path), host="127.0.0.1", port=port, log_level="info")
+
+
+_config_option = click.option(
+    "--config", "-c", "config_path", default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Settings file to use. Defaults to the flexrouter home (see: flexrouter doctor).",
+)
+
+
+@cli.command()
+@click.option("--port", default=None, type=int,
+              help="Port for everything (default: the settings file's port, else 4891)")
+@_config_option
+def serve(port, config_path):
+    """Start the flexrouter server: API and dashboard on one port."""
+    _run_daemon(_resolve_port(config_path, port), config_path, open_browser=False)
+
+
+@cli.command()
+@click.option("--port", default=None, type=int, help="Port to serve on")
+@_config_option
+def dashboard(port, config_path):
+    """Start the server and open the dashboard in a browser."""
+    _run_daemon(_resolve_port(config_path, port), config_path, open_browser=True)
 
 
 @cli.command()
 def status():
     """Print tier health to terminal."""
-    path = discover_config()
-    if not path:
-        click.echo("No flexrouter.yaml found.", err=True)
-        raise SystemExit(1)
+    path = home.config_path()
     cfg = load_config(path)
     state = Path(cfg.state_dir) / "health.json"
     if not state.exists():
@@ -60,17 +92,18 @@ def status():
 
 @cli.command()
 def refresh():
-    """Re-discover models + rate limits and rewrite flexrouter.yaml (with backup)."""
-    path = discover_config()
-    if not path:
-        click.echo("No flexrouter.yaml found.", err=True)
-        raise SystemExit(1)
+    """Check your providers for model and limit changes. Nothing is changed."""
+    path = home.config_path()
     cfg = load_config(path)
     aa_key = os.environ.get("AA_API_KEY")
     result = refresh_config(str(path), cfg.state_dir, aa_key=aa_key)
-    click.echo(f"Refreshed: +{len(result.added)} added, "
-               f"-{len(result.removed)} removed, {len(result.changed)} changed")
-    click.echo(f"Backup: {result.backup_path}")
+    click.echo(
+        f"Checked your providers: found {len(result.added)} new model(s), "
+        f"{len(result.removed)} that are gone, and {len(result.changed)} "
+        f"with different limits."
+    )
+    click.echo("Nothing has been changed. Your settings file is exactly as you left it.")
+    click.echo(f"What was found is saved here: {result.pending_path}")
     for err in result.provider_errors:
         click.echo(f"  ! {err['provider']}: {err['error']}", err=True)
 
@@ -82,20 +115,265 @@ def config():
 
 @config.command("export")
 def config_export():
-    """Export config as a base64 token."""
-    path = discover_config()
-    if not path:
-        click.echo("No flexrouter.yaml found.", err=True)
+    """Print a shareable copy of your settings. Any key in it is hidden."""
+    path = home.config_path()
+    try:
+        text = redact_settings_text(path.read_text(encoding="utf-8"))
+    except ConfigError:
+        # Every other command explains itself in one plain sentence when it
+        # gives up. A refused export must do the same, not print a page of
+        # Python at someone who does not write it.
+        click.echo(
+            "Nothing was shared. A copy is only safe to pass on once every "
+            "key inside it has been hidden, and this time that could not be "
+            "done — either your settings file has a mistake in it, or a key "
+            "in it is written in a form that cannot be hidden reliably.",
+            err=True)
+        click.echo("", err=True)
+        click.echo("Two things to try:", err=True)
+        click.echo("  1. Check the file for mistakes: flexrouter doctor",
+                   err=True)
+        click.echo(
+            f"  2. Take any key out of {path} and add it back with: "
+            f"flexrouter keys add <provider>. Your keys go on working "
+            f"exactly as before — they just move somewhere that is never "
+            f"shared.", err=True)
         raise SystemExit(1)
-    token = base64.b64encode(path.read_bytes()).decode()
-    click.echo(token)
+    click.echo(base64.b64encode(text.encode("utf-8")).decode())
+
+
+@config.command("reset")
+@click.argument("section", required=False,
+                type=click.Choice(["settings", "providers", "models"]))
+@click.argument("name", required=False)
+def config_reset(section: str | None, name: str | None):
+    """Undo dashboard changes. With no arguments, undo all of them.
+
+    Your own settings file is never involved — this only clears what the
+    dashboard saved on top of it. Use it when a change made flexrouter
+    unable to read your settings.
+    """
+    from flexrouter import overrides as ov
+
+    if section is None:
+        changes = ov.load_overrides()
+        if not changes:
+            click.echo("There were no dashboard changes to undo.")
+            return
+        ov.save_overrides({})
+        click.echo("Undid every dashboard change. Your settings file is "
+                   "untouched, as always.")
+        return
+
+    if name is None:
+        changes = ov.load_overrides()
+        if not changes.get(section):
+            click.echo(f"There were no {section} changes to undo.")
+            return
+        changes.pop(section)
+        ov.save_overrides(changes)
+        click.echo(f"Undid every {section} change.")
+        return
+
+    if not ov.clear_override(section, name):
+        click.echo(f"There was no {section} change for {name!r} to undo.",
+                   err=True)
+        raise SystemExit(1)
+    click.echo(f"Undid the {section} change for {name}.")
 
 
 @config.command("import")
 @click.argument("token")
 def config_import(token: str):
-    """Import config from a base64 token."""
-    data = base64.b64decode(token.encode())
-    out = Path("flexrouter.yaml")
-    out.write_bytes(data)
-    click.echo(f"Config written to {out}")
+    """Show settings from a token (it will not overwrite yours)."""
+    data = base64.b64decode(token.encode()).decode("utf-8", "replace")
+    click.echo("flexrouter never overwrites your settings file. Here it is — "
+               f"paste what you want into {home.config_path()}:\n")
+    click.echo(data)
+    click.echo("\nA key is never included in an export. Anywhere you see "
+               "… followed by four characters, that is a key that was "
+               "hidden on the way out — add your own with: "
+               "flexrouter keys add <provider>")
+
+
+from flexrouter import keys as keyvault
+
+
+@cli.group()
+def keys():
+    """Add, list, and remove your API keys."""
+
+
+@keys.command("list")
+def keys_list():
+    """Show your saved keys (masked — the full value is never printed)."""
+    vault = keyvault.load_keys()
+    if not any(vault.values()):
+        click.echo("No keys saved yet. Add one with: flexrouter keys add <provider>")
+        return
+    for provider, records in sorted(vault.items()):
+        click.echo(provider)
+        for r in records:
+            state = "" if r.enabled else "  (off)"
+            label = f"  {r.label}" if r.label else ""
+            click.echo(f"  {r.id:<16} {keyvault.mask(r.secret)}{label}{state}")
+
+
+@keys.command("add")
+@click.argument("provider")
+@click.option("--secret", prompt=True, hide_input=True,
+              help="The key itself. Leave it off and you'll be asked without it showing.")
+@click.option("--label", default="", help="A name to recognise it by.")
+def keys_add(provider: str, secret: str, label: str):
+    """Save a key for PROVIDER."""
+    record = keyvault.add_key(provider, secret.strip(), label=label)
+    click.echo(f"Saved {record.id} for {provider}: {keyvault.mask(record.secret)}")
+
+
+@keys.command("rm")
+@click.argument("provider")
+@click.argument("key_id")
+def keys_rm(provider: str, key_id: str):
+    """Remove a saved key."""
+    if not keyvault.remove_key(provider, key_id):
+        click.echo(f"No key {key_id!r} for {provider}.", err=True)
+        raise SystemExit(1)
+    click.echo(f"Removed {key_id} from {provider}.")
+
+
+def _scan_old_settings(path: Path) -> tuple[list[tuple[str, str]], bool]:
+    """Parse an old settings file and lift its plain secrets in. Env
+    references are left alone — they already resolve. The old file is
+    never modified. Returns (added, saw_env_reference) so callers can
+    tell "nothing importable here" apart from "only env references here"."""
+    import yaml
+
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    added: list[tuple[str, str]] = []
+    saw_env = False
+    for provider, praw in (raw.get("providers") or {}).items():
+        if not isinstance(praw, dict):
+            continue
+        secrets: list[str] = []
+        if praw.get("api_key"):
+            secrets.append(str(praw["api_key"]))
+        entries = praw.get("api_keys", [])
+        if isinstance(entries, str):
+            entries = []
+        for e in entries or []:
+            if isinstance(e, str) and e:
+                secrets.append(e)
+            elif isinstance(e, dict) and e.get("key"):
+                secrets.append(str(e["key"]))
+            elif isinstance(e, dict) and e.get("env"):
+                saw_env = True
+        for s in secrets:
+            added.append((provider, keyvault.add_key(provider, s, label="imported").id))
+    return added, saw_env
+
+
+def _import_keys_from(path: Path) -> list[tuple[str, str]]:
+    """Lift plain secrets out of an old settings file. Env references are
+    left alone — they already resolve. The old file is never modified."""
+    added, _ = _scan_old_settings(path)
+    return added
+
+
+@keys.command("import")
+@click.argument("old_file", type=click.Path(exists=True, dir_okay=False))
+def keys_import(old_file: str):
+    """Copy the keys out of an old flexrouter.yaml into the shared home."""
+    added, saw_env = _scan_old_settings(Path(old_file))
+    if not added:
+        if saw_env:
+            click.echo("Found no keys to copy — that file only references "
+                       "environment variables, which already work as they are.")
+        else:
+            click.echo("Found no keys to copy — nothing importable was found "
+                       "in that file.")
+        return
+    for provider, key_id in added:
+        click.echo(f"Copied {provider} -> {key_id}")
+    click.echo(f"\nCopied {len(added)} key(s). Your old file was not changed; "
+               f"delete it when you're happy.")
+
+
+@cli.command()
+def doctor():
+    """Show where flexrouter keeps things and which key it will use."""
+    import os
+    import warnings
+
+    from flexrouter import overrides as ov
+
+    is_new_home = not home.config_path().exists()
+    home.ensure_home()
+    click.echo(f"flexrouter home: {home.home_dir()}")
+    click.echo(f"  settings   {home.config_path().name}")
+    click.echo(f"  keys       {home.keys_path().name}")
+    click.echo(f"  changes    {home.overrides_path().name}")
+    click.echo(f"  records    {home.state_dir().name}{os.sep}")
+    click.echo("")
+    if is_new_home:
+        click.echo("This is a brand-new flexrouter home — nothing was here yet, "
+                   "so an empty starter settings file was just created. The "
+                   "counts below are that empty default, not your own "
+                   "configuration. Add a key to get started: "
+                   "flexrouter keys add <provider>")
+        click.echo("")
+
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            cfg = load_config()
+    except ConfigFieldError as e:
+        click.echo(f"Your settings file is missing something it needs: {e}",
+                   err=True)
+        raise SystemExit(1)
+    except ConfigError as e:
+        click.echo(f"Could not read your settings: {e}", err=True)
+        raise SystemExit(1)
+
+    models = sum(len(v) for v in cfg.tiers.values())
+    click.echo(f"{len(cfg.tiers)} bucket(s), {models} model(s), "
+               f"{len(cfg.providers)} provider(s). Serving on port {cfg.port}.")
+    click.echo("")
+
+    vault = keyvault.load_keys()
+    click.echo("Which key each provider will use:")
+    for name, provider in sorted(cfg.providers.items()):
+        if not provider.keys:
+            disabled = [r for r in vault.get(name, []) if not r.enabled]
+            if disabled:
+                click.echo(f"  {name:<14} no usable key — {len(disabled)} "
+                           f"saved but disabled")
+            else:
+                click.echo(f"  {name:<14} no key found")
+            continue
+        first = provider.keys[0]
+        if first.source == "env":
+            where = f"{first.label} (environment)"
+        elif first.source == "inline":
+            where = (f"typed into {home.config_path().name} — move it with: "
+                     f"flexrouter keys add {name}")
+        else:
+            where = f"saved key {first.id}  {keyvault.mask(first.secret)}"
+        extra = f"  (+{len(provider.keys) - 1} more)" if len(provider.keys) > 1 else ""
+        click.echo(f"  {name:<14} {where}{extra}")
+
+    changes = ov.load_overrides()
+    click.echo("")
+    if not changes:
+        click.echo("No dashboard changes on top of your settings file.")
+    else:
+        click.echo("Changes layered on top of your settings file:")
+        for section in ov.SECTIONS:
+            for key, value in (changes.get(section) or {}).items():
+                click.echo(f"  {key}: {value}")
+
+    for w in caught:
+        click.echo(f"\n! {w.message}", err=True)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    cli()

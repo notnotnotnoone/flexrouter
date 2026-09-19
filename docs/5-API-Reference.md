@@ -21,22 +21,22 @@ FlexRouter(config_path: str | None = None)
 ```
 
 **Parameters:**
-- `config_path` (str, optional): Path to `flexrouter.yaml`. If not provided, auto-discovers in current directory → home directory.
+- `config_path` (str, optional): Path to a settings file. If not given, flexrouter reads the one shared settings file for this machine — run `flexrouter doctor` to see where that is. Pass a path only to point at a different file on purpose. Note that this swaps the settings file alone: your saved keys, the changes made from the dashboard, and everything flexrouter records as it runs still come from the shared place, so setting `FLEXROUTER_HOME` is the only way to keep one setup completely separate from another.
 
 **Raises:**
-- `FileNotFoundError`: If config file not found.
-- `ValueError`: If config is invalid (bad YAML, missing required fields).
+- `ConfigError`: If the settings file can't be found or read.
+- `ConfigFieldError`: If the settings file is missing something it needs.
 
 **Example:**
 
 ```python
 from flexrouter import FlexRouter
 
-# Auto-discover config
+# Use the shared settings file (the normal case)
 router = FlexRouter()
 
-# Explicit config path
-router = FlexRouter("/etc/flexrouter.yaml")
+# Point at a different settings file
+router = FlexRouter("/etc/flexrouter/config.yaml")
 ```
 
 ---
@@ -321,18 +321,184 @@ with warnings.catch_warnings(record=True) as w:
 
 ## CLI
 
-### `flexrouter init`
+### `flexrouter doctor`
 
 ```bash
-flexrouter init
+flexrouter doctor
 ```
 
-Open browser to setup wizard. Validates existing config or generates new one.
+Shows where your settings and keys live, and checks that everything is readable.
 
 **What it does:**
-- Opens `http://localhost:7352/#/setup`
-- Guides through API key entry, tier creation, model selection
-- Generates or updates `flexrouter.yaml`
+- Prints the shared folder flexrouter is using (see [`FLEXROUTER_HOME`](#environment-variables) below)
+- Lists which key each provider will actually use, and flags any provider with no usable key
+- Points out a key that's still typed directly into the settings file, so you can move it
+- Shows any changes made from the dashboard that are layered on top of your settings
+
+---
+
+### `flexrouter keys`
+
+Manage saved provider keys. Keys never belong in the settings file — this is how you add them instead.
+
+```bash
+flexrouter keys add <provider>      # save a key (prompts for it, never shows it on screen)
+flexrouter keys list                # show saved keys, masked
+flexrouter keys rm <provider> <id>  # remove a saved key
+flexrouter keys import <old_file>   # copy keys out of an old settings file into the shared one
+```
+
+`keys import` only copies keys — it never modifies or deletes the old file.
+
+---
+
+### `flexrouter serve`
+
+```bash
+flexrouter serve [--port PORT]
+```
+
+Starts flexrouter as a service: an OpenAI-compatible API and the dashboard, together, on one port.
+
+**What it does:**
+- Listens at `http://localhost:4891` by default
+- Accepts standard `POST /v1/chat/completions` requests
+- Supports both streaming (`stream: true`) and non-streaming modes
+- Exposes `GET /v1/models` to list available tiers
+- Also serves the dashboard at the same address
+
+**Options:**
+- `--port`: Override the port (default: 4891, or whatever `port` is set to in your settings file)
+
+**Example:**
+```bash
+flexrouter serve --port 8080
+```
+
+---
+
+## OpenAI-Compatible HTTP API
+
+When running `flexrouter serve`, the following endpoints are available:
+
+### `POST /v1/chat/completions`
+
+Drop-in compatible with OpenAI's chat completions API. Route requests through flexrouter by changing only the base URL.
+
+**Request:**
+```json
+{
+  "model": "auto-default",
+  "messages": [{"role": "user", "content": "Hello!"}],
+  "temperature": 0.7,
+  "stream": false
+}
+```
+
+**Response:** Standard OpenAI chat completion format:
+```json
+{
+  "id": "chatcmpl-abc123",
+  "object": "chat.completion",
+  "created": 1234567890,
+  "model": "llama-3.1-8b-instant",
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "content": "Hi there!"},
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+}
+```
+
+**Streaming:**
+
+Set `"stream": true` to receive [server-sent events (SSE)](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events):
+
+```bash
+curl -N http://localhost:4891/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "auto-default",
+    "messages": [{"role": "user", "content": "Tell me a joke"}],
+    "stream": true
+  }'
+```
+
+Response format follows the [OpenAI streaming specification](https://platform.openai.com/docs/api-reference/streaming):
+```
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk","created":...,"choices":[{"index":0,"delta":{"content":"Why"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk","created":...,"choices":[{"index":0,"delta":{"content":" did"},"finish_reason":null}]}
+
+...
+
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk","created":...,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{...}}
+
+data: [DONE]
+```
+
+### `GET /v1/models`
+
+Lists all available routing tiers as models:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"id": "auto", "object": "model", "created": 0, "owned_by": "flexrouter"},
+    {"id": "auto-default", "object": "model", "created": 0, "owned_by": "groq, openrouter"},
+    {"id": "auto-premium", "object": "model", "created": 0, "owned_by": "openai, google"}
+  ]
+}
+```
+
+### Model Name Mapping
+
+| `model` value | Behaviour |
+|---|---|
+| `auto` | Pick the tier with the **highest-scoring model** (most intelligent available) |
+| `auto-{tier}` | Route through a specific tier (e.g. `auto-default`, `auto-premium`) |
+| Any other string | Falls back to the `default` tier |
+
+### Using with OpenAI SDKs
+
+Any OpenAI SDK or tool that supports custom `base_url` works with flexrouter:
+
+**Python (openai package):**
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:4891/v1")
+
+# Non-streaming
+response = client.chat.completions.create(
+    model="auto",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+
+# Streaming
+stream = client.chat.completions.create(
+    model="auto-premium",
+    messages=[{"role": "user", "content": "Write a poem"}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="")
+```
+
+**Node.js (openai package):**
+```js
+import OpenAI from "openai";
+const client = new OpenAI({ baseURL: "http://localhost:4891/v1" });
+```
+
+**curl:**
+```bash
+curl http://localhost:4891/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "auto", "messages": [{"role": "user", "content": "Hi"}]}'
+```
 
 ---
 
@@ -342,12 +508,12 @@ Open browser to setup wizard. Validates existing config or generates new one.
 flexrouter dashboard
 ```
 
-Start dashboard server at `http://localhost:7352`.
+Same as `flexrouter serve`, but also opens the dashboard in your browser for you.
 
 **What it does:**
-- Launches Python HTTP server on port 7352 (or configured `dashboard_port`)
-- Opens browser to live telemetry
-- Provides `/api/*` endpoints for client to poll
+- Starts the service at `http://localhost:4891` (or whatever `port` is set to in your settings file)
+- Opens your browser to live telemetry
+- Provides `/api/*` endpoints for the dashboard's own use
 
 **Tabs:**
 - Live Telemetry
@@ -389,13 +555,32 @@ Tier: medium
 
 ---
 
+### `flexrouter config reset`
+
+```bash
+flexrouter config reset                       # undo every dashboard change
+flexrouter config reset settings              # undo every settings change
+flexrouter config reset settings port         # undo one change
+flexrouter config reset models groq/llama-3.1-8b-instant
+```
+
+Undoes changes made from the dashboard, which are kept in their own file next to your settings. Your own settings file is never involved.
+
+Use this if a dashboard change ever leaves flexrouter unable to read your settings: it is the way back without hand-editing anything.
+
+---
+
 ### `flexrouter config export`
 
 ```bash
 flexrouter config export
 ```
 
-Print portable config token (base64-encoded YAML) for sharing.
+Print your settings file as a portable, base64-encoded token, for sharing.
+
+No key ever goes into an export. Keys saved with `flexrouter keys add` are not in the settings file to begin with, and if you typed one straight into the file, it is hidden before the token is made — the reader sees `…` and the last four characters instead. Everything else, including your own comments, comes through exactly as you wrote it.
+
+If your settings file cannot be read, nothing is printed: flexrouter can only hide a key it can find, so it refuses rather than hand out something it has not checked.
 
 **Output:**
 
@@ -417,18 +602,13 @@ flexrouter config import aGlzdG9yeSBjb25maWcgdG9rZW4gKGJhc2U2NCBlbmNvZGVkIFlBTUw
 flexrouter config import aGlzdG9yeSBjb25maWcgdG9rZW4gKGJhc2U2NCBlbmNvZGVkIFlBTUwpCgo=
 ```
 
-Import a portable config token.
-
-**What it does:**
-- Decodes base64 token
-- Overwrites `flexrouter.yaml` with imported config
-- Validates config
+Decodes the token and prints it to your terminal, along with the path to your settings file. Any key in it was hidden when the token was made, so anywhere you see `…` and four characters you need to add your own with `flexrouter keys add <provider>`. It does **not** touch your settings file — flexrouter never overwrites it. Copy in whatever parts you want by hand.
 
 ---
 
 ## Config Schema (YAML)
 
-Full structure of `flexrouter.yaml`:
+Full structure of the settings file (run `flexrouter doctor` to see where yours lives):
 
 ```yaml
 # Tier definitions (required)
@@ -446,6 +626,8 @@ tiers:
 providers:
   <provider_key>:
     base_url: <openai_compatible_endpoint>
+    # Keys belong in `flexrouter keys add <provider_key>`, not here.
+    # An `env:` reference to an environment variable still works too:
     api_keys:
       - env: <ENV_VAR_NAME>
       # ... more keys for round-robin
@@ -457,7 +639,7 @@ settings:
   penalty_base_seconds: <int>          # default: 30
   penalty_max_seconds: <int>           # default: 1800
   session_ttl_minutes: <int>           # default: 30
-  dashboard_port: <int>                # default: 7352
+  port: <int>                          # default: 4891 (dashboard_port also works, as an older alias)
   
   # Retry policy
   retry_policy: conservative|balanced|aggressive  # default: balanced
@@ -540,12 +722,12 @@ JSON summary of current state:
 
 ### Required
 
-No environment variables are required. All auth is configured in `flexrouter.yaml` via `api_keys` → `env` references.
+None. Save keys with `flexrouter keys add <provider>`, or reference an environment variable from the settings file with `api_keys: - env: <NAME>`.
 
 ### Optional
 
 - `DEBUG=1`: Enable debug logging
-- `FLEXROUTER_HOME`: Override home config location (default `~/.flexrouter.yaml`)
+- `FLEXROUTER_HOME`: Moves the shared folder where flexrouter keeps your settings, keys, and everything else. Without it, flexrouter uses a standard per-user app-data folder for your OS. Run `flexrouter doctor` any time to see exactly where it landed.
 
 ---
 
@@ -610,8 +792,12 @@ All `generate()` and `agenerate()` responses follow OpenAI's chat completions fo
 | Catch warning | `except ContextWindowWarning: ...` |
 | Reload config | `router.reload()` |
 | Dashboard | `flexrouter dashboard` |
-| Setup wizard | `flexrouter init` |
+| API server | `flexrouter serve` |
 | View status | `flexrouter status` |
+| Where are my settings? | `flexrouter doctor` |
+| Undo a dashboard change | `flexrouter config reset` |
+| Save a key | `flexrouter keys add <provider>` |
+| List saved keys | `flexrouter keys list` |
 
 ---
 
@@ -635,7 +821,7 @@ A: No. It requires network access to providers. But it does work with self-hoste
 
 **Q: How do I update my API key?**
 
-A: Update the environment variable and call `router.reload()`. Or restart your app.
+A: Run `flexrouter keys add <provider>` with the new key, then call `router.reload()` or restart your app.
 
 **Q: Can I have different state dirs per tier?**
 

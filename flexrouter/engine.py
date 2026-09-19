@@ -200,27 +200,52 @@ class RoutingEngine:
         self._sessions[session_id] = (provider, model, time.monotonic())
         return self._make_result(pinned, tier)
 
+    def _skip_reason(
+        self, m: ModelConfig, estimated_tokens: int, vision: bool
+    ) -> Optional[tuple[str, str]]:
+        """Why this model cannot take the request right now, or None if it can.
+
+        Single source of truth for availability: _score_candidates uses it to
+        filter and explain_unavailable uses it to report, so the dashboard can
+        never disagree with the router about why a model was passed over.
+        Previously these checks were seven bare `continue` statements and the
+        reason was thrown away, which made an empty tier impossible to debug.
+        """
+        if vision and not m.vision:
+            return ("not_vision_capable", "request needs image support")
+        # Checked before is_penalized, which also reports True for quarantined
+        # routes — quarantine has the more specific explanation.
+        if self._penalties.is_quarantined(m.provider, m.model):
+            return ("quarantined",
+                    self._penalties.quarantine_reason(m.provider, m.model) or "")
+        if self._penalties.is_penalized(m.provider, m.model):
+            secs = self._penalties.penalty_seconds(m.provider, m.model)
+            return ("penalized", f"backing off {secs}s after a failure")
+        if self._rate_limit_store is not None and self._rate_limit_store.is_exhausted(m.provider, m.model):
+            return ("provider_rate_limit", "provider reports no headroom left")
+        if self._quota_tracker is not None and m.quotas and not self._quota_tracker.is_available(m.provider, m.model, m.quotas):
+            return ("quota_exhausted", "request quota for this period is used up")
+        if not self._budget.is_available(m.provider):
+            return ("over_budget", f"provider {m.provider} is over its daily spend cap")
+        if estimated_tokens > 0 and estimated_tokens >= m.context_window:
+            return ("context_too_small",
+                    f"prompt is ~{estimated_tokens} tokens, window is {m.context_window}")
+        w = self._windows.get(f"{m.provider}/{m.model}")
+        if w and not w.available(self._model_rpm(m), self._model_tpm(m)):
+            return ("rpm_tpm_window",
+                    f"local rate window full (rpm {self._model_rpm(m)}, tpm {self._model_tpm(m)})")
+        return None
+
     def _score_candidates(
         self, models: list[ModelConfig], estimated_tokens: int, vision: bool
     ) -> list[tuple[int, ModelConfig]]:
         ctx_skipped = False
         scored = []
         for m in models:
-            if vision and not m.vision:
-                continue
-            if self._penalties.is_penalized(m.provider, m.model):
-                continue
-            if self._rate_limit_store is not None and self._rate_limit_store.is_exhausted(m.provider, m.model):
-                continue
-            if self._quota_tracker is not None and m.quotas and not self._quota_tracker.is_available(m.provider, m.model, m.quotas):
-                continue
-            if not self._budget.is_available(m.provider):
-                continue
-            if estimated_tokens > 0 and estimated_tokens >= m.context_window:
-                ctx_skipped = True
-                continue
-            w = self._windows.get(f"{m.provider}/{m.model}")
-            if w and not w.available(self._model_rpm(m), self._model_tpm(m)):
+            skip = self._skip_reason(m, estimated_tokens, vision)
+            if skip is not None:
+                if skip[0] == "context_too_small":
+                    ctx_skipped = True
                 continue
             scored.append((m.score, m))
 
@@ -232,6 +257,28 @@ class RoutingEngine:
             )
 
         return scored
+
+    def explain_unavailable(
+        self, tier: str, estimated_tokens: int = 0, vision: bool = False
+    ) -> list[dict]:
+        """Per-model account of what a tier can and cannot do right now.
+
+        Re-walks the tier rather than making select() carry bookkeeping it
+        usually discards — this is only worth computing on the failure path,
+        or when the dashboard asks.
+        """
+        out = []
+        for m in self._cfg.tiers.get(tier, []):
+            skip = self._skip_reason(m, estimated_tokens, vision)
+            out.append({
+                "provider": m.provider,
+                "model": m.model,
+                "score": m.score,
+                "available": skip is None,
+                "reason": skip[0] if skip else None,
+                "detail": skip[1] if skip else "",
+            })
+        return out
 
     def _pick(self, scored: list[tuple[int, ModelConfig]], tier: str) -> RouteResult:
         scored.sort(key=lambda x: x[0], reverse=True)

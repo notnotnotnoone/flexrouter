@@ -1,6 +1,6 @@
 # flexrouter
 
-Universal LLM router for Python. One call routes to the best available model across providers, with rate-limit awareness, cost tracking, and a live dashboard.
+flexrouter sends your requests to the best available AI model, out of a list you set up, and automatically switches to another one if a model is slow, out of quota, or down. It also tracks how much you're spending and shows you all of this in a live dashboard.
 
 ```python
 from flexrouter import FlexRouter
@@ -21,12 +21,53 @@ pip install flexrouter
 
 Requires Python 3.11+.
 
+## Where your settings live
+
+flexrouter keeps one shared settings file per computer, not one per project. That way every project on your machine uses the same list of models and the same saved keys, instead of you having to set it up again for each one.
+
+The settings file is called `config.yaml` and lives in a folder flexrouter picks for you automatically:
+
+- Windows: `%LOCALAPPDATA%\flexrouter`
+- Mac/Linux: `~/.config/flexrouter`
+
+If you want it somewhere else, set the `FLEXROUTER_HOME` environment variable to the folder you want, and flexrouter will use that instead.
+
+The first time flexrouter runs, it creates this folder and writes a starter `config.yaml` into it, with an empty list of models. You then fill it in yourself, by editing that file.
+
+To see exactly where things are on your machine, and which key each provider will use, run:
+
+```bash
+flexrouter doctor
+```
+
+Two things worth knowing about this file:
+
+- **It's yours.** flexrouter reads it but never rewrites it, so any comments or notes you leave in it stay put.
+- **Anything you change from the dashboard is saved separately** — in a second file next to it, layered on top when flexrouter reads your settings — so your hand-written file still doesn't get touched.
+
+If a change you made from the dashboard ever stops flexrouter from reading your settings, `flexrouter config reset` undoes those changes and puts you back where you were. It only clears the dashboard's file — your own settings file is not involved.
+
+If you're moving from an older, per-project settings file, see [Moving from an older setup](#moving-from-an-older-setup) below — flexrouter does not do this move for you automatically.
+
 ## Quickstart
 
-**1. Create `flexrouter.yaml` in your project:**
+**1. Set up your settings file:**
+
+Open `config.yaml` in your flexrouter folder and fill it in. To find the folder,
+run `flexrouter doctor` — it prints the exact path. A small one looks like this:
 
 ```yaml
-tiers:
+settings:
+  port: 4891
+
+providers:
+  groq:
+    base_url: https://api.groq.com/openai/v1
+
+  openai:
+    base_url: https://api.openai.com/v1
+
+buckets:
   low:
     - provider: groq
       model: llama-3.1-8b-instant
@@ -43,29 +84,16 @@ tiers:
       tpm: 150000
       context_window: 128000
       vision: true
-
-providers:
-  groq:
-    base_url: https://api.groq.com/openai/v1
-    api_keys:
-      - env: GROQ_API_KEY
-
-  openai:
-    base_url: https://api.openai.com/v1
-    api_keys:
-      - env: OPENAI_API_KEY
-
-settings:
-  state_dir: .flexrouter/
-  retry_policy: balanced
 ```
 
-**2. Set your API keys:**
+**2. Save your API keys:**
 
 ```bash
-export GROQ_API_KEY=gsk_...
-export OPENAI_API_KEY=sk-...
+flexrouter keys add groq
+flexrouter keys add openai
 ```
+
+Each command asks you to paste the key in without showing it on screen, and saves it to your own user account on this machine — never into the settings file above. (You can still fall back to an environment variable, or type a key straight into the settings file, but the second one is discouraged and flexrouter will warn you if you do it.)
 
 **3. Route:**
 
@@ -83,24 +111,24 @@ response = await router.agenerate(messages=[...], tier="high")
 
 ## How routing works
 
-Each tier is a ranked list of models (score 1–100). On each call:
+Your models are grouped into named lists — the quickstart above calls them `low` and `high`, but you can name them anything, e.g. `cheap`, `smart`, `nuclear`. flexrouter calls each of these a **bucket**, and each model in it has a score from 1–100 (higher means "prefer this one"). On each request:
 
-1. Models penalized for 429/5xx are skipped
-2. Models over their daily provider budget are skipped
-3. Models exceeding RPM/TPM windows are skipped
-4. Models too small for the estimated token count are skipped (emits `ContextWindowWarning`)
-5. The highest-scoring remaining model wins; picks randomly among models within 20% of the top score to avoid thundering herd
+1. Models that recently failed are skipped for a while.
+2. Models that have used up today's spending cap for their provider are skipped.
+3. Models that have hit their per-minute request or token limit are skipped.
+4. Models too small to fit the message are skipped (you'll get a `ContextWindowWarning`).
+5. Among what's left, flexrouter picks the highest-scoring model — but to avoid always hammering the single top choice, it picks randomly among any models scoring within 20% of the best one.
 
-If no model is available: `wait=True` (default) sleeps until a slot opens; `wait=False` raises `RouterBusy`.
+If nothing in a bucket is available: by default flexrouter waits until something frees up. Pass `wait=False` and it will raise `RouterBusy` immediately instead.
 
-Tiers are strictly isolated — a busy `low` tier never falls back to `high`.
+Buckets don't spill into each other — if everything in `low` is busy, flexrouter will not quietly reach into `high` on your behalf.
 
 ## Config reference
 
-### Tiers
+### Buckets
 
 ```yaml
-tiers:
+buckets:
   <name>:
     - provider: <provider-name>   # must match a key in providers:
       model: <model-id>           # passed to the API
@@ -111,7 +139,7 @@ tiers:
       vision: false               # set true for image-capable models
 ```
 
-Tier names are arbitrary — use `cheap`/`smart`/`nuclear` or whatever makes sense.
+Bucket names are arbitrary — use `cheap`/`smart`/`nuclear` or whatever makes sense. (You may still see the older name `tiers:` in examples or old files — it still works the same way, and the `tier=` argument on `generate()` is still called that.)
 
 ### Providers
 
@@ -119,21 +147,20 @@ Tier names are arbitrary — use `cheap`/`smart`/`nuclear` or whatever makes sen
 providers:
   <name>:
     base_url: https://api.example.com/v1   # OpenAI-compatible endpoint
-    api_keys:
-      - env: MY_API_KEY_1   # env var name (never the key itself)
-      - env: MY_API_KEY_2   # multiple keys rotate round-robin
 ```
+
+Add keys with `flexrouter keys add <name>` (see [Where your settings live](#where-your-settings-live)) rather than writing them here.
 
 ### Settings
 
 ```yaml
 settings:
-  state_dir: .flexrouter/          # audit.csv + health.json location
+  port: 4891                       # the one port everything runs on
+
   window_seconds: 60               # sliding window duration
-  penalty_base_seconds: 30         # first 429 penalty
+  penalty_base_seconds: 30         # first-failure wait time
   penalty_max_seconds: 1800        # cap (30s → 60s → 120s → ... → 1800s)
   session_ttl_minutes: 30          # sticky session expiry
-  dashboard_port: 7352
 
   retry_policy: balanced           # conservative | balanced | aggressive
   # Or manual:
@@ -149,7 +176,7 @@ settings:
     - estimate_tokens              # pre-checks context window fit
 ```
 
-| Preset | Retries | Backoff |
+| Preset | Retries | Wait between tries |
 |---|---|---|
 | `conservative` | 2 | 5s |
 | `balanced` | 3 | 2s |
@@ -159,25 +186,25 @@ settings:
 
 ### `FlexRouter(config_path=None)`
 
-Auto-discovers `./flexrouter.yaml` → `~/.flexrouter.yaml`. Pass an explicit path to override.
+Reads your settings from the shared flexrouter folder described above. Pass a path to use a different file instead.
 
 ```python
-router = FlexRouter()                          # auto-discover
-router = FlexRouter("path/to/flexrouter.yaml") # explicit
+router = FlexRouter()                          # your shared settings file
+router = FlexRouter("path/to/config.yaml")      # a specific file instead
 ```
 
 ### `generate(messages, tier, *, wait=True, vision=False, session_id=None, **kwargs)`
 
-Synchronous. Blocks until a model responds (or raises if `wait=False` and none available).
+Synchronous. Blocks until a model responds (or raises if `wait=False` and none are available). `tier` is the name of the bucket to use.
 
 ```python
 response = router.generate(
     messages=[{"role": "user", "content": "..."}],
     tier="low",
-    wait=True,            # block until slot available (default)
-    vision=False,         # only route to vision-capable models
+    wait=True,            # wait for a slot to open up (default)
+    vision=False,         # only route to image-capable models
     session_id="conv-1",  # sticky session — same model for this ID
-    max_tokens=512,       # passed through to provider
+    max_tokens=512,       # passed through to the provider
     temperature=0.2,
 )
 text = response["choices"][0]["message"]["content"]
@@ -186,7 +213,7 @@ tokens = response["usage"]["total_tokens"]
 
 ### `agenerate(messages, tier, *, wait=True, vision=False, session_id=None, **kwargs)`
 
-Async version. Same signature.
+Async version. Same arguments.
 
 ```python
 response = await router.agenerate(messages=[...], tier="medium")
@@ -194,7 +221,7 @@ response = await router.agenerate(messages=[...], tier="medium")
 
 ### `reload()`
 
-Force config reload. Hot-reload is automatic on file mtime change, but you can call this manually.
+Force flexrouter to re-read your settings file right now. It also does this on its own whenever the file changes on disk, so you rarely need to call this yourself.
 
 ### Exceptions
 
@@ -205,13 +232,13 @@ import warnings
 try:
     response = router.generate(messages=[...], tier="low", wait=False)
 except RouterBusy:
-    # All low-tier models are rate-limited right now
+    # Everything in this bucket is busy right now
     ...
 except RouterError:
-    # Auth failure or repeated 5xx — unrecoverable
+    # A key was rejected, or a provider kept failing — needs your attention
     ...
 
-# Context window warning (not an exception — some models skipped, routing continued)
+# Context window warning (not an error — some models were skipped, the rest still worked)
 with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter("always")
     response = router.generate(messages=long_messages, tier="low")
@@ -224,12 +251,12 @@ with warnings.catch_warnings(record=True) as w:
 ```python
 with FlexRouter() as router:
     response = router.generate(messages=[...], tier="low")
-# event loop closed on exit
+# background work stops cleanly on exit
 ```
 
 ## Session stickiness
 
-Pass a `session_id` to pin a conversation to one model for consistency:
+Pass a `session_id` to keep a conversation on the same model, so answers stay consistent:
 
 ```python
 for turn in conversation:
@@ -240,30 +267,32 @@ for turn in conversation:
     )
 ```
 
-The pin expires after `session_ttl_minutes` of inactivity (default 30). If the pinned model becomes unavailable mid-session, that call re-routes to the next best model without resetting the pin.
+The pin expires after `session_ttl_minutes` of inactivity (default 30). If the pinned model stops being available partway through, that one call moves to the next best model without losing the pin for later calls.
 
-## Multi-key round-robin
+## Multiple keys per provider
 
-List multiple API keys per provider to rotate automatically:
+Add more than one key for the same provider and flexrouter rotates between them automatically:
 
-```yaml
-providers:
-  groq:
-    api_keys:
-      - env: GROQ_KEY_1
-      - env: GROQ_KEY_2
-      - env: GROQ_KEY_3
+```bash
+flexrouter keys add groq --label "key 1"
+flexrouter keys add groq --label "key 2"
 ```
 
-Keys rotate round-robin. A key that returns 429 is skipped immediately.
+A key that gets rejected (rate-limited) is skipped immediately in favor of the next one.
 
 ## CLI
 
 ```bash
-flexrouter dashboard        # start live dashboard at http://localhost:7352
-flexrouter status           # print tier health to terminal
-flexrouter init             # open browser setup wizard
-flexrouter config export    # print portable base64 config token
+flexrouter serve            # start the server (API + dashboard) without opening a browser
+flexrouter dashboard        # start the server and open the dashboard in your browser
+flexrouter status           # print current spending/health to the terminal
+flexrouter doctor           # show where your settings, keys, and data live
+flexrouter keys add <name>  # save a key for a provider
+flexrouter keys list        # show your saved keys (masked)
+flexrouter keys rm <name> <id>  # remove a saved key
+flexrouter refresh          # check available models and rate limits (see below); changes nothing
+flexrouter config reset     # undo changes made from the dashboard
+flexrouter config export    # print a shareable copy of your settings (keys hidden)
 flexrouter config import <token>
 ```
 
@@ -271,27 +300,43 @@ flexrouter config import <token>
 
 ```bash
 flexrouter dashboard
-# → http://localhost:7352
+# → http://localhost:4891
 ```
 
-Six tabs: **Live Telemetry** (RPM/TPM bars, penalty countdowns, search/filter), **Chat** (test any tier live), **Request Logs** (last 50 audit entries), **Account Status** (per-provider cost), **Settings** (view/edit config), **Setup** (getting-started guide). Dark/light theme toggle.
+Six tabs: **Live Telemetry** (request/token rates, countdowns for anything cooling down, search/filter), **Chat** (try any bucket live), **Request Logs** (your last 50 requests), **Account Status** (spending per provider), **Settings** (view/edit config), **Setup** (getting-started guide). Dark/light theme toggle.
 
-## Audit log
+The API, the dashboard, and the dashboard's own data all run on this one port (`4891` unless you set a different one under `settings: port:`).
 
-Every request appends to `.flexrouter/audit.csv`:
+## Request log
+
+Every request is appended to `audit.csv`, inside flexrouter's data folder (see `flexrouter doctor` for the exact path):
 
 ```
 timestamp,tier,provider,model,prompt_tokens,completion_tokens,cost_usd,latency_ms,status
 2026-05-27T12:01:00,low,groq,llama-3.1-8b-instant,1204,320,0.00008,280,ok
 ```
 
-`.flexrouter/health.json` is updated after every request with running totals.
-
-Add `.flexrouter/` to `.gitignore`.
+A `health.json` file next to it is updated after every request with running totals.
 
 ## Hot reload
 
-Edit `flexrouter.yaml` while your app is running — changes are picked up automatically on the next `generate()` call (mtime-watched). Rate-limit windows and penalty state are preserved across reloads.
+Edit your settings file while your app is running — changes are picked up automatically the next time `generate()` is called. Anything currently in progress (rate-limit counters, cooldowns) carries over across the reload.
+
+## Rebuilding your model list
+
+`flexrouter refresh` checks each provider you have a key for, and finds which models are actually available right now along with their real rate limits. It does not change anything for you: what it found is written to a record in your data folder (see `flexrouter doctor` for the path), and your settings file is left exactly as it was, comments and all — the same as everything else described above. A later version will let you review what was found and accept the parts you want; for now, `refresh` only tells you what it saw.
+
+## Moving from an older setup
+
+If you're coming from a version of flexrouter that used a settings file per project, note that your old file is not picked up or merged in automatically — you rebuild your buckets and models fresh in the new shared file, by hand.
+
+The one thing that is carried over for you is your keys:
+
+```bash
+flexrouter keys import path/to/old-flexrouter.yaml
+```
+
+This copies any keys that were typed directly into that old file into your new, shared key store. It leaves the old file exactly as it was, and any keys that were already environment-variable references are left alone too, since those already work without any changes.
 
 ## PyPI publish
 

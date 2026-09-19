@@ -3,6 +3,21 @@ import os
 import pytest
 import yaml
 
+
+@pytest.fixture(autouse=True)
+def _isolate_flexrouter_home(tmp_path_factory, monkeypatch):
+    """Never let a test touch the real machine-wide flexrouter home.
+
+    `load_config()` (and anything that calls it) unconditionally calls
+    `home.ensure_home()`, even when given an explicit config path. Without
+    this, any test that doesn't set FLEXROUTER_HOME itself would create or
+    write into the developer's real home directory. A test that wants a
+    specific home for its own fixture still can — it just calls
+    monkeypatch.setenv("FLEXROUTER_HOME", ...) itself, which simply
+    overrides this default for its duration.
+    """
+    monkeypatch.setenv("FLEXROUTER_HOME", str(tmp_path_factory.mktemp("flexrouter_home")))
+
 MINIMAL_CONFIG = {
     "tiers": {
         "low": [

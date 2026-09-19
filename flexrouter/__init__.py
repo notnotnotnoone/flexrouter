@@ -1,24 +1,32 @@
 from flexrouter._router import (
-    FlexRouter,
     AttemptEvent,
     AttemptFailedEvent,
     DeltaEvent,
+    DoneEvent,
+    FlexRouter,
     ReasoningDeltaEvent,
     ToolCallDeltaEvent,
-    DoneEvent,
 )
-from flexrouter.exceptions import RouterBusy, RouterError, ConfigError, ContextWindowWarning
+from flexrouter.exceptions import (
+    ConfigError,
+    ConfigFieldError,
+    ContextWindowWarning,
+    RouterBusy,
+    RouterError,
+)
 
 __all__ = [
-    "FlexRouter",
-    "RouterBusy",
-    "RouterError",
-    "ConfigError",
-    "ContextWindowWarning",
     "AttemptEvent",
     "AttemptFailedEvent",
+    "ConfigError",
+    "ConfigFieldError",
+    "ContextWindowWarning",
     "DeltaEvent",
-    "ReasoningDeltaEvent",
-    "ToolCallDeltaEvent",
     "DoneEvent",
+    "FlexRouter",
+    "ReasoningDeltaEvent",
+    "RouterBusy",
+    "RouterError",
+    "ToolCallDeltaEvent",
 ]
+

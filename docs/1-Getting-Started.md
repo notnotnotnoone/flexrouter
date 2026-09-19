@@ -10,7 +10,7 @@
 
 By the end of this tutorial, you'll have:
 - ✅ flexrouter installed
-- ✅ A `flexrouter.yaml` config file with one provider
+- ✅ One provider set up, with its key saved safely
 - ✅ A working Python script that routes a request to the cheapest available model
 
 ---
@@ -38,21 +38,28 @@ Choose one provider to start with. We'll use **Groq** as an example (free, fast,
 1. Go to [https://console.groq.com](https://console.groq.com)
 2. Sign up or log in
 3. Create an API key
-4. Store it in an environment variable:
+
+### Save the Key
+
+flexrouter keeps every key in one safe, shared place on your computer — never inside a settings file that might get shared or copied around. Save your new key with:
 
 ```bash
-# macOS / Linux
-export GROQ_API_KEY="gsk_..."
-
-# Windows PowerShell
-$env:GROQ_API_KEY = "gsk_..."
+flexrouter keys add groq
 ```
+
+It will ask you to paste the key without showing it on screen. You can check it saved correctly (without ever printing the full key) with `flexrouter keys list`.
 
 ---
 
-## Step 3: Create Your Config File
+## Step 3: Point flexrouter at the Model
 
-Create a file called `flexrouter.yaml` in your project root:
+flexrouter keeps one settings file for your whole computer, not one per project. Run this to see where it lives:
+
+```bash
+flexrouter doctor
+```
+
+It prints the folder your settings live in, and confirms whether it can already see a usable key for each provider you've set up. Open the settings file it shows you and add:
 
 ```yaml
 tiers:
@@ -67,21 +74,14 @@ tiers:
 providers:
   groq:
     base_url: https://api.groq.com/openai/v1
-    api_keys:
-      - env: GROQ_API_KEY
-
-settings:
-  state_dir: .flexrouter/
-  window_seconds: 60
-  penalty_base_seconds: 30
-  dashboard_port: 7352
 ```
 
 **What this means:**
 - **tiers**: Define routing tiers. Here we have one tier called `cheap`.
 - **models**: List models available in this tier. Score (1–100) determines preference.
-- **providers**: Define how to reach each provider (base URL and auth).
-- **settings**: Store state, configure windows, and port for the dashboard.
+- **providers**: Define how to reach each provider (base URL). The key you saved in Step 2 is picked up automatically — it doesn't need to be written here.
+
+You never need to create or find this file yourself for a fresh setup — `flexrouter doctor` always tells you exactly where it is. It's a plain text file you write by hand, and flexrouter never rewrites it behind your back, so any notes or comments you leave in it stay put. Changes you make from the dashboard are kept separately and layered on top when flexrouter starts.
 
 ---
 
@@ -93,7 +93,8 @@ Create a file `hello_flexrouter.py`:
 from flexrouter import FlexRouter
 
 # Initialize the router
-# flexrouter.yaml will be auto-discovered in the current directory
+# This automatically finds and reads your shared settings file — the one
+# `flexrouter doctor` showed you.
 router = FlexRouter()
 
 # Make a request
@@ -124,15 +125,46 @@ You should see the model's response and token count.
 
 ---
 
-## Step 5: Explore the Dashboard
+## Step 5: Start the Service (Optional)
 
-While your app is running, start the dashboard in a new terminal:
+flexrouter can also run as a service on your machine, so any OpenAI-compatible SDK can talk to it, and you can watch it work in a browser at the same time. One command starts everything:
+
+```bash
+flexrouter serve
+```
+
+This starts it at `http://localhost:4891`. Now any OpenAI SDK works by changing the base URL:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:4891/v1")
+
+# Use "auto" to let flexrouter pick the best available model
+response = client.chat.completions.create(
+    model="auto",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(response.choices[0].message.content)
+```
+
+**Model naming:**
+- `"auto"` — flexrouter picks the tier with the highest-scoring model
+- `"auto-default"`, `"auto-premium"` — route through a specific tier
+
+List available models: `GET http://localhost:4891/v1/models`
+
+---
+
+## Step 6: Explore the Dashboard
+
+If you'd rather watch things happen in a browser, use this instead of `flexrouter serve` — it starts the same service and opens the dashboard for you:
 
 ```bash
 flexrouter dashboard
 ```
 
-This opens `http://localhost:7352` in your browser. You'll see:
+This opens `http://localhost:4891` in your browser. You'll see:
 - **Live Telemetry**: Your model's RPM and TPM usage
 - **Chat**: Test the router interactively
 - **Request Logs**: Every call you just made
@@ -153,29 +185,18 @@ You've got the basics! Here's where to go next:
 
 ## Troubleshooting
 
-### "flexrouter.yaml not found"
-Make sure the file is in your current working directory. Or pass an explicit path:
-```python
-router = FlexRouter("path/to/flexrouter.yaml")
-```
+### "Can't find my settings" or you're not sure where things are
+Run `flexrouter doctor`. It prints exactly where your settings and keys live, which key each provider will actually use, and flags anything it can't read. If you want the shared place to live somewhere else, set `FLEXROUTER_HOME` to that folder before running flexrouter.
 
 ### "API key rejected"
-Double-check that your environment variable is set:
+Check that flexrouter is actually seeing your key:
 ```bash
-# macOS / Linux
-echo $GROQ_API_KEY
-
-# Windows PowerShell
-$env:GROQ_API_KEY
+flexrouter keys list
 ```
+If it's missing, save it again with `flexrouter keys add groq`.
 
 ### "No models available in tier"
-Check your `flexrouter.yaml` syntax using the setup wizard:
-```bash
-flexrouter init
-```
-
-This will validate your config and help you fix issues.
+Run `flexrouter doctor` — it checks your settings file for problems and tells you plainly what's wrong, rather than a raw error.
 
 ---
 
@@ -188,6 +209,9 @@ This will validate your config and help you fix issues.
 | **RPM** | Requests per minute limit for a model |
 | **TPM** | Tokens per minute limit for a model |
 | **state_dir** | Folder where audit logs and health data are stored |
+| `flexrouter doctor` | Shows where your settings and keys live, and which key each provider will use |
+| `flexrouter keys add/list/rm` | Save, view, or remove a provider's key |
+| `flexrouter serve` | Starts the service (API + dashboard) on port 4891 |
 
 ---
 

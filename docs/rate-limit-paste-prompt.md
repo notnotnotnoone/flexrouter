@@ -1,10 +1,12 @@
-# Provider Rate Limit → flexrouter.yaml Prompt
+# Provider Rate Limit → flexrouter Settings Prompt
 
 Copy everything below the line into any AI, then paste your provider rate limit text/screenshot after it.
 
 ---
 
-You are a config generator for **flexrouter**, a Python LLM routing library that routes requests across multiple OpenAI-compatible providers. I will paste plaintext or screenshots from LLM provider dashboards showing rate limits, model names, and context windows. You convert them into `flexrouter.yaml` entries.
+You are a config generator for **flexrouter**, a Python LLM routing library that routes requests across multiple OpenAI-compatible providers. I will paste plaintext or screenshots from LLM provider dashboards showing rate limits, model names, and context windows. You convert them into settings entries for flexrouter's settings file.
+
+Your API keys never go in this file — they are added separately afterwards with `flexrouter keys add <provider>`. Do not include an `api_keys:` line or any key value, real or placeholder, for any provider.
 
 ## YAML format reference
 
@@ -16,36 +18,23 @@ providers:
   groq:
     # OpenAI-compatible base URL (required)
     base_url: https://api.groq.com/openai/v1
-    # API keys — list of entries, each can be:
-    #   - key: sk-xxxx        (literal key value)
-    #   - env: GROQ_API_KEY   (read from environment variable at runtime)
-    #   - just a string       (shorthand for key: <string>)
-    api_keys:
-      - key: gsk_xxxxx
 
   # Another provider example
   openrouter:
     base_url: https://openrouter.ai/api/v1
-    api_keys:
-      - key: sk-or-v1-xxxxx
 
   # Env var reference example
   openai:
     base_url: https://api.openai.com/v1
-    api_keys:
-      - env: OPENAI_API_KEY
 
-  # Multiple keys (rotate on 429)
+  # Multiple keys are fine too — add each one separately with
+  # flexrouter keys add <provider>, and they rotate automatically.
   cerebras:
     base_url: https://api.cerebras.ai/v1
-    api_keys:
-      - key: csk-xxxxx
-      - key: csk-yyyyy
 
   # Local provider, no keys needed
   ollama:
     base_url: http://localhost:11434/v1
-    api_keys: []
 
 tiers:
   # Tier name (arbitrary — call it via router.generate(messages=[...], tier="name"))
@@ -131,8 +120,8 @@ settings:
   # Sticky session TTL — same client routes to same model for this long
   session_ttl_minutes: 30
 
-  # Dashboard web UI port
-  dashboard_port: 7352
+  # Port for the service (API + dashboard, one port)
+  port: 4891
 
   # Health check polling interval (seconds)
   sample_interval_seconds: 60
@@ -164,11 +153,21 @@ settings:
 Given the provider dashboard text I paste:
 
 1. Output the **full `providers:` + `tiers:` + `settings:` YAML block** — complete and paste-ready.
-2. **Include api_keys** — if I give you keys, put them in. If not, use `key: YOUR_KEY_HERE` placeholder.
+2. **Never include a key.** Leave keys out of the `providers:` block entirely, even as a placeholder — after pasting this into the settings file, add each key with `flexrouter keys add <provider>`.
 3. Set **every field** shown in the reference above for each model (score, rpm, tpm, context_window, vision).
 4. If I paste multiple providers, group them all in one output.
 5. If something is ambiguous (model ID, rate limit, context window), **ask me** rather than guessing.
 6. Default `settings` to the reference defaults unless I specify otherwise.
+
+## After you paste the generated block in
+
+Add the generated `providers:` and `tiers:` entries to your settings file (find it with `flexrouter doctor`), then add each provider's key with:
+
+```
+flexrouter keys add <provider>
+```
+
+It asks for the key and saves it separately from the settings file, so the key never sits in a file you might share, back up, or paste into an AI chat.
 
 ## Rate limits vs quotas
 

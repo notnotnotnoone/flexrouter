@@ -7,5 +7,8 @@ class RouterError(Exception):
 class ConfigError(Exception):
     """Invalid or missing flexrouter.yaml."""
 
+class ConfigFieldError(ConfigError):
+    """The settings file parsed fine but is missing a field it needs."""
+
 class ContextWindowWarning(UserWarning):
     """Some models in tier skipped due to context window size."""

@@ -1,28 +1,26 @@
 # Configuration Guide
 
-**Goal:** Understand every setting in `flexrouter.yaml` and configure flexrouter for your multi-provider, multi-tier needs.
+**Goal:** Understand every setting in your flexrouter settings file, and configure flexrouter for your multi-provider, multi-tier needs.
 
 ---
 
-## Config File Locations
+## Where Your Settings Live
 
-flexrouter looks for config in this order:
-
-1. **Explicit path:** `FlexRouter("path/to/flexrouter.yaml")`
-2. **Current directory:** `./flexrouter.yaml`
-3. **Home directory:** `~/.flexrouter.yaml`
-
-The first file found is used. You can also generate a config interactively:
+flexrouter keeps one settings file for your whole computer — not one per project. Run this any time to see exactly where it is:
 
 ```bash
-flexrouter init
+flexrouter doctor
 ```
+
+If you want that shared place to live somewhere else, set `FLEXROUTER_HOME` to the folder you want before running flexrouter.
+
+You can pass an explicit path instead, to point at a different file on purpose: `FlexRouter("path/to/config.yaml")`.
 
 ---
 
 ## Top-Level Structure
 
-Every `flexrouter.yaml` has four sections:
+Every settings file has these sections:
 
 ```yaml
 tiers:
@@ -221,8 +219,8 @@ settings:
   # Session behavior
   session_ttl_minutes: 30
 
-  # Dashboard
-  dashboard_port: 7352
+  # Port for the service (API + dashboard, one port)
+  port: 4891
 
   # Retry policy (preset or manual)
   retry_policy: balanced
@@ -251,7 +249,7 @@ settings:
 | `penalty_base_seconds` | int | 30 | Initial penalty duration (doubles on repeated failures) |
 | `penalty_max_seconds` | int | 1800 | Maximum penalty (30 min) |
 | `session_ttl_minutes` | int | 30 | Time before sticky session expires |
-| `dashboard_port` | int | 7352 | Port for dashboard HTTP server |
+| `port` | int | 4891 | Port for the service (API and dashboard together). `dashboard_port` still works as an older name for the same setting. |
 | `retry_policy` | string | `balanced` | One of: `conservative` (2 retries, 5s backoff), `balanced` (3 retries, 2s backoff), `aggressive` (5 retries, 1s backoff) |
 | `retries` | int | — | Manual override (ignores preset) |
 | `backoff_seconds` | int | — | Manual override (ignores preset) |
@@ -319,7 +317,7 @@ Both hooks are safe to enable; they degrade gracefully if features aren't availa
 
 ## Hot-Reload
 
-flexrouter watches your config file for changes. If you edit `flexrouter.yaml`, it reloads automatically without restarting your app.
+flexrouter watches your settings file for changes. If you edit it, it reloads automatically without restarting your app.
 
 - ✅ Adds/removes tiers and models
 - ✅ Updates provider URLs or keys
@@ -336,15 +334,15 @@ router.reload()
 
 ## Validation
 
-Check your config syntax:
+Check your settings for common mistakes:
 
 ```bash
-flexrouter init
+flexrouter doctor
 ```
 
-This opens the setup wizard, which validates your current `flexrouter.yaml` and catches common errors.
+This reads your settings the same way flexrouter itself does and tells you what it found, including anything it could not make sense of. The dashboard shows the same check on its Settings tab.
 
-Or validate programmatically:
+Or check programmatically:
 
 ```python
 from flexrouter import FlexRouter
