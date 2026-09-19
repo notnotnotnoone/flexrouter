@@ -211,17 +211,16 @@ def test_ordinary_lowercase_words_near_a_cue_word_stay_readable():
     # around it - the only thing standing between this rule and an error
     # message that's just a wall of ellipses - must not.
     #
-    # Round 4 changed one word here. ':' is back in the run class (round 3
-    # had dropped it, which let "ab12:cd34:ef56" survive whole), so a
-    # lowercase word directly abutting a colon - "upstream:" - is now one
-    # run containing a non-lowercase character and is no longer exempt.
-    # That is the ruled class doing what it is supposed to do, not a
-    # weakening: the safety assertion below is unchanged, and the words
-    # that are not glued to punctuation still read normally.
+    # Round 4 put ':' back in the run class (round 3 had dropped it, which
+    # let "ab12:cd34:ef56" survive whole) and "upstream:" stopped being
+    # exempt as a result. Round 5's edge trim gives the word back without
+    # giving up the class: a run's leading and trailing ": = . , ;" are
+    # trimmed off before the exemption is checked, so "upstream:" is judged
+    # as "upstream".
     out = scrub("token gsk_BBB222 rejected by upstream: retrying")
     assert "gsk_BBB222" not in out
     assert "rejected" in out
-    assert "upstream" not in out
+    assert "upstream" in out
     assert "retrying" in out
 
 
@@ -270,3 +269,32 @@ def test_a_value_scrubbed_by_rule_b_is_not_re_matched_by_rule_a():
     out = scrub("key sk-AAAABBBBCCCCDDDD9999")
     assert "sk-AAAABBBBCCCCDDDD9999" not in out
     assert out == "key …9999"
+
+
+# Round 5: a run's leading and trailing ": = . , ;" are trimmed off before
+# the all-lowercase exemption is judged and before the scrub, in both
+# rules. The trimmed characters stay in the output; only what is left is
+# treated as the run.
+
+def test_a_word_abutting_a_colon_near_a_cue_stays_readable():
+    out = scrub("Incorrect API key provided: sk-abc123XYZ")
+    assert "sk-abc123XYZ" not in out
+    assert "provided" in out
+
+
+def test_the_edge_trim_does_not_undo_the_colon_bearing_credential_fix():
+    # The trim only touches a run's edges, so internal colons - the whole
+    # reason ':' is in the token class - are untouched and this credential
+    # is still one run that gets scrubbed whole.
+    out = scrub("token ab12:cd34:ef56")
+    assert "ab12:cd34:ef56" not in out
+    assert "ab12" not in out
+    assert "cd34" not in out
+
+
+def test_a_credential_with_a_trailing_delimiter_is_still_scrubbed():
+    # Trimming the trailing colon leaves "abc123", which has digits in it,
+    # so the exemption does not cover it and it is still scrubbed. Nothing
+    # that was caught becomes uncaught.
+    out = scrub("token abc123:")
+    assert "abc123" not in out

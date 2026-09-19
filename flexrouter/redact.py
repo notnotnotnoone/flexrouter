@@ -33,6 +33,17 @@ The two rules, in the order they run:
   requirement, so a newline, parenthesis or semicolon between the cue word
   and the credential changes nothing.
 
+  The edge trim (both rules). Before a run is judged or scrubbed, any
+  leading and trailing characters from ``: = . , ;`` are trimmed off it.
+  The trimmed characters stay in the output exactly where they were; only
+  what is left between them is the run. This is what lets ':' stay in the
+  token class - so "ab12:cd34:ef56" is one run and is scrubbed whole -
+  without an ordinary word that merely abuts a colon ("provided:",
+  "upstream:", "reason:") losing its exemption over that colon alone. It
+  is not an exemption: a trimmed run is still judged on its own
+  characters, so "abc123:" trims to "abc123", still has digits in it, and
+  is still scrubbed. Nothing that was caught becomes uncaught.
+
   The one exemption, and the only one permitted: a run made entirely of
   lowercase letters a-z is left alone. That is what keeps ordinary words
   that happen to sit near a cue word - "rejected", "retrying", "please",
@@ -60,9 +71,7 @@ Accepted costs, stated here rather than engineered around:
     query string is exactly the case that must not escape. No URL exemption.
   - Ordinary English words of 16 or more characters ("responsibilities",
     "uncharacteristically") are scrubbed by Rule A alone, with no cue word
-    needed, and a lowercase word directly abutting a colon inside a cue
-    window ("upstream:") is one run containing ':' and so is not exempt.
-    No dictionary check, vowel-ratio heuristic or other cleverness is added
+    needed. No dictionary check, vowel-ratio heuristic or other cleverness is added
     to spare them - every such carve-out is a hole a credential can sit in.
   - Named residual: a credential more than 48 characters after its cue word
     is out of Rule B's window, and is caught only if it is long enough for
@@ -128,6 +137,25 @@ _ALL_LOWER = re.compile(r"^[a-z]+$")
 _CUE_WINDOW = 48
 
 
+# Characters trimmed off a run's leading and trailing edge before the run
+# is judged and scrubbed, in both rules. They stay in the output text; only
+# what is left between them is the run. This is what lets ':' stay in the
+# token class (so "ab12:cd34:ef56" is one run and is scrubbed whole)
+# without an ordinary word that happens to abut a colon - "provided:",
+# "upstream:", "reason:" - losing its exemption over that colon alone. It
+# is a trim of the edges, not an exemption: a trimmed run is still judged
+# on its own characters, so "abc123:" trims to "abc123", still has digits,
+# and is still scrubbed.
+_EDGE_CHARS = ":=.,;"
+
+
+def _trim(run: str) -> tuple[int, int]:
+    """How many edge characters to leave alone at each end of a run."""
+    lead = len(run) - len(run.lstrip(_EDGE_CHARS))
+    trail = len(run) - len(run.rstrip(_EDGE_CHARS))
+    return lead, trail
+
+
 def _tail(token: str) -> str:
     """"…" plus the last four characters — or a bare "…" for a short token,
     so the part meant to preserve a little readability doesn't itself leak
@@ -164,8 +192,14 @@ def _scrub_cued(text: str) -> str:
             # to fall inside. Cutting at the edge left the tail of a
             # credential in clear.
             end = _run_end(text, cue.end() + m.end())
+            # Edge delimiters are not part of the run: trim them off
+            # before the exemption is judged and before the scrub, and
+            # leave them in the output where they were.
+            lead, trail = _trim(text[start:end])
+            start += lead
+            end -= trail
             token = text[start:end]
-            if _ALL_LOWER.match(token):
+            if not token or _ALL_LOWER.match(token):
                 continue
             spans[start] = (end, _tail(token))
 
@@ -185,6 +219,17 @@ def _scrub_cued(text: str) -> str:
     return "".join(out)
 
 
+def _scrub_long(m: re.Match[str]) -> str:
+    """Rule A's replacement, with the same edge trim Rule B uses so both
+    rules treat a run's boundaries the same way."""
+    run = m.group(0)
+    lead, trail = _trim(run)
+    core = run[lead:len(run) - trail]
+    if not core:
+        return run
+    return run[:lead] + _tail(core) + run[len(run) - trail:]
+
+
 def scrub(text: str) -> str:
     """The same text with anything that could be a credential cut to a tail."""
     if not text:
@@ -196,5 +241,5 @@ def scrub(text: str) -> str:
     # "…" is not a token character, so a value Rule B already cut down
     # cannot be re-matched into anything that exposes more of it.
     text = _scrub_cued(text)
-    text = _LONG_RUN.sub(lambda m: _tail(m.group(0)), text)
+    text = _LONG_RUN.sub(_scrub_long, text)
     return text
