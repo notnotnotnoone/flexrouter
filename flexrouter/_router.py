@@ -94,7 +94,9 @@ class FlexRouter:
         self._hooks = HookRunner()
         self._loop = asyncio.new_event_loop()
         self._loop_lock = threading.Lock()
+        self._known_mtimes: dict[Path, float] = {}
         self._last_mtime: float = self._newest_mtime()
+        self._reload_error: str | None = None
 
     def _quarantine_block_reason(self, tier: str) -> str | None:
         """Explain a tier that is empty only because everything is quarantined.
@@ -608,7 +610,10 @@ class FlexRouter:
         raise RouterBusy(f"All models in tier {tier!r} are unavailable after {retries} retries")
 
     def reload(self) -> None:
-        self._cfg = load_config(self._config_path)
+        # Load first, assign after: a settings file that has gone bad
+        # must leave the router exactly as it was, not half swapped.
+        cfg = load_config(self._config_path)
+        self._cfg = cfg
         self._rate_limit_store = RateLimitStore(self._cfg.state_dir)
         self._quota_tracker = QuotaTracker(self._cfg.state_dir)
         self._engine.update_config(self._cfg)
@@ -651,16 +656,46 @@ class FlexRouter:
         return [self._config_path, home.overrides_path(), home.keys_path()]
 
     def _newest_mtime(self) -> float:
+        """The newest timestamp across the watched files.
+
+        A file we cannot stat is a file that has told us nothing, not
+        a file that changed. Deleting or renaming the settings file
+        under a running router used to mean "carry on"; reading its
+        absence as a timestamp of zero turned it into "reload now",
+        and the reload then failed in the middle of a request. So a
+        vanished file keeps the last timestamp we did see for it.
+        """
         newest = 0.0
         for path in self._watched_paths():
             try:
-                newest = max(newest, path.stat().st_mtime)
+                mtime = path.stat().st_mtime
             except OSError:
-                continue
+                mtime = self._known_mtimes.get(path, 0.0)
+            else:
+                self._known_mtimes[path] = mtime
+            newest = max(newest, mtime)
         return newest
 
     def _maybe_hot_reload(self) -> None:
+        """Pick up a configuration change, but never fail a request for it.
+
+        Settings that cannot be read are a reason to keep serving the
+        settings we already have, not a reason to break the call in
+        flight. The timestamp is recorded before the attempt so a file
+        that stays broken is not retried on every single request; the
+        next edit to it moves the timestamp again and we try afresh.
+        """
         mtime = self._newest_mtime()
-        if mtime != self._last_mtime:
-            self._last_mtime = mtime
+        if mtime == self._last_mtime:
+            return
+        self._last_mtime = mtime
+        try:
             self.reload()
+        except Exception as e:
+            self._reload_error = f"{type(e).__name__}: {e}"
+            logger.error(
+                "Could not read the new settings, so flexrouter is "
+                "still running on the ones it loaded earlier: %s",
+                self._reload_error)
+        else:
+            self._reload_error = None

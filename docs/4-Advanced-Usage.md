@@ -376,7 +376,7 @@ Changes apply immediately (hot-reload).
 
 ### Tab 6: Setup
 
-Initial setup wizard for onboarding. Opens automatically on first run, or click **Setup**.
+A reminder of how flexrouter is set up: where it keeps your settings and keys (`flexrouter doctor`), how to add a key (`flexrouter keys add <provider>`), and what a `buckets:` entry looks like. It is a page to read, not a wizard — nothing on it changes anything.
 
 ---
 

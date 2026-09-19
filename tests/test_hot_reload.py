@@ -85,3 +85,70 @@ def test_the_overrides_file_is_watched(router):
     assert home.overrides_path() in router._watched_paths()
     assert home.keys_path() in router._watched_paths()
     assert home.config_path() in router._watched_paths()
+
+
+def test_a_vanished_settings_file_does_not_stop_a_running_router(router):
+    """Deleting or renaming the settings file under a running router used to
+    make every call after it fail. Nothing was read, so nothing changed."""
+    before = router._cfg
+    _age_the_watched_files()
+    home.config_path().unlink()
+
+    router._maybe_hot_reload()
+
+    assert router._cfg is before
+    assert router._reload_error is None
+    assert router.remaining_capacity("fast")
+
+
+def test_settings_that_cannot_be_read_leave_the_old_ones_serving(router, caplog):
+    """A broken edit is a reason to keep the settings we have, not a reason
+    to break the request in flight."""
+    before = router._cfg
+    _age_the_watched_files()
+    home.config_path().write_text("providers: [unclosed\n", encoding="utf-8")
+
+    with caplog.at_level("ERROR"):
+        router._maybe_hot_reload()
+
+    assert router._cfg is before
+    assert [m.model for m in router._cfg.tiers["fast"]] == ["keep-me", "dead-model"]
+    assert router._reload_error
+    assert "still running on the ones it loaded earlier" in caplog.text
+
+
+def test_a_failed_reload_is_not_retried_on_every_single_call(router):
+    """The timestamp is taken before the attempt, so a file that stays broken
+    costs one failed read, not one per request."""
+    _age_the_watched_files()
+    home.config_path().write_text("providers: [unclosed\n", encoding="utf-8")
+    router._maybe_hot_reload()
+
+    attempts = []
+    original = router.reload
+
+    def counting_reload():
+        attempts.append(1)
+        original()
+
+    router.reload = counting_reload
+    router._maybe_hot_reload()
+    router._maybe_hot_reload()
+    assert attempts == []
+
+
+def test_a_good_edit_after_a_bad_one_is_still_picked_up(router):
+    _age_the_watched_files()
+    home.config_path().write_text("providers: [unclosed\n", encoding="utf-8")
+    router._maybe_hot_reload()
+    assert router._reload_error
+
+    _age_the_watched_files()
+    fixed = {**SETTINGS, "buckets": {"fast": [
+        {"provider": "groq", "model": "brand-new", "score": 85, "rpm": 30,
+         "tpm": 6000}]}}
+    home.config_path().write_text(yaml.dump(fixed), encoding="utf-8")
+
+    router._maybe_hot_reload()
+    assert [m.model for m in router._cfg.tiers["fast"]] == ["brand-new"]
+    assert router._reload_error is None
