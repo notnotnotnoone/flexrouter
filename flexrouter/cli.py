@@ -234,3 +234,62 @@ def keys_import(old_file: str):
         click.echo(f"Copied {provider} -> {key_id}")
     click.echo(f"\nCopied {len(added)} key(s). Your old file was not changed; "
                f"delete it when you're happy.")
+
+
+@cli.command()
+def doctor():
+    """Show where flexrouter keeps things and which key it will use."""
+    import os
+    import warnings
+
+    from flexrouter import overrides as ov
+
+    home.ensure_home()
+    click.echo(f"flexrouter home: {home.home_dir()}")
+    click.echo(f"  settings   {home.config_path().name}")
+    click.echo(f"  keys       {home.keys_path().name}")
+    click.echo(f"  changes    {home.overrides_path().name}")
+    click.echo(f"  records    {home.state_dir().name}{os.sep}")
+    click.echo("")
+
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            cfg = load_config()
+    except Exception as e:
+        click.echo(f"Could not read your settings: {e}", err=True)
+        raise SystemExit(1)
+
+    models = sum(len(v) for v in cfg.tiers.values())
+    click.echo(f"{len(cfg.tiers)} bucket(s), {models} model(s), "
+               f"{len(cfg.providers)} provider(s). Serving on port {cfg.port}.")
+    click.echo("")
+
+    click.echo("Which key each provider will use:")
+    for name, provider in sorted(cfg.providers.items()):
+        if not provider.keys:
+            click.echo(f"  {name:<14} no key found")
+            continue
+        first = provider.keys[0]
+        if first.source == "env":
+            where = f"{first.label} (environment)"
+        elif first.source == "inline":
+            where = (f"typed into {home.config_path().name} — move it with: "
+                     f"flexrouter keys add {name}")
+        else:
+            where = f"saved key {first.id}  {keyvault.mask(first.secret)}"
+        extra = f"  (+{len(provider.keys) - 1} more)" if len(provider.keys) > 1 else ""
+        click.echo(f"  {name:<14} {where}{extra}")
+
+    changes = ov.load_overrides()
+    click.echo("")
+    if not changes:
+        click.echo("No dashboard changes on top of your settings file.")
+    else:
+        click.echo("Changes layered on top of your settings file:")
+        for section in ov.SECTIONS:
+            for key, value in (changes.get(section) or {}).items():
+                click.echo(f"  {key}: {value}")
+
+    for w in caught:
+        click.echo(f"\n! {w.message}", err=True)
