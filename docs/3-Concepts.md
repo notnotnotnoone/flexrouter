@@ -418,7 +418,11 @@ Use this for:
 
 ## Hot-Reload
 
-Config changes are detected automatically. flexrouter watches your settings file and reloads on modification.
+Changes are detected automatically, checked on the next request. flexrouter watches every file its configuration can come from — your settings file, the `overrides.json` your dashboard changes are saved in, and the `keys.json` your credentials live in — and reloads when any of them changes.
+
+It compares each file's timestamp *and* its size rather than a single newest timestamp, because a filesystem clock is only so fine: two writes can land in the same tick and read as identical, and a single newest timestamp also hides a file being replaced by an older copy.
+
+A reload that fails leaves the previously loaded settings in place and serving. A broken edit does not fail requests already in flight.
 
 **Preserved on reload:**
 - ✅ Rate-limit windows

@@ -317,12 +317,21 @@ Both hooks are safe to enable; they degrade gracefully if features aren't availa
 
 ## Hot-Reload
 
-flexrouter watches your settings file for changes. If you edit it, it reloads automatically without restarting your app.
+flexrouter picks up a change the next time your code asks it for an answer, without you restarting anything. It watches all three files a change can come from:
 
-- ✅ Adds/removes tiers and models
-- ✅ Updates provider URLs or keys
-- ✅ Changes settings (retry policy, budgets, etc.)
-- ❌ Does NOT reset in-memory state (windows, penalties, sessions preserved)
+- your settings file, if you edit it by hand
+- `overrides.json`, where your dashboard changes are saved
+- `keys.json`, so a key you add with `flexrouter keys add` works straight away
+
+Watching only the settings file would mean watching the one file nothing is allowed to write — so a model you disabled in the dashboard would have kept being used until you restarted.
+
+- ✅ Adds and removes buckets and models
+- ✅ Updates provider addresses
+- ✅ Picks up a newly added or removed key
+- ✅ Changes settings (retry policy, budgets, and so on)
+- ❌ Does NOT reset what it has learned so far — rate-limit counts, rest periods and session pins all carry over
+
+**If the change can't be read**, flexrouter keeps running on the last settings it read successfully rather than failing the request you were in the middle of. Correct the file and the next request picks up the fix. Nothing announces this yet, so if a change appears to have done nothing, check the file for a mistake.
 
 To force a reload manually:
 

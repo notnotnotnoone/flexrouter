@@ -555,6 +555,47 @@ Tier: medium
 
 ---
 
+### `flexrouter refresh`
+
+```bash
+flexrouter refresh
+```
+
+Asks each provider you have a key for what models it currently offers, and
+compares that against your settings.
+
+**It changes nothing.** What it found is written to a record in your data
+folder (`flexrouter doctor` prints the path), and your settings file is left
+exactly as it was, comments and all. Models it saw appear, models that have
+gone, and rate limits or context windows that changed are all recorded for
+you to look at.
+
+**Output:**
+
+```
+Checked your providers: found 2 new model(s), 6 that are gone, and 4 with different limits.
+Nothing has been changed. Your settings file is exactly as you left it.
+What was found is saved here: <your data folder>\state\catalog_pending.json
+  ! cerebras: 402 Payment Required
+```
+
+The indented lines at the end, if any, are providers that could not be
+reached, printed on the error stream.
+
+A provider that could not be reached is reported as an error and counts as
+**not checked** — it is left out of the comparison entirely, so a provider
+being down never reads as "all its models have vanished". Whatever an earlier
+run recorded for that provider is kept.
+
+It reaches each provider using the same credential everything else does: your
+saved key first, then an environment variable, then a key typed into your
+settings file.
+
+A future version will let you review what was found and accept the parts you
+want. For now `refresh` only tells you what it saw.
+
+---
+
 ### `flexrouter config reset`
 
 ```bash

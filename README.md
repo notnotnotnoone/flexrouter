@@ -318,9 +318,17 @@ timestamp,tier,provider,model,prompt_tokens,completion_tokens,cost_usd,latency_m
 
 A `health.json` file next to it is updated after every request with running totals.
 
-## Hot reload
+## Picking up changes while it's running
 
-Edit your settings file while your app is running — changes are picked up automatically the next time `generate()` is called. Anything currently in progress (rate-limit counters, cooldowns) carries over across the reload.
+You don't have to restart anything after a change. flexrouter checks for one the next time your code asks it for an answer, and it watches all three of the files a change can come from:
+
+- your settings file, if you edit it by hand
+- the file your dashboard changes are saved in
+- your keys file, so a key you add is usable straight away
+
+Anything already in progress carries over — how close each model is to its rate limit, and how long a struggling model is being rested for.
+
+If a change leaves your settings unreadable, flexrouter keeps running on the last set it read successfully rather than failing whatever you asked it to do. Fix the file and it picks up the corrected version on the next request. Be aware that it won't announce this anywhere yet, so if a change seems to have had no effect, that's the first thing to check.
 
 ## Rebuilding your model list
 
