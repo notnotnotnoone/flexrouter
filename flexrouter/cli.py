@@ -19,7 +19,7 @@ def cli():
 
 @cli.command()
 def init():
-    """Interactive terminal wizard to generate flexrouter.yaml."""
+    """Interactive terminal wizard to set up your settings file."""
     from flexrouter.onboard import run_onboard
     run_onboard()
 
@@ -67,7 +67,7 @@ _config_option = click.option(
 
 @cli.command()
 @click.option("--port", default=None, type=int,
-              help="Port for everything (default: the config's dashboard_port, else 7352)")
+              help="Port for everything (default: the settings file's port, else 4891)")
 @_config_option
 def serve(port, config_path):
     """Start the flexrouter server: API and dashboard on one port."""
@@ -99,7 +99,7 @@ def status():
 
 @cli.command()
 def refresh():
-    """Re-discover models + rate limits and rewrite flexrouter.yaml (with backup)."""
+    """Re-discover models + rate limits and rewrite your settings file (with backup)."""
     path = home.config_path()
     cfg = load_config(path)
     aa_key = os.environ.get("AA_API_KEY")

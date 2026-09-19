@@ -540,18 +540,23 @@ for user_message in messages:
 
 ### Testing (Use Cheap Provider Only)
 
-```python
-# flexrouter.yaml
-tiers:
-  test:
-    - provider: groq
-      model: llama-3.1-8b
-      rpm: 1000
-      tpm: 100000
-      score: 100
+Give your test setup its own flexrouter home, separate from the one you use day to day, by pointing the `FLEXROUTER_HOME` environment variable at a folder just for tests. flexrouter reads settings, keys, and everything else from whatever home that variable names, so tests never touch your real settings or your real keys:
 
-# In test
-router = FlexRouter("flexrouter.test.yaml")
+```python
+import os
+
+os.environ["FLEXROUTER_HOME"] = "/tmp/flexrouter-test-home"
+
+# Add a "test" tier to the settings file in that folder first, e.g.:
+# tiers:
+#   test:
+#     - provider: groq
+#       model: llama-3.1-8b
+#       rpm: 1000
+#       tpm: 100000
+#       score: 100
+
+router = FlexRouter()
 response = router.generate(messages=[...], tier="test")
 ```
 
