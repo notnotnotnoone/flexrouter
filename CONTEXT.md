@@ -1,0 +1,22 @@
+# CONTEXT.md
+
+Single-context repo. Glossary of domain terms as the code and docs actually use them. Definitions describe what Stage 1 (the shared home) has built, not later stages of the v2 design.
+
+## Glossary
+
+- **Bucket** — a named list of models your code routes to, e.g. `router.generate(tier="smart")`. Settings files write these under `buckets:`. Called "bucket" rather than "tier" going forward because the owner wants a name that doesn't imply a strict quality ranking between groups. The old name is not gone: `FlexConfig.tiers` is still the field name internally, `cfg.tiers` is how code reads it, and a settings file may still use `tiers:` instead of `buckets:` — `load_config` reads `buckets:` first and falls back to `tiers:` if `buckets:` is absent (`flexrouter/config.py`, `_bucket_key` in `flexrouter/overrides.py`). The public `FlexRouter.generate()`/`agenerate()` parameter is also still named `tier`.
+- **Provider** — an upstream LLM API (e.g. `openai`, `groq`), declared under `providers:` with a `base_url` and, optionally, key references.
+- **Model** — one entry in a bucket: a `provider` + a `model` id, plus its score, rate limits, and context window.
+- **Key** — a credential for a provider. Never stored in the settings file. Lives in `keys.json` in the home, added with `flexrouter keys add <provider>` (`flexrouter/keys.py`).
+- **The home** — the one fixed directory every flexrouter installation on a machine shares: settings, keys, dashboard overrides, and state all live there. Located by `flexrouter/home.py`: `FLEXROUTER_HOME` if set, else a platform default (`%LOCALAPPDATA%\flexrouter` on Windows, `$XDG_CONFIG_HOME/flexrouter` or `~/.config/flexrouter` elsewhere). Replaces the old per-project cwd search.
+- **Settings** — `config.yaml` in the home. Hand-written, never rewritten by the tool; comments and layout survive permanently (`flexrouter/home.py` `STARTER_CONFIG`, `flexrouter/config.py`).
+- **Overrides** — `overrides.json` in the home. Anything changed through the dashboard is written here instead of into settings, then merged over the parsed settings at load time (`flexrouter/overrides.py`: `apply_overrides`). Sections: `settings`, `providers`, `models`.
+- **State** — the `state/` subdirectory of the home: rate-limit windows, penalties, quarantine, audit log, health history. Machine-written, safe to delete (it will be rebuilt), and not meant to be hand-edited.
+- **Score** — an integer 1–100 on a model entry. Higher is preferred; the engine picks randomly among models within 20% of the top available score in a bucket (`flexrouter/engine.py` `_pick`).
+- **Quarantine** — sidelining a route (or, provider-wide, every route through a provider) for a fixed window (24h default) after a **permanent** failure, so the retry loop stops hammering a route that cannot recover on its own (`flexrouter/recovery.py` `PenaltyBox.quarantine`, `quarantine_provider`).
+- **Cooldown / penalty** — the exponential backoff applied to a route after a **transient** failure: doubling from `penalty_base_seconds` up to `penalty_max_seconds` (`flexrouter/recovery.py` `PenaltyBox.penalize`). Distinct from quarantine: a penalty is expected to clear on its own; a quarantine is not.
+- **Permanent vs. transient failure** — decided per-exception in `flexrouter/_router.py` (`_handle_provider_error`): a provider-wide failure (e.g. a rejected key) quarantines the whole provider; an exception with `is_permanent` (the provider says the model itself is gone) quarantines that one route; anything else is transient and gets a penalty/cooldown instead. A rejected key is treated as provider-wide because it is a fact about the provider, not about one model.
+
+## Not yet built
+
+The v2 design (`docs/superpowers/specs/2026-09-18-flexrouter-v2-design.md`) describes eight stages. Only Stage 1 — the shared home — is implemented. Do not treat later-stage concepts (anything not covered above) as present in the code.
