@@ -152,3 +152,45 @@ def test_a_good_edit_after_a_bad_one_is_still_picked_up(router):
     router._maybe_hot_reload()
     assert [m.model for m in router._cfg.tiers["fast"]] == ["brand-new"]
     assert router._reload_error is None
+
+
+def test_an_edit_inside_one_clock_tick_is_still_noticed(router):
+    """The watch used to compare a single newest timestamp, as a float.
+
+    A filesystem clock is only so fine, and on Windows two writes can land in
+    the same tick — so "newest" read identically either side of a real edit
+    and the change was missed until something else happened to move. It made
+    the suite flaky, which is the cheap version of the same bug: in a running
+    service it means a change the owner made in the dashboard quietly does
+    nothing. The fingerprint now carries each file's size as well, so an edit
+    that changes the length is caught however coarse the clock is.
+    """
+    before = router._newest_mtime()
+
+    swapped = {**SETTINGS, "buckets": {"fast": [
+        {"provider": "groq", "model": "keep-me", "score": 85, "rpm": 30, "tpm": 6000},
+    ]}}
+    home.config_path().write_text(yaml.dump(swapped), encoding="utf-8")
+    # Pin the timestamp back to exactly what it was, so only the size differs.
+    st = home.config_path().stat()
+    os.utime(home.config_path(), ns=(st.st_atime_ns, before[0][0]))
+
+    assert router._newest_mtime() != before
+    router._maybe_hot_reload()
+    assert [m.model for m in router._cfg.tiers["fast"]] == ["keep-me"]
+    assert router._reload_error is None
+
+
+def test_a_file_going_backwards_in_time_is_noticed(router):
+    """A single max() over timestamps also hid a file being replaced by an
+    older copy — restoring a backup, or a sync tool writing an earlier
+    version. The newest stayed the newest, so nothing reloaded."""
+    before = router._newest_mtime()
+    save_overrides({"models": {"groq/dead-model": {"enabled": False}}})
+    st = home.overrides_path().stat()
+    ancient = st.st_mtime_ns - 60_000_000_000
+    os.utime(home.overrides_path(), ns=(ancient, ancient))
+
+    assert router._newest_mtime() != before
+    router._maybe_hot_reload()
+    assert [m.model for m in router._cfg.tiers["fast"]] == ["keep-me"]

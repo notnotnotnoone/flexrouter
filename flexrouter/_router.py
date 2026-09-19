@@ -94,8 +94,8 @@ class FlexRouter:
         self._hooks = HookRunner()
         self._loop = asyncio.new_event_loop()
         self._loop_lock = threading.Lock()
-        self._known_mtimes: dict[Path, float] = {}
-        self._last_mtime: float = self._newest_mtime()
+        self._known_mtimes: dict[Path, tuple] = {}
+        self._last_mtime: tuple = self._newest_mtime()
         self._reload_error: str | None = None
 
     def _quarantine_block_reason(self, tier: str) -> str | None:
@@ -655,26 +655,35 @@ class FlexRouter:
 
         return [self._config_path, home.overrides_path(), home.keys_path()]
 
-    def _newest_mtime(self) -> float:
-        """The newest timestamp across the watched files.
+    def _newest_mtime(self) -> tuple:
+        """A fingerprint of the watched files: per file, its timestamp and size.
 
-        A file we cannot stat is a file that has told us nothing, not
-        a file that changed. Deleting or renaming the settings file
-        under a running router used to mean "carry on"; reading its
-        absence as a timestamp of zero turned it into "reload now",
-        and the reload then failed in the middle of a request. So a
-        vanished file keeps the last timestamp we did see for it.
+        Not a single newest timestamp. Timestamps are only as fine as the
+        filesystem's clock, and on Windows two edits can land in the same
+        tick — so "newest" could be identical either side of a real change,
+        and the change would be missed until something else moved. Keeping
+        each file's timestamp separately, alongside its size, catches both a
+        same-tick edit that changes the length and a file going backwards in
+        time (which `max()` also hid).
+
+        A file we cannot stat is a file that has told us nothing, not a file
+        that changed. Deleting or renaming the settings file under a running
+        router used to mean "carry on"; reading its absence as a timestamp of
+        zero turned it into "reload now", and the reload then failed in the
+        middle of a request. So a vanished file keeps the last fingerprint we
+        did see for it.
         """
-        newest = 0.0
+        fingerprint = []
         for path in self._watched_paths():
             try:
-                mtime = path.stat().st_mtime
+                st = path.stat()
             except OSError:
-                mtime = self._known_mtimes.get(path, 0.0)
+                mark = self._known_mtimes.get(path, (0, 0))
             else:
-                self._known_mtimes[path] = mtime
-            newest = max(newest, mtime)
-        return newest
+                mark = (st.st_mtime_ns, st.st_size)
+                self._known_mtimes[path] = mark
+            fingerprint.append(mark)
+        return tuple(fingerprint)
 
     def _maybe_hot_reload(self) -> None:
         """Pick up a configuration change, but never fail a request for it.
@@ -685,10 +694,10 @@ class FlexRouter:
         that stays broken is not retried on every single request; the
         next edit to it moves the timestamp again and we try afresh.
         """
-        mtime = self._newest_mtime()
-        if mtime == self._last_mtime:
+        fingerprint = self._newest_mtime()
+        if fingerprint == self._last_mtime:
             return
-        self._last_mtime = mtime
+        self._last_mtime = fingerprint
         try:
             self.reload()
         except Exception as e:
