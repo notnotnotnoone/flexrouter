@@ -5,6 +5,7 @@ import yaml
 
 from flexrouter import home
 from flexrouter.config import FlexConfig, load_config, resolve_keys
+from flexrouter.exceptions import ConfigError, ConfigFieldError
 from flexrouter.keys import KeyRecord, add_key
 from flexrouter.overrides import set_override
 
@@ -166,3 +167,59 @@ def test_resolve_keys_prefers_the_vault():
     vault = {"groq": [KeyRecord(id="groq-1", secret="v")]}
     got = resolve_keys("groq", {"api_key_env": "NOPE"}, vault, None)
     assert [r.secret for r in got] == ["v"]
+
+
+def test_a_malformed_secret_never_reaches_the_configerror_message(written_home):
+    # PyYAML's own parser error text embeds a literal snippet of the
+    # offending source line. If a syntax error lands next to an inline
+    # `api_key`, that snippet can contain the plaintext secret. load_config
+    # must never let str(e) from the YAML parser into the ConfigError.
+    home.config_path().write_text(
+        "providers:\n"
+        "  openrouter:\n"
+        "    api_key: sk-or-v1: SUPERSECRET1234\n"
+        "    base_url: https://openrouter.ai/api/v1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError) as exc_info:
+        load_config()
+    message = str(exc_info.value)
+    assert "SUPERSECRET1234" not in message
+    assert "sk-or-v1" not in message
+    # Still genuinely useful: names the file and, when PyYAML supplies it,
+    # where the problem is.
+    assert "config.yaml" in message
+    assert "line" in message.lower()
+
+
+def test_provider_missing_base_url_reports_the_field_not_unreadable(written_home):
+    home.config_path().write_text(
+        yaml.dump({
+            "settings": SETTINGS["settings"],
+            "providers": {"openrouter": {}},
+            "buckets": SETTINGS["buckets"],
+        }),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigFieldError) as exc_info:
+        load_config()
+    message = str(exc_info.value)
+    assert "openrouter" in message
+    assert "base_url" in message
+
+
+def test_bucket_entry_missing_score_reports_the_field_not_unreadable(written_home):
+    home.config_path().write_text(
+        yaml.dump({
+            "settings": SETTINGS["settings"],
+            "providers": SETTINGS["providers"],
+            "buckets": {"smart": [{"provider": "openrouter", "model": "m",
+                                    "rpm": 20, "tpm": 10000}]},
+        }),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigFieldError) as exc_info:
+        load_config()
+    message = str(exc_info.value)
+    assert "smart" in message
+    assert "score" in message

@@ -8,7 +8,7 @@ import click
 
 from flexrouter import home
 from flexrouter.config import load_config
-from flexrouter.exceptions import ConfigError
+from flexrouter.exceptions import ConfigError, ConfigFieldError
 from flexrouter.refresh import refresh_config
 
 
@@ -244,6 +244,7 @@ def doctor():
 
     from flexrouter import overrides as ov
 
+    is_new_home = not home.config_path().exists()
     home.ensure_home()
     click.echo(f"flexrouter home: {home.home_dir()}")
     click.echo(f"  settings   {home.config_path().name}")
@@ -251,12 +252,23 @@ def doctor():
     click.echo(f"  changes    {home.overrides_path().name}")
     click.echo(f"  records    {home.state_dir().name}{os.sep}")
     click.echo("")
+    if is_new_home:
+        click.echo("This is a brand-new flexrouter home — nothing was here yet, "
+                   "so an empty starter settings file was just created. The "
+                   "counts below are that empty default, not your own "
+                   "configuration. Add a key to get started: "
+                   "flexrouter keys add <provider>")
+        click.echo("")
 
     try:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             cfg = load_config()
-    except Exception as e:
+    except ConfigFieldError as e:
+        click.echo(f"Your settings file is missing something it needs: {e}",
+                   err=True)
+        raise SystemExit(1)
+    except ConfigError as e:
         click.echo(f"Could not read your settings: {e}", err=True)
         raise SystemExit(1)
 
@@ -265,10 +277,16 @@ def doctor():
                f"{len(cfg.providers)} provider(s). Serving on port {cfg.port}.")
     click.echo("")
 
+    vault = keyvault.load_keys()
     click.echo("Which key each provider will use:")
     for name, provider in sorted(cfg.providers.items()):
         if not provider.keys:
-            click.echo(f"  {name:<14} no key found")
+            disabled = [r for r in vault.get(name, []) if not r.enabled]
+            if disabled:
+                click.echo(f"  {name:<14} no usable key — {len(disabled)} "
+                           f"saved but disabled")
+            else:
+                click.echo(f"  {name:<14} no key found")
             continue
         first = provider.keys[0]
         if first.source == "env":

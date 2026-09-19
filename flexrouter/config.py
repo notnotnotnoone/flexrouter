@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 
 from flexrouter import home
-from flexrouter.exceptions import ConfigError
+from flexrouter.exceptions import ConfigError, ConfigFieldError
 from flexrouter.keys import KeyRecord, load_keys
 from flexrouter.overrides import apply_overrides, load_overrides
 
@@ -148,7 +148,15 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
     try:
         raw = yaml.safe_load(source.read_text(encoding="utf-8"))
     except Exception as e:
-        raise ConfigError(f"Cannot read {source}: {e}") from e
+        # Never interpolate str(e) here: PyYAML's parser errors embed a
+        # literal snippet of the offending source line, which can contain a
+        # secret typed inline (e.g. `api_key: sk-...`). Report only the file,
+        # the exception type, and — when PyYAML supplies it — the line and
+        # column, never the source text itself.
+        mark = getattr(e, "problem_mark", None)
+        location = f", line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        raise ConfigError(
+            f"Cannot read {source}: {type(e).__name__}{location}") from e
 
     if not raw:
         raise ConfigError(f"{source} is empty")
@@ -167,6 +175,9 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
     providers: dict[str, ProviderConfig] = {}
     for name, praw in (raw.get("providers") or {}).items():
         praw = praw or {}
+        if "base_url" not in praw:
+            raise ConfigFieldError(
+                f"providers.{name}.base_url is missing in {source}")
         records = resolve_keys(name, praw, vault, source)
         providers[name] = ProviderConfig(
             base_url=praw["base_url"],
@@ -180,8 +191,15 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
         buckets_raw = raw.get("tiers")
     tiers: dict[str, list[ModelConfig]] = {}
     for bucket_name, models in (buckets_raw or {}).items():
-        tiers[bucket_name] = [
-            ModelConfig(
+        parsed_models: list[ModelConfig] = []
+        for i, m in enumerate(models or []):
+            m = m or {}
+            for field_name in ("provider", "model", "score", "rpm", "tpm"):
+                if field_name not in m:
+                    raise ConfigFieldError(
+                        f"buckets.{bucket_name}[{i}].{field_name} is missing "
+                        f"in {source}")
+            parsed_models.append(ModelConfig(
                 provider=m["provider"],
                 model=m["model"],
                 score=m["score"],
@@ -190,9 +208,8 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
                 context_window=m.get("context_window", 200000),
                 vision=m.get("vision", False),
                 quotas=m.get("quotas", {}),
-            )
-            for m in (models or [])
-        ]
+            ))
+        tiers[bucket_name] = parsed_models
 
     port = int(settings.get("port", settings.get("dashboard_port", home.DEFAULT_PORT)))
     return FlexConfig(
