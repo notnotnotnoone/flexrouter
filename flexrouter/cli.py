@@ -99,14 +99,18 @@ def status():
 
 @cli.command()
 def refresh():
-    """Re-discover models + rate limits and rewrite your settings file (with backup)."""
+    """Check your providers for model and limit changes. Nothing is changed."""
     path = home.config_path()
     cfg = load_config(path)
     aa_key = os.environ.get("AA_API_KEY")
     result = refresh_config(str(path), cfg.state_dir, aa_key=aa_key)
-    click.echo(f"Refreshed: +{len(result.added)} added, "
-               f"-{len(result.removed)} removed, {len(result.changed)} changed")
-    click.echo(f"Backup: {result.backup_path}")
+    click.echo(
+        f"Checked your providers: found {len(result.added)} new model(s), "
+        f"{len(result.removed)} that are gone, and {len(result.changed)} "
+        f"with different limits."
+    )
+    click.echo("Nothing has been changed. Your settings file is exactly as you left it.")
+    click.echo(f"What was found is saved here: {result.pending_path}")
     for err in result.provider_errors:
         click.echo(f"  ! {err['provider']}: {err['error']}", err=True)
 

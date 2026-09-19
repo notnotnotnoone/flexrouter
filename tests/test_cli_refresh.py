@@ -9,9 +9,12 @@ def test_refresh_prints_summary(monkeypatch, tmp_path):
     cfg.write_text("providers: {}\ntiers: {}\nsettings:\n  state_dir: .flexrouter\n")
     monkeypatch.setattr(cli.home, "config_path", lambda: cfg)
     fake = RefreshResult(timestamp="2026-06-19T12:00:00+00:00", added=["groq/a"], removed=[],
-                         changed=[], backup_path="/b.yaml", provider_errors=[{"provider": "x", "error": "boom"}])
+                         changed=[], provider_errors=[{"provider": "x", "error": "boom"}],
+                         pending_path=str(tmp_path / "st" / "catalog_pending.json"))
     monkeypatch.setattr(cli, "refresh_config", lambda *a, **k: fake, raising=False)
     result = CliRunner().invoke(cli.cli, ["refresh"])
     assert result.exit_code == 0
-    assert "+1" in result.output
+    assert "1 new model" in result.output
     assert "boom" in result.output
+    assert "Nothing has been changed" in result.output
+    assert str(tmp_path / "st" / "catalog_pending.json") in result.output

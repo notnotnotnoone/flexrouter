@@ -19,4 +19,4 @@ A settings file the tool can silently rewrite is a settings file the owner canno
 
 ## Note
 
-`flexrouter refresh` (`flexrouter/refresh.py::refresh_config`) is an exception: it still overwrites `config.yaml` directly (after writing a timestamped backup to `state/backups/`). That command predates Stage 1 and was not brought in line with this decision as part of this stage — anyone using `refresh` should know their comments and layout do not survive it, unlike everything else described above.
+`flexrouter refresh` (`flexrouter/refresh.py::refresh_config`) used to be an exception: it overwrote `config.yaml` directly, taking a timestamped backup first. That is now fixed. `refresh` only queries providers and writes its findings — what appeared, what vanished, what limits changed — to `state/catalog_pending.json`. Nothing is applied: `config.yaml` is not touched, and neither is `overrides.json`, until a later stage adds a way for the owner to accept individual findings. The old backup step is gone with it, since there is no longer a rewrite to protect against.

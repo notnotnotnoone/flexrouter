@@ -294,7 +294,7 @@ flexrouter doctor           # show where your settings, keys, and data live
 flexrouter keys add <name>  # save a key for a provider
 flexrouter keys list        # show your saved keys (masked)
 flexrouter keys rm <name> <id>  # remove a saved key
-flexrouter refresh          # re-check available models and rate limits (see below)
+flexrouter refresh          # check available models and rate limits (see below); changes nothing
 flexrouter config export    # print a portable, shareable copy of your settings
 flexrouter config import <token>
 ```
@@ -327,7 +327,7 @@ Edit your settings file while your app is running — changes are picked up auto
 
 ## Rebuilding your model list
 
-`flexrouter refresh` checks each provider you have a key for, finds which models are actually available right now along with their real rate limits, and rewrites your settings file's provider and bucket sections to match — after saving a timestamped backup of the old version. This is the one command that does rewrite your settings file; everything else described above (the dashboard, `keys add`, etc.) leaves it alone.
+`flexrouter refresh` checks each provider you have a key for, and finds which models are actually available right now along with their real rate limits. It does not change anything for you: what it found is written to a record in your data folder (see `flexrouter doctor` for the path), and your settings file is left exactly as it was, comments and all — the same as everything else described above. A later version will let you review what was found and accept the parts you want; for now, `refresh` only tells you what it saw.
 
 ## Moving from an older setup
 
