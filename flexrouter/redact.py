@@ -1,90 +1,84 @@
-"""Nothing key-shaped leaves this process in full.
+r"""Nothing key-shaped leaves this process in full.
 
 A provider's own error text is forwarded to whoever sent the request, because
 flattening it to "server_error" throws away the only explanation anyone will
 get. But several providers echo the rejected credential back in that text
 ("Incorrect API key provided: sk-..."), so the text has to be scrubbed on the
-way out. Stage 1 shipped two leaks of exactly this shape — one through raw
-parser error text, one through an export — and both were caught late.
+way out. Stage 1 shipped two leaks of exactly this shape - one through raw
+parser error text, one through an export - and both were caught late.
 
-Round 1 review found three verified ways a credential still escaped the
-first version of this rule (split by internal separators, too short for the
-length floor, or the wrong character class). Round 2 found two more (the
-length floor still missed a real short-token example with no cue word
-nearby, and a message naming two credentials only had the second one
-caught) and fixed them by adding `_pick_value`: for each cue word, look at
-the candidates nearby and choose which one is "the" value.
+Four rounds of review have narrowed this rule. Round 2's attempt to decide
+*which* run near a cue word was the credential (`_pick_value`) was itself a
+hole and was deleted in round 3 in favour of a window scan. Round 4 closed
+the last three: ':' had been dropped from the run class, a run straddling a
+window's far edge was only half scrubbed, and the two rules ran in the wrong
+order. Do not reintroduce a candidate-picking heuristic, and do not add an
+exemption beside the single one below.
 
-Round 3's re-review found that `_pick_value` was itself the hole: choosing
-which candidate near a cue word is the credential is a parsing problem, not
-something a heuristic can close, and every attempt to tune it (prefer a
-strong delimiter, prefer the first candidate, bound the search window)
-just moved the leak rather than closing it — a later colon, an unexpected
-punctuation mark, or a newline between the cue and the value was always
-enough to make the heuristic pick the wrong thing or nothing at all.
-`_pick_value` is deleted, along with `_VALUE_CHARS` and the
-`[ :="']`-shaped delimiter pattern it depended on. Rule B no longer tries
-to identify *which* run after a cue word is the credential:
+The token character class is ``[A-Za-z0-9_\-./+=:]`` - letters, digits, and
+the separators real credential formats use internally (JWT dots, path-style
+AWS secrets, base64 padding and ``=``, ``key: value`` colons). Without them a
+credential splits into fragments that each fall under the floor.
 
-  Rule A (the blunt one, unchanged since round 2). Any run of 16 or more
-  characters from the set a credential is built from — letters, digits, and
-  the separators real formats use internally (``_-./+=:``, covering JWT
-  dots, path-style AWS secrets, base64 padding, and ``key: value``/
-  ``key=value`` framing) — is scrubbed outright. There is no
-  character-class exception: a purely alphabetic or purely numeric run of
-  this length is scrubbed the same as a mixed one.
+The two rules, in the order they run:
 
-  Rule B (the window one, replacing the cue-then-token rule entirely). For
-  every occurrence of a cue word — api_key / api-key / api key / apikey /
-  key / token / bearer / credential / secret / authorization
-  (case-insensitive, whole word) — take the 48 characters immediately
-  after it. Inside that window, scrub *every* run of 6 or more token
-  characters, not just one candidate. There is no delimiter requirement and
-  no adjacency requirement any more: a newline, a parenthesis, a semicolon,
-  or any other character between the cue word and the credential no longer
-  matters, because nothing has to directly follow the cue for the window
-  scan to reach it.
+  Rule B (first - the window one). For every case-insensitive, word-bounded
+  occurrence of a cue word - api_key / api-key / api key / apikey / key /
+  token / bearer / credential / secret / authorization - take the 48
+  characters immediately after it. Inside that window, scrub *every* run of
+  6 or more token characters that starts inside it, extended to the run's
+  natural end first: a run is never scrubbed in part, because the part left
+  outside the window was a piece of the credential in clear. No candidate
+  is chosen over another, there is no delimiter class and no adjacency
+  requirement, so a newline, parenthesis or semicolon between the cue word
+  and the credential changes nothing.
 
   The one exemption, and the only one permitted: a run made entirely of
-  lowercase letters a-z is left alone. That is what keeps "rejected",
-  "upstream", "retrying", "please", "billing", "settings", "expired", and
-  "reason" — ordinary words that happen to sit near a cue word — readable.
-  A run containing a digit, an uppercase letter, or any of `_ - . / + = :`
-  is scrubbed regardless of length (down to the 6-character floor for a
-  Rule B match).
+  lowercase letters a-z is left alone. That is what keeps ordinary words
+  that happen to sit near a cue word - "rejected", "retrying", "please",
+  "billing", "expired" - readable. A run containing a digit, an uppercase
+  letter, or any of ``_ - . / + = :`` is scrubbed regardless of length,
+  down to the 6-character floor.
+
+  Rule A (second - the blunt one). Any run of 16 or more token characters
+  is scrubbed outright, with no character-class condition at all: a purely
+  alphabetic or purely numeric run of that length goes the same way as a
+  mixed one. It runs second because running it first could swallow a cue
+  word into its own replacement and destroy the word boundary Rule B needs,
+  letting a short credential beside it survive. Running second is safe:
+  "…" is not a token character, so a value Rule B has already cut down
+  cannot be re-matched by Rule A into anything exposing more of it.
 
   The tail. The scrubbed form keeps "…" plus the token's last four
-  characters — but only when the token is longer than 8 characters. An
-  8-or-fewer character token becomes a bare "…" with no tail, so a short
-  key does not leak half of itself through the part meant to make the
-  message merely less readable.
+  characters - but only when the token is longer than 8 characters. An
+  8-or-fewer character token becomes a bare "…", so the part meant to
+  preserve a little readability does not itself leak half of a short key.
 
 Accepted costs, stated here rather than engineered around:
 
-  - A URL 16+ characters long is now scrubbed whole, because a credential in
-    a query string is exactly the case that must not escape. No URL
-    exemption is added for this.
+  - A URL 16+ characters long is scrubbed whole, because a credential in a
+    query string is exactly the case that must not escape. No URL exemption.
   - Ordinary English words of 16 or more characters ("responsibilities",
-    "uncharacteristically") are scrubbed out of error text by Rule A alone,
-    with no cue word needed. No dictionary check, vowel-ratio heuristic, or
-    other cleverness is added to spare them — every such carve-out is a
-    hole a credential could sit in instead.
-  - Named residual (round 3): a credential of 15 characters or fewer, made
-    entirely of lowercase a-z letters, sitting near a cue word, is not
-    caught by Rule B — the lowercase exemption above cannot tell such a
-    credential apart from an ordinary lowercase word, and Rule A's floor
-    doesn't reach it either. This is knowingly accepted: the alternative is
-    scrubbing every lowercase word within 48 characters of any cue word,
+    "uncharacteristically") are scrubbed by Rule A alone, with no cue word
+    needed, and a lowercase word directly abutting a colon inside a cue
+    window ("upstream:") is one run containing ':' and so is not exempt.
+    No dictionary check, vowel-ratio heuristic or other cleverness is added
+    to spare them - every such carve-out is a hole a credential can sit in.
+  - Named residual: a credential more than 48 characters after its cue word
+    is out of Rule B's window, and is caught only if it is long enough for
+    Rule A. Widening the window turns most of a long provider message into
+    ellipses.
+  - Named residual: a credential of 15 characters or fewer made only of
+    lowercase a-z letters, sitting near a cue word, is not caught - the
+    lowercase exemption cannot tell it apart from an ordinary word, and
+    Rule A's floor does not reach it. Knowingly accepted: the alternative
+    is scrubbing every lowercase word within 48 characters of any cue word,
     which makes error messages unreadable and is exactly the kind of
     overreach that gets a scrubbing mechanism disabled rather than trusted.
-    This exemption is not widened, and no other exemption (dictionary,
-    vowel ratio, length-based cleverness, model-name, URL) is added beside
-    it.
   - The retained last-four tail is the same form the dashboard's `mask()`
-    shows, so an error message lets a caller correlate which of their own
-    configured keys was rejected. That is a small, known, accepted
-    disclosure, not a leak of the credential itself.
-  - Neither rule is a model-name exception, and none will be added: a rule
+    shows, so a caller can correlate which of their own configured keys was
+    rejected. A small, known, accepted disclosure.
+  - Neither rule has a model-name exception, and none will be added: a rule
     with a carve-out is a rule with a hole a credential can fit through.
 """
 from __future__ import annotations
@@ -109,16 +103,18 @@ _CUE_WORD = re.compile(
     r"(?i)\b(?:api[ _\-]?key|key|token|bearer|credential|secret|authorization)\b"
 )
 
-# The characters a Rule B *run* is made of inside a cue word's window - the
-# same set Rule A uses, minus ':'. Unlike round 2's now-deleted
-# _VALUE_CHARS, this isn't about marking a delimiter any more (Rule B has
-# no delimiter concept left at all) - it's so an ordinary lowercase word
-# directly followed by a colon in running prose ("upstream:", "reason:")
-# doesn't get fused with that colon into one run that then fails the
-# all-lowercase exemption on the colon's account. The colon simply breaks
-# a run the same way a space already does.
-_RUN_CHARS = r"[A-Za-z0-9_\-./+=]"
+# The characters a Rule B *run* is made of inside a cue word's window: the
+# same full token class Rule A uses, ':' included. Round 3 excluded ':'
+# here so an ordinary lowercase word directly followed by a colon in
+# running prose ("upstream:", "reason:") would not fuse with that colon
+# into a run that then fails the all-lowercase exemption. That softened
+# the ruled class, and a short colon-separated credential
+# ("ab12:cd34:ef56") was split into sub-floor pieces and survived whole.
+# The class is the ruled one again; a lowercase word that happens to abut
+# a colon being scrubbed is the accepted cost of that.
+_RUN_CHARS = _TOKEN_CHARS
 _WINDOW_RUN = re.compile(_RUN_CHARS + r"{6,}")
+_RUN_CHAR = re.compile(_RUN_CHARS)
 
 # The one exemption Rule B makes: a run made entirely of lowercase a-z
 # letters. Anything else in a cue word's window - mixed case, digits,
@@ -141,6 +137,13 @@ def _tail(token: str) -> str:
     return "…" + token[-4:]
 
 
+def _run_end(text: str, end: int) -> int:
+    """Where a run that was cut off at a window's edge actually ends."""
+    while end < len(text) and _RUN_CHAR.match(text[end]):
+        end += 1
+    return end
+
+
 def _scrub_cued(text: str) -> str:
     """Every run of 6+ token characters within 48 characters of any cue
     word, except a run made entirely of lowercase letters. No candidate is
@@ -155,11 +158,15 @@ def _scrub_cued(text: str) -> str:
         window_end = min(cue.end() + _CUE_WINDOW, len(text))
         window = text[cue.end():window_end]
         for m in _WINDOW_RUN.finditer(window):
-            token = m.group(0)
+            start = cue.end() + m.start()
+            # A run that starts inside the window but continues past its
+            # far edge is scrubbed whole, not just the part that happened
+            # to fall inside. Cutting at the edge left the tail of a
+            # credential in clear.
+            end = _run_end(text, cue.end() + m.end())
+            token = text[start:end]
             if _ALL_LOWER.match(token):
                 continue
-            start = cue.end() + m.start()
-            end = cue.end() + m.end()
             spans[start] = (end, _tail(token))
 
     if not spans:
@@ -183,6 +190,11 @@ def scrub(text: str) -> str:
     if not text:
         return text
 
-    text = _LONG_RUN.sub(lambda m: _tail(m.group(0)), text)
+    # Rule B first: it needs the cue words intact, and Rule A running
+    # first could swallow one into its own replacement and destroy the
+    # word boundary Rule B looks for. Rule A then runs over the result -
+    # "…" is not a token character, so a value Rule B already cut down
+    # cannot be re-matched into anything that exposes more of it.
     text = _scrub_cued(text)
+    text = _LONG_RUN.sub(lambda m: _tail(m.group(0)), text)
     return text

@@ -210,8 +210,63 @@ def test_ordinary_lowercase_words_near_a_cue_word_stay_readable():
     # credential in this message must go, but the plain lowercase prose
     # around it - the only thing standing between this rule and an error
     # message that's just a wall of ellipses - must not.
+    #
+    # Round 4 changed one word here. ':' is back in the run class (round 3
+    # had dropped it, which let "ab12:cd34:ef56" survive whole), so a
+    # lowercase word directly abutting a colon - "upstream:" - is now one
+    # run containing a non-lowercase character and is no longer exempt.
+    # That is the ruled class doing what it is supposed to do, not a
+    # weakening: the safety assertion below is unchanged, and the words
+    # that are not glued to punctuation still read normally.
     out = scrub("token gsk_BBB222 rejected by upstream: retrying")
     assert "gsk_BBB222" not in out
     assert "rejected" in out
-    assert "upstream" in out
+    assert "upstream" not in out
     assert "retrying" in out
+
+
+# Round 4: three narrow holes left by round 3's window scan.
+
+def test_a_short_colon_bearing_credential_is_cut_down():
+    # Finding 1: round 3 dropped ':' from the run class inside a cue
+    # window, so a short colon-separated credential was split into
+    # sub-6-character pieces and survived whole. The window scan uses the
+    # full ruled token class again.
+    out = scrub("token ab12:cd34:ef56")
+    assert "ab12:cd34:ef56" not in out
+
+
+def test_a_run_straddling_the_window_edge_is_scrubbed_whole():
+    # Finding 2: the 48-character window cut a run in half, so only the
+    # part inside the window was scrubbed and the rest leaked. A run that
+    # starts inside the window is extended to its natural end first.
+    out = scrub("token " + "ww " * 12 + "sk-Ab12Cd7777x rejected")
+    assert "sk-Ab12Cd7777x" not in out
+    assert "Cd7777x" not in out
+    assert "7777x" not in out
+
+
+def test_rule_a_no_longer_destroys_a_cue_word_before_rule_b_sees_it():
+    # Finding 3: Rule A used to run first and could swallow a cue word into
+    # its own replacement, destroying the word boundary Rule B needs, so
+    # Rule B never fired and the credential beside it survived. Rule B now
+    # runs first, while the cue word is still intact.
+    #
+    # The review quoted "prefix=aaaaaaaaaaaakey sk-Ab12Cd" for this, but
+    # that string has no word-bounded cue word to destroy in the first
+    # place ("key" there is the tail of "aaaaaaaaaaaakey", so \bkey\b never
+    # matches it, before or after Rule A). See the round 4 report. This is
+    # the same mechanism with a cue word that is genuinely word-bounded and
+    # genuinely swallowed by Rule A's 16-character run.
+    out = scrub("key=abcdefghijklmnop sk-Ab12Cd")
+    assert "sk-Ab12Cd" not in out
+
+
+def test_a_value_scrubbed_by_rule_b_is_not_re_matched_by_rule_a():
+    # Rule A runs second now, so it sees Rule B's output. The replacement
+    # marker "…" is not a token character, so a value Rule B already cut to
+    # a four-character tail cannot be re-matched by Rule A into anything
+    # that exposes more of it.
+    out = scrub("key sk-AAAABBBBCCCCDDDD9999")
+    assert "sk-AAAABBBBCCCCDDDD9999" not in out
+    assert out == "key …9999"
