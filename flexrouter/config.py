@@ -211,6 +211,25 @@ def redact_settings_text(text: str) -> str:
     return out
 
 
+def _number(settings: dict, name: str, default, cast):
+    """Read one numeric setting, reporting a bad value as a ConfigError.
+
+    A bare int()/float() here raises ValueError, which is not a ConfigError,
+    so every caller's "your settings are broken" handler misses it and the
+    whole program tracebacks instead. A setting can carry any text at all:
+    the settings file is hand-written, and overrides.json is written from an
+    unauthenticated local endpoint.
+    """
+    value = settings.get(name, default)
+    try:
+        return cast(value)
+    except (ValueError, TypeError) as e:
+        raise ConfigError(
+            f"settings.{name} should be a number, but it is {value!r}. "
+            f"Fix it in your settings file, or undo a dashboard change with: "
+            f"flexrouter config reset settings {name}") from e
+
+
 def load_config(path: Path | str | None = None) -> FlexConfig:
     """Load settings from the flexrouter home, with overrides layered on top."""
     home.ensure_home()
@@ -237,8 +256,9 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
     preset_name = settings.get("retry_policy", "balanced")
     preset = RETRY_PRESETS.get(preset_name, RETRY_PRESETS["balanced"])
     retry = RetryConfig(
-        retries=settings.get("retries", preset["retries"]),
-        backoff_seconds=float(settings.get("backoff_seconds", preset["backoff_seconds"])),
+        retries=_number(settings, "retries", preset["retries"], int),
+        backoff_seconds=_number(settings, "backoff_seconds",
+                                preset["backoff_seconds"], float),
     )
 
     vault = load_keys()
@@ -281,19 +301,20 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
             ))
         tiers[bucket_name] = parsed_models
 
-    port = int(settings.get("port", settings.get("dashboard_port", home.DEFAULT_PORT)))
+    port_name = "port" if "port" in settings else "dashboard_port"
+    port = _number(settings, port_name, home.DEFAULT_PORT, int)
     return FlexConfig(
         tiers=tiers,
         providers=providers,
         state_dir=settings.get("state_dir", str(home.state_dir())),
-        window_seconds=int(settings.get("window_seconds", 60)),
-        penalty_base_seconds=int(settings.get("penalty_base_seconds", 30)),
-        penalty_max_seconds=int(settings.get("penalty_max_seconds", 1800)),
-        session_ttl_minutes=int(settings.get("session_ttl_minutes", 30)),
+        window_seconds=_number(settings, "window_seconds", 60, int),
+        penalty_base_seconds=_number(settings, "penalty_base_seconds", 30, int),
+        penalty_max_seconds=_number(settings, "penalty_max_seconds", 1800, int),
+        session_ttl_minutes=_number(settings, "session_ttl_minutes", 30, int),
         port=port,
         dashboard_port=port,
-        sample_interval_seconds=int(settings.get("sample_interval_seconds", 60)),
-        health_history_days=int(settings.get("health_history_days", 30)),
+        sample_interval_seconds=_number(settings, "sample_interval_seconds", 60, int),
+        health_history_days=_number(settings, "health_history_days", 30, int),
         retry=retry,
         provider_budget=settings.get("provider_budget", {}),
         hooks=settings.get("hooks", []),

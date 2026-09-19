@@ -121,6 +121,46 @@ def config_export():
     click.echo(base64.b64encode(text.encode("utf-8")).decode())
 
 
+@config.command("reset")
+@click.argument("section", required=False,
+                type=click.Choice(["settings", "providers", "models"]))
+@click.argument("name", required=False)
+def config_reset(section: str | None, name: str | None):
+    """Undo dashboard changes. With no arguments, undo all of them.
+
+    Your own settings file is never involved — this only clears what the
+    dashboard saved on top of it. Use it when a change made flexrouter
+    unable to read your settings.
+    """
+    from flexrouter import overrides as ov
+
+    if section is None:
+        changes = ov.load_overrides()
+        if not changes:
+            click.echo("There were no dashboard changes to undo.")
+            return
+        ov.save_overrides({})
+        click.echo("Undid every dashboard change. Your settings file is "
+                   "untouched, as always.")
+        return
+
+    if name is None:
+        changes = ov.load_overrides()
+        if not changes.get(section):
+            click.echo(f"There were no {section} changes to undo.")
+            return
+        changes.pop(section)
+        ov.save_overrides(changes)
+        click.echo(f"Undid every {section} change.")
+        return
+
+    if not ov.clear_override(section, name):
+        click.echo(f"There was no {section} change for {name!r} to undo.",
+                   err=True)
+        raise SystemExit(1)
+    click.echo(f"Undid the {section} change for {name}.")
+
+
 @config.command("import")
 @click.argument("token")
 def config_import(token: str):

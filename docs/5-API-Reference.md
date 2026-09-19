@@ -555,6 +555,21 @@ Tier: medium
 
 ---
 
+### `flexrouter config reset`
+
+```bash
+flexrouter config reset                       # undo every dashboard change
+flexrouter config reset settings              # undo every settings change
+flexrouter config reset settings port         # undo one change
+flexrouter config reset models groq/llama-3.1-8b-instant
+```
+
+Undoes changes made from the dashboard, which are kept in their own file next to your settings. Your own settings file is never involved.
+
+Use this if a dashboard change ever leaves flexrouter unable to read your settings: it is the way back without hand-editing anything.
+
+---
+
 ### `flexrouter config export`
 
 ```bash
@@ -780,6 +795,7 @@ All `generate()` and `agenerate()` responses follow OpenAI's chat completions fo
 | API server | `flexrouter serve` |
 | View status | `flexrouter status` |
 | Where are my settings? | `flexrouter doctor` |
+| Undo a dashboard change | `flexrouter config reset` |
 | Save a key | `flexrouter keys add <provider>` |
 | List saved keys | `flexrouter keys list` |
 

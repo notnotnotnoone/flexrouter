@@ -45,6 +45,8 @@ Two things worth knowing about this file:
 - **It's yours.** flexrouter reads it but never rewrites it, so any comments or notes you leave in it stay put.
 - **Anything you change from the dashboard is saved separately** — in a second file next to it, layered on top when flexrouter reads your settings — so your hand-written file still doesn't get touched.
 
+If a change you made from the dashboard ever stops flexrouter from reading your settings, `flexrouter config reset` undoes those changes and puts you back where you were. It only clears the dashboard's file — your own settings file is not involved.
+
 If you're moving from an older, per-project settings file, see [Moving from an older setup](#moving-from-an-older-setup) below — flexrouter does not do this move for you automatically.
 
 ## Quickstart
@@ -289,6 +291,7 @@ flexrouter keys add <name>  # save a key for a provider
 flexrouter keys list        # show your saved keys (masked)
 flexrouter keys rm <name> <id>  # remove a saved key
 flexrouter refresh          # check available models and rate limits (see below); changes nothing
+flexrouter config reset     # undo changes made from the dashboard
 flexrouter config export    # print a shareable copy of your settings (keys hidden)
 flexrouter config import <token>
 ```

@@ -14,6 +14,42 @@ from flexrouter.store import read_json, write_json
 
 SECTIONS = ("settings", "providers", "models")
 
+# What the dashboard is allowed to change, per section. Anything arriving from
+# outside is checked against these before it is written: an override that
+# load_config cannot make sense of wedges settings loading permanently, from
+# an unauthenticated local endpoint, and the override file outlives the
+# process that wrote it.
+ALLOWED_FIELDS: dict[str, frozenset[str]] = {
+    "settings": frozenset({
+        "port", "dashboard_port", "state_dir", "window_seconds",
+        "penalty_base_seconds", "penalty_max_seconds", "session_ttl_minutes",
+        "sample_interval_seconds", "health_history_days", "retry_policy",
+        "retries", "backoff_seconds", "provider_budget", "hooks",
+    }),
+    # Not `api_key`/`api_keys` (credentials never go in settings) and not
+    # `api_key_env` (it would let a caller point a provider at any environment
+    # variable on the machine).
+    "providers": frozenset({"base_url", "header_parser"}),
+    # Deliberately not `provider` or `model`: those two fields are the
+    # model's identity. Rewriting them turns an override for one model into a
+    # different model, possibly on a provider that does not exist.
+    "models": frozenset({
+        "enabled", "score", "rpm", "tpm", "context_window", "vision", "quotas",
+    }),
+}
+
+
+def check_fields(section: str, fields: dict) -> None:
+    """Raise ValueError if `fields` holds anything this section may not set."""
+    if section not in ALLOWED_FIELDS:
+        raise ValueError(f"unknown override section {section!r}")
+    unknown = sorted(set(fields or {}) - ALLOWED_FIELDS[section])
+    if unknown:
+        allowed = ", ".join(sorted(ALLOWED_FIELDS[section]))
+        raise ValueError(
+            f"{', '.join(unknown)} cannot be changed here. "
+            f"What can: {allowed}")
+
 
 def _path(path: Path | str | None) -> Path:
     return Path(path) if path else home.overrides_path()

@@ -58,8 +58,14 @@ def post_config(raw: dict) -> None:
 
     config.yaml is hand-written and is never rewritten — that is what keeps
     the owner's comments alive (spec §1).
+
+    Everything here arrives from outside, over an unauthenticated local
+    endpoint, and is written to a file that outlives the process. An override
+    load_config cannot make sense of would wedge settings loading for good, so
+    every field is checked against `overrides.ALLOWED_FIELDS` first and
+    nothing is written unless all of it passes.
     """
-    from flexrouter.overrides import load_overrides, save_overrides
+    from flexrouter.overrides import check_fields, load_overrides, save_overrides
 
     for name, praw in (raw.get("providers") or {}).items():
         if not isinstance(praw, dict):
@@ -68,6 +74,18 @@ def post_config(raw: dict) -> None:
             raise ValueError(
                 f"Credentials for {name!r} don't go in settings — "
                 f"add them with: flexrouter keys add {name}")
+
+    unknown_sections = sorted(set(raw) - set(("settings", "providers", "models")))
+    if unknown_sections:
+        raise ValueError(
+            f"{', '.join(unknown_sections)} cannot be changed here. "
+            f"What can: models, providers, settings")
+
+    check_fields("settings", raw.get("settings") or {})
+    for name, fields in (raw.get("providers") or {}).items():
+        check_fields("providers", fields or {})
+    for ident, fields in (raw.get("models") or {}).items():
+        check_fields("models", fields or {})
 
     data = load_overrides()
     for key, value in (raw.get("settings") or {}).items():

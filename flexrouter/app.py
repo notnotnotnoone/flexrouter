@@ -357,7 +357,12 @@ async def api_post_config(request: Request):
         return JSONResponse({"error": "empty or invalid body"}, status_code=400)
     if not body:
         return JSONResponse({"error": "empty body"}, status_code=400)
-    post_config(body)
+    try:
+        post_config(body)
+    except (ValueError, TypeError) as e:
+        # A rejected change is the caller's mistake, not a server fault, and
+        # nothing was written.
+        return JSONResponse({"error": str(e)}, status_code=400)
     return {"ok": True}
 
 

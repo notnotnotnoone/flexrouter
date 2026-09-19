@@ -94,10 +94,7 @@ class FlexRouter:
         self._hooks = HookRunner()
         self._loop = asyncio.new_event_loop()
         self._loop_lock = threading.Lock()
-        try:
-            self._last_mtime: float = self._config_path.stat().st_mtime
-        except OSError:
-            self._last_mtime = 0.0
+        self._last_mtime: float = self._newest_mtime()
 
     def _quarantine_block_reason(self, tier: str) -> str | None:
         """Explain a tier that is empty only because everything is quarantined.
@@ -641,11 +638,29 @@ class FlexRouter:
     def __exit__(self, *_) -> None:
         self.close()
 
+    def _watched_paths(self) -> list[Path]:
+        """Every file a running router's configuration can come out of.
+
+        Watching only the settings file would mean watching the one file
+        nothing may write: disabling a dead model in the dashboard lands in
+        overrides.json, and adding a key lands in keys.json. Neither would
+        ever be noticed until a restart.
+        """
+        from flexrouter import home
+
+        return [self._config_path, home.overrides_path(), home.keys_path()]
+
+    def _newest_mtime(self) -> float:
+        newest = 0.0
+        for path in self._watched_paths():
+            try:
+                newest = max(newest, path.stat().st_mtime)
+            except OSError:
+                continue
+        return newest
+
     def _maybe_hot_reload(self) -> None:
-        try:
-            mtime = self._config_path.stat().st_mtime
-            if mtime != self._last_mtime:
-                self._last_mtime = mtime
-                self.reload()
-        except OSError:
-            pass
+        mtime = self._newest_mtime()
+        if mtime != self._last_mtime:
+            self._last_mtime = mtime
+            self.reload()
