@@ -24,8 +24,13 @@ def get_logs(state_dir: str, n: int = 50) -> list[dict]:
     return rows[-n:]
 
 
-def get_config() -> dict:
-    """The settings as flexrouter sees them: the file, plus overrides."""
+def _config_unredacted() -> dict:
+    """The settings as flexrouter sees them: the file, plus overrides.
+
+    Never return this from anything a caller can reach. A key typed into the
+    settings file is a supported (deprecated) way to reach a provider, so this
+    structure can contain live secrets.
+    """
     import yaml
 
     from flexrouter import home
@@ -34,6 +39,13 @@ def get_config() -> dict:
     home.ensure_home()
     raw = yaml.safe_load(home.config_path().read_text(encoding="utf-8")) or {}
     return apply_overrides(raw, load_overrides())
+
+
+def get_config() -> dict:
+    """The settings as flexrouter sees them, with every credential masked."""
+    from flexrouter.config import redact_config
+
+    return redact_config(_config_unredacted())
 
 
 def get_overrides() -> dict:
@@ -76,7 +88,9 @@ def get_uptime(state_dir: str) -> dict:
 
 
 def get_config_validation() -> dict:
-    return validate_config(get_config())
+    # Checked against the unredacted structure: masking a key would look
+    # like a different key, and validation never leaves this process.
+    return validate_config(_config_unredacted())
 
 
 def get_health_current(state_dir: str) -> dict:

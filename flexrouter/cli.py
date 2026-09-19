@@ -7,7 +7,7 @@ from pathlib import Path
 import click
 
 from flexrouter import home
-from flexrouter.config import load_config
+from flexrouter.config import load_config, redact_settings_text
 from flexrouter.exceptions import ConfigError, ConfigFieldError
 from flexrouter.refresh import refresh_config
 
@@ -115,10 +115,10 @@ def config():
 
 @config.command("export")
 def config_export():
-    """Export config as a base64 token."""
+    """Print a shareable copy of your settings. Any key in it is hidden."""
     path = home.config_path()
-    token = base64.b64encode(path.read_bytes()).decode()
-    click.echo(token)
+    text = redact_settings_text(path.read_text(encoding="utf-8"))
+    click.echo(base64.b64encode(text.encode("utf-8")).decode())
 
 
 @config.command("import")
@@ -129,6 +129,10 @@ def config_import(token: str):
     click.echo("flexrouter never overwrites your settings file. Here it is — "
                f"paste what you want into {home.config_path()}:\n")
     click.echo(data)
+    click.echo("\nA key is never included in an export. Anywhere you see "
+               "… followed by four characters, that is a key that was "
+               "hidden on the way out — add your own with: "
+               "flexrouter keys add <provider>")
 
 
 from flexrouter import keys as keyvault

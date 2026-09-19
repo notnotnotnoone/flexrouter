@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 import warnings
 from dataclasses import dataclass, field
@@ -139,6 +140,75 @@ def resolve_keys(provider: str, praw: dict, vault: dict[str, list[KeyRecord]],
     )
     return [KeyRecord(id=f"{provider}-inline-{i + 1}", secret=s, source="inline")
             for i, s in enumerate(inline)]
+
+
+def _all_inline_secrets(raw: dict) -> list[str]:
+    """Every secret typed straight into a parsed settings structure."""
+    found: list[str] = []
+    for praw in (raw.get("providers") or {}).values():
+        if isinstance(praw, dict):
+            found.extend(_inline_secrets(praw))
+    return found
+
+
+def redact_config(raw: dict) -> dict:
+    """A copy of parsed settings with every credential in it masked.
+
+    A key typed into the settings file is a supported (deprecated) way to
+    reach a provider, so anything that hands the parsed settings to a human
+    or over HTTP has to come through here first. Environment variable *names*
+    are not secrets and are left alone.
+    """
+    from flexrouter.keys import mask
+
+    safe = copy.deepcopy(raw)
+    for praw in (safe.get("providers") or {}).values():
+        if not isinstance(praw, dict):
+            continue
+        if praw.get("api_key"):
+            praw["api_key"] = mask(str(praw["api_key"]))
+        entries = praw.get("api_keys")
+        if entries is None or isinstance(entries, str):
+            # A bare string here is an env var name, not a secret.
+            continue
+        redacted = []
+        for e in entries or []:
+            if isinstance(e, str):
+                redacted.append(mask(e))
+            elif isinstance(e, dict):
+                e = dict(e)
+                if e.get("key"):
+                    e["key"] = mask(str(e["key"]))
+                redacted.append(e)
+            else:
+                redacted.append(e)
+        praw["api_keys"] = redacted
+    return safe
+
+
+def redact_settings_text(text: str) -> str:
+    """The settings file's own text with any secret typed into it masked.
+
+    Works on the text rather than on a re-dumped structure so the owner's
+    comments and layout survive — the same reason nothing rewrites
+    config.yaml. If the text cannot be parsed we cannot tell which parts are
+    secrets, so we refuse rather than hand out something unchecked.
+    """
+    from flexrouter.keys import mask
+
+    try:
+        raw = yaml.safe_load(text) or {}
+    except Exception as e:
+        raise ConfigError(
+            f"Cannot read your settings to check them for keys: "
+            f"{type(e).__name__}") from e
+    if not isinstance(raw, dict):
+        return text
+    out = text
+    for secret in sorted(set(_all_inline_secrets(raw)), key=len, reverse=True):
+        if secret:
+            out = out.replace(secret, mask(secret))
+    return out
 
 
 def load_config(path: Path | str | None = None) -> FlexConfig:

@@ -563,7 +563,9 @@ flexrouter config export
 
 Print your settings file as a portable, base64-encoded token, for sharing.
 
-Note: this includes anything typed directly into the settings file. It does not include keys saved with `flexrouter keys add`, since those never live in the settings file.
+No key ever goes into an export. Keys saved with `flexrouter keys add` are not in the settings file to begin with, and if you typed one straight into the file, it is hidden before the token is made — the reader sees `…` and the last four characters instead. Everything else, including your own comments, comes through exactly as you wrote it.
+
+If your settings file cannot be read, nothing is printed: flexrouter can only hide a key it can find, so it refuses rather than hand out something it has not checked.
 
 **Output:**
 
@@ -585,7 +587,7 @@ flexrouter config import aGlzdG9yeSBjb25maWcgdG9rZW4gKGJhc2U2NCBlbmNvZGVkIFlBTUw
 flexrouter config import aGlzdG9yeSBjb25maWcgdG9rZW4gKGJhc2U2NCBlbmNvZGVkIFlBTUwpCgo=
 ```
 
-Decodes the token and prints it to your terminal, along with the path to your settings file. It does **not** touch your settings file — flexrouter never overwrites it. Copy in whatever parts you want by hand.
+Decodes the token and prints it to your terminal, along with the path to your settings file. Any key in it was hidden when the token was made, so anywhere you see `…` and four characters you need to add your own with `flexrouter keys add <provider>`. It does **not** touch your settings file — flexrouter never overwrites it. Copy in whatever parts you want by hand.
 
 ---
 

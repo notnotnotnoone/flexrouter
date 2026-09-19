@@ -289,7 +289,7 @@ flexrouter keys add <name>  # save a key for a provider
 flexrouter keys list        # show your saved keys (masked)
 flexrouter keys rm <name> <id>  # remove a saved key
 flexrouter refresh          # check available models and rate limits (see below); changes nothing
-flexrouter config export    # print a portable, shareable copy of your settings
+flexrouter config export    # print a shareable copy of your settings (keys hidden)
 flexrouter config import <token>
 ```
 
