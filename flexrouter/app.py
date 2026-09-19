@@ -247,6 +247,13 @@ async def chat_completions(request: Request):
         return openai_error(str(exc), "server_error", "provider_unavailable", 503)
     except RouterError as exc:
         return openai_error(str(exc), "invalid_request_error", status=400)
+    except KeyError:
+        # The pin engine raises KeyError for a model that is not in the
+        # settings at all. The client asked for something specific by name;
+        # say so rather than returning a bare 500.
+        return openai_error(
+            f"There is no bucket or model named {model!r}.",
+            "invalid_request_error", "model_not_found", 404)
     except Exception as exc:  # noqa: BLE001
         return openai_error(str(exc))
 
@@ -353,6 +360,10 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
         yield "data: [DONE]\n\n"
     except RouterError as exc:
         yield _sse_error(str(exc), "invalid_request_error")
+        yield "data: [DONE]\n\n"
+    except KeyError:
+        yield _sse_error(f"There is no bucket or model named {model!r}.",
+                         "invalid_request_error", "model_not_found")
         yield "data: [DONE]\n\n"
     except Exception as exc:  # noqa: BLE001
         yield _sse_error(str(exc))
