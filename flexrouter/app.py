@@ -35,6 +35,7 @@ from flexrouter.dashboard.api import (
 )
 from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.probe import probe_key, stale_models
+from flexrouter.wire import bucket_id, model_id, parse_model, resolve
 
 STATIC_DIR = Path(__file__).parent / "dashboard" / "static"
 
@@ -96,44 +97,73 @@ def openai_error(message: str, error_type: str = "server_error",
 v1 = APIRouter(prefix="/v1")
 
 
-@v1.get("/models")
-async def list_models():
-    router = get_router()
-    tiers = router._cfg.tiers
-    models: list[dict] = [
-        {"id": "auto", "object": "model", "created": 0, "owned_by": "flexrouter"}
-    ]
+def _best_bucket(router) -> str:
+    """The bucket holding the single highest-scoring model. What `auto` means."""
+    buckets = list(router._cfg.tiers.keys())
+    if not buckets:
+        return "default"
+    best_score = None
+    best = buckets[0]
+    for name in buckets:
+        for mc in router._cfg.tiers[name]:
+            if best_score is None or mc.score > best_score:
+                best_score, best = mc.score, name
+    return best
 
-    for tier_name, model_configs in tiers.items():
-        providers = sorted({mc.provider for mc in model_configs})
-        models.append({
-            "id": f"auto-{tier_name}",
+
+def _model_entries(router) -> list[dict]:
+    """Everything /v1/models advertises: buckets first, then `auto`, then every
+    model by its own name.
+
+    Buckets come first because they are the normal path — the owner's code and
+    his chat clients ask for "smart", not for a particular provider's model. A
+    chat client that renders this list in a dropdown shows him the names he
+    chose himself, at the top.
+    """
+    tiers = router._cfg.tiers
+    penalties = router._engine._penalties
+    entries: list[dict] = []
+
+    for name, model_configs in tiers.items():
+        entries.append({
+            "id": bucket_id(name),
             "object": "model",
             "created": 0,
-            "owned_by": ", ".join(providers),
+            "owned_by": "flexrouter",
+            "flexrouter": {
+                "kind": "bucket",
+                "models": [model_id(mc.provider, mc.model) for mc in model_configs],
+            },
         })
 
-    # Every concrete (tier, provider, model) this router can reach, with the
-    # routing metadata that explains why it would or wouldn't be chosen.
-    # Discovery only — sending one of these back as `model` still resolves via
-    # its tier rather than pinning that exact model.
-    penalties = router._engine._penalties
-    seen: set[tuple[str, str, str]] = set()
-    for tier_name, model_configs in tiers.items():
+    entries.append({
+        "id": "auto", "object": "model", "created": 0, "owned_by": "flexrouter",
+        "flexrouter": {"kind": "bucket", "models": [],
+                       "resolves_to": _best_bucket(router)},
+    })
+
+    buckets_by_model: dict[tuple[str, str], list[str]] = {}
+    for name, model_configs in tiers.items():
         for mc in model_configs:
-            key = (tier_name, mc.provider, mc.model)
+            buckets_by_model.setdefault((mc.provider, mc.model), []).append(name)
+
+    seen: set[tuple[str, str]] = set()
+    for model_configs in tiers.values():
+        for mc in model_configs:
+            key = (mc.provider, mc.model)
             if key in seen:
                 continue
             seen.add(key)
-            models.append({
-                "id": f"{tier_name}::{mc.provider}/{mc.model}",
+            entries.append({
+                "id": model_id(mc.provider, mc.model),
                 "object": "model",
                 "created": 0,
                 "owned_by": mc.provider,
                 "flexrouter": {
-                    "tier": tier_name,
+                    "kind": "model",
                     "provider": mc.provider,
                     "model": mc.model,
+                    "buckets": buckets_by_model[key],
                     "score": mc.score,
                     "rpm": mc.rpm,
                     "tpm": mc.tpm,
@@ -144,32 +174,30 @@ async def list_models():
                 },
             })
 
-    return {"object": "list", "data": models}
+    return entries
 
 
-def _parse_model_to_tier(model: str) -> str:
-    if model == "auto":
-        return "auto"
-    if model.startswith("auto-"):
-        return model[len("auto-"):]
-    if "::" in model:
-        return model.split("::", 1)[0]
-    return "default"
+@v1.get("/models")
+async def list_models():
+    return {"object": "list", "data": _model_entries(get_router())}
 
 
-def _resolve_tier(router, tier: str) -> str:
-    available = list(router._cfg.tiers.keys())
-    if not available:
-        return "default"
-    if tier == "auto":
-        best_score = None
-        best_tier = available[0]
-        for name in available:
-            for mc in router._cfg.tiers[name]:
-                if best_score is None or mc.score > best_score:
-                    best_score, best_tier = mc.score, name
-        return best_tier
-    return tier if tier in available else available[0]
+@v1.get("/models/{wanted:path}")
+async def get_model(wanted: str):
+    """One entry.
+
+    The path converter is needed because a model's name contains a slash,
+    which FastAPI would otherwise read as another path segment.
+    """
+    router = get_router()
+    target = parse_model(wanted)
+    looking_for = target.name if target.kind == "pin" else bucket_id(target.name)
+    for entry in _model_entries(router):
+        if entry["id"] == looking_for:
+            return entry
+    return openai_error(
+        f"There is no bucket or model named {wanted!r}.",
+        "invalid_request_error", "model_not_found", 404)
 
 
 def _kwargs_from(body: dict) -> dict:
@@ -189,9 +217,14 @@ async def chat_completions(request: Request):
         return openai_error("messages is required", "invalid_request_error",
                             status=400)
 
-    model = body.get("model", "auto-default")
+    model = body.get("model", "auto")
     router = get_router()
-    tier = _resolve_tier(router, _parse_model_to_tier(model))
+    try:
+        tier = resolve(parse_model(model), list(router._cfg.tiers.keys()),
+                       _best_bucket(router))
+    except KeyError as exc:
+        return openai_error(str(exc.args[0]), "invalid_request_error",
+                            "model_not_found", 404)
     kwargs = _kwargs_from(body)
 
     if body.get("stream"):
