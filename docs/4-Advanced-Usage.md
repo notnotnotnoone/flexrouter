@@ -311,7 +311,7 @@ Start the dashboard:
 flexrouter dashboard
 ```
 
-Opens `http://localhost:7352`.
+Opens `http://localhost:4891`.
 
 ### Tab 1: Live Telemetry
 

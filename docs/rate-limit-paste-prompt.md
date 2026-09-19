@@ -131,8 +131,8 @@ settings:
   # Sticky session TTL — same client routes to same model for this long
   session_ttl_minutes: 30
 
-  # Dashboard web UI port
-  dashboard_port: 7352
+  # Port for the service (API + dashboard, one port)
+  port: 4891
 
   # Health check polling interval (seconds)
   sample_interval_seconds: 60

@@ -418,7 +418,7 @@ Use this for:
 
 ## Hot-Reload
 
-Config changes are detected automatically. flexrouter watches `flexrouter.yaml` and reloads on modification.
+Config changes are detected automatically. flexrouter watches your settings file and reloads on modification.
 
 **Preserved on reload:**
 - ✅ Rate-limit windows
