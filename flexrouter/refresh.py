@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 from flexrouter.config import is_probably_chat_model
-from flexrouter.onboard import PROVIDERS, discover_models, score_with_aa, _context_window
+from flexrouter.catalogue import PROVIDERS, discover_models, score_with_aa, _context_window
 from flexrouter.rate_limits import RateLimitStore
 from flexrouter.store import write_json
 

@@ -16,12 +16,6 @@ If you want that shared place to live somewhere else, set `FLEXROUTER_HOME` to t
 
 You can pass an explicit path instead, to point at a different file on purpose: `FlexRouter("path/to/config.yaml")`.
 
-You can also generate a settings file interactively:
-
-```bash
-flexrouter init
-```
-
 ---
 
 ## Top-Level Structure
@@ -340,15 +334,15 @@ router.reload()
 
 ## Validation
 
-Check your config syntax:
+Check your settings for common mistakes:
 
 ```bash
-flexrouter init
+flexrouter doctor
 ```
 
-This opens the setup wizard, which validates your current settings file and catches common errors.
+This reads your settings the same way flexrouter itself does and tells you what it found, including anything it could not make sense of. The dashboard shows the same check on its Settings tab.
 
-Or validate programmatically:
+Or check programmatically:
 
 ```python
 from flexrouter import FlexRouter

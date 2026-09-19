@@ -1,6 +1,6 @@
 """Ask a provider, right now, whether a key works and what it can reach.
 
-The existing `onboard.discover_models` swallows every failure and returns an
+The catalogue's `discover_models` swallows every failure and returns an
 empty list, so it cannot tell "your key is rejected" apart from "this provider
 has no free models" — which is precisely the distinction a key-entry screen
 exists to show. This module reports the reason.

@@ -17,13 +17,6 @@ def cli():
     """flexrouter — universal LLM router."""
 
 
-@cli.command()
-def init():
-    """Interactive terminal wizard to set up your settings file."""
-    from flexrouter.onboard import run_onboard
-    run_onboard()
-
-
 def _resolve_port(config_path, override):
     """Single port for everything: API, dashboard, and dashboard data.
 
@@ -315,3 +308,7 @@ def doctor():
 
     for w in caught:
         click.echo(f"\n! {w.message}", err=True)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    cli()

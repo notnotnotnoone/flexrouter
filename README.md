@@ -32,7 +32,7 @@ The settings file is called `config.yaml` and lives in a folder flexrouter picks
 
 If you want it somewhere else, set the `FLEXROUTER_HOME` environment variable to the folder you want, and flexrouter will use that instead.
 
-The first time flexrouter runs, it creates this folder and writes a starter `config.yaml` into it, with an empty list of models. You then fill it in yourself, either by hand or by running `flexrouter init`.
+The first time flexrouter runs, it creates this folder and writes a starter `config.yaml` into it, with an empty list of models. You then fill it in yourself, by editing that file.
 
 To see exactly where things are on your machine, and which key each provider will use, run:
 
@@ -42,7 +42,7 @@ flexrouter doctor
 
 Two things worth knowing about this file:
 
-- **It's yours.** flexrouter reads it but never rewrites it (with one exception noted under [Rebuilding your model list](#rebuilding-your-model-list)), so any comments or notes you leave in it stay put.
+- **It's yours.** flexrouter reads it but never rewrites it, so any comments or notes you leave in it stay put.
 - **Anything you change from the dashboard is saved separately** — in a second file next to it, layered on top when flexrouter reads your settings — so your hand-written file still doesn't get touched.
 
 If you're moving from an older, per-project settings file, see [Moving from an older setup](#moving-from-an-older-setup) below — flexrouter does not do this move for you automatically.
@@ -51,13 +51,8 @@ If you're moving from an older, per-project settings file, see [Moving from an o
 
 **1. Set up your settings file:**
 
-Run the setup wizard:
-
-```bash
-flexrouter init
-```
-
-Or edit `config.yaml` in your flexrouter folder (see above) by hand:
+Open `config.yaml` in your flexrouter folder and fill it in. To find the folder,
+run `flexrouter doctor` — it prints the exact path. A small one looks like this:
 
 ```yaml
 settings:
@@ -286,7 +281,6 @@ A key that gets rejected (rate-limited) is skipped immediately in favor of the n
 ## CLI
 
 ```bash
-flexrouter init             # terminal wizard to set up your settings file
 flexrouter serve            # start the server (API + dashboard) without opening a browser
 flexrouter dashboard        # start the server and open the dashboard in your browser
 flexrouter status           # print current spending/health to the terminal
@@ -331,7 +325,7 @@ Edit your settings file while your app is running — changes are picked up auto
 
 ## Moving from an older setup
 
-If you're coming from a version of flexrouter that used a settings file per project, note that your old file is not picked up or merged in automatically — you rebuild your buckets and models fresh in the new shared file, by hand or with `flexrouter init`.
+If you're coming from a version of flexrouter that used a settings file per project, note that your old file is not picked up or merged in automatically — you rebuild your buckets and models fresh in the new shared file, by hand.
 
 The one thing that is carried over for you is your keys:
 

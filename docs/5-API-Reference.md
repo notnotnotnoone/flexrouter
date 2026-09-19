@@ -352,16 +352,6 @@ flexrouter keys import <old_file>   # copy keys out of an old settings file into
 
 ---
 
-### `flexrouter init`
-
-```bash
-flexrouter init
-```
-
-Interactive terminal wizard that helps you write your settings file for the first time.
-
----
-
 ### `flexrouter serve`
 
 ```bash
@@ -786,7 +776,6 @@ All `generate()` and `agenerate()` responses follow OpenAI's chat completions fo
 | Reload config | `router.reload()` |
 | Dashboard | `flexrouter dashboard` |
 | API server | `flexrouter serve` |
-| Setup wizard | `flexrouter init` |
 | View status | `flexrouter status` |
 | Where are my settings? | `flexrouter doctor` |
 | Save a key | `flexrouter keys add <provider>` |
