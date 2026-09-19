@@ -2,11 +2,12 @@ import base64
 import json
 import os
 import webbrowser
-import click
-import yaml
 from pathlib import Path
 
-from flexrouter.config import discover_config, load_config
+import click
+
+from flexrouter import home
+from flexrouter.config import load_config
 from flexrouter.exceptions import ConfigError
 from flexrouter.refresh import refresh_config
 
@@ -23,30 +24,67 @@ def init():
     run_onboard()
 
 
-@cli.command()
-def dashboard():
-    """Start the live dashboard at http://localhost:<port>."""
-    path = discover_config()
-    port = 7352
+def _resolve_port(config_path, override):
+    """Single port for everything: API, dashboard, and dashboard data.
+
+    Defaults to the config's dashboard_port so existing configs keep working;
+    the separate 7353 API port is gone — there is one server now.
+    """
+    if override is not None:
+        return override
+    path = Path(config_path) if config_path else home.config_path()
     if path:
         try:
-            cfg = load_config(path)
-            port = cfg.dashboard_port
+            return load_config(path).port
         except ConfigError:
             pass
-    from flexrouter.dashboard.server import start_server
-    click.echo(f"Dashboard running at http://localhost:{port}")
-    webbrowser.open(f"http://localhost:{port}")
-    start_server(port=port, open_tab=False)
+    return home.DEFAULT_PORT
+
+
+def _run_daemon(port, config_path, open_browser):
+    import uvicorn
+    from flexrouter.app import create_app
+
+    click.echo(f"Settings: {home.config_path()}")
+
+    url = f"http://localhost:{port}"
+    click.echo(f"flexrouter running at {url}")
+    click.echo(f"  dashboard   {url}")
+    click.echo(f"  OpenAI API  {url}/v1")
+    click.echo(f"  API docs    {url}/docs")
+    if open_browser:
+        webbrowser.open(url)
+    uvicorn.run(create_app(config_path), host="127.0.0.1", port=port, log_level="info")
+
+
+_config_option = click.option(
+    "--config", "-c", "config_path", default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Settings file to use. Defaults to the flexrouter home (see: flexrouter doctor).",
+)
+
+
+@cli.command()
+@click.option("--port", default=None, type=int,
+              help="Port for everything (default: the config's dashboard_port, else 7352)")
+@_config_option
+def serve(port, config_path):
+    """Start the flexrouter server: API and dashboard on one port."""
+    _run_daemon(_resolve_port(config_path, port), config_path, open_browser=False)
+
+
+@cli.command()
+@click.option("--port", default=None, type=int, help="Port to serve on")
+@_config_option
+def dashboard(port, config_path):
+    """Start the server and open the dashboard in a browser."""
+    _run_daemon(_resolve_port(config_path, port), config_path, open_browser=True)
 
 
 @cli.command()
 def status():
     """Print tier health to terminal."""
-    path = discover_config()
-    if not path:
-        click.echo("No flexrouter.yaml found.", err=True)
-        raise SystemExit(1)
+    path = home.config_path()
     cfg = load_config(path)
     state = Path(cfg.state_dir) / "health.json"
     if not state.exists():
@@ -61,10 +99,7 @@ def status():
 @cli.command()
 def refresh():
     """Re-discover models + rate limits and rewrite flexrouter.yaml (with backup)."""
-    path = discover_config()
-    if not path:
-        click.echo("No flexrouter.yaml found.", err=True)
-        raise SystemExit(1)
+    path = home.config_path()
     cfg = load_config(path)
     aa_key = os.environ.get("AA_API_KEY")
     result = refresh_config(str(path), cfg.state_dir, aa_key=aa_key)
@@ -83,10 +118,7 @@ def config():
 @config.command("export")
 def config_export():
     """Export config as a base64 token."""
-    path = discover_config()
-    if not path:
-        click.echo("No flexrouter.yaml found.", err=True)
-        raise SystemExit(1)
+    path = home.config_path()
     token = base64.b64encode(path.read_bytes()).decode()
     click.echo(token)
 
@@ -94,8 +126,8 @@ def config_export():
 @config.command("import")
 @click.argument("token")
 def config_import(token: str):
-    """Import config from a base64 token."""
-    data = base64.b64decode(token.encode())
-    out = Path("flexrouter.yaml")
-    out.write_bytes(data)
-    click.echo(f"Config written to {out}")
+    """Show settings from a token (it will not overwrite yours)."""
+    data = base64.b64decode(token.encode()).decode("utf-8", "replace")
+    click.echo("flexrouter never overwrites your settings file. Here it is — "
+               f"paste what you want into {home.config_path()}:\n")
+    click.echo(data)

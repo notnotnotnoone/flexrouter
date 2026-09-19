@@ -9,10 +9,10 @@ from typing import AsyncIterator, Literal, Optional
 
 from flexrouter.audit import AuditLogger
 from flexrouter.client import AsyncClient, RateLimitError, ProviderError
-from flexrouter.config import FlexConfig, load_config, discover_config
+from flexrouter.config import FlexConfig, load_config
 from flexrouter.engine import RoutingEngine
 from flexrouter.events import EventLogger
-from flexrouter.exceptions import ConfigError, RouterBusy, RouterError
+from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.health_history import HealthHistory
 from flexrouter.hooks import HookRunner, HookContext
 from flexrouter.quota import QuotaTracker
@@ -69,15 +69,11 @@ StreamEvent = AttemptEvent | AttemptFailedEvent | DeltaEvent | ReasoningDeltaEve
 
 class FlexRouter:
     def __init__(self, config_path: Optional[str] = None) -> None:
-        if config_path:
-            path = Path(config_path)
-        else:
-            path = discover_config()
-        if not path or not path.exists():
-            raise ConfigError("No flexrouter.yaml found. Pass path or create ./flexrouter.yaml")
+        from flexrouter import home
 
+        path = Path(config_path) if config_path else home.config_path()
         self._config_path = path
-        self._cfg: FlexConfig = load_config(path)
+        self._cfg: FlexConfig = load_config(path if config_path else None)
         self._rate_limit_store = RateLimitStore(self._cfg.state_dir)
         self._quota_tracker = QuotaTracker(self._cfg.state_dir)
         self._events = EventLogger(self._cfg.state_dir)
@@ -102,6 +98,73 @@ class FlexRouter:
             self._last_mtime: float = self._config_path.stat().st_mtime
         except OSError:
             self._last_mtime = 0.0
+
+    def _quarantine_block_reason(self, tier: str) -> str | None:
+        """Explain a tier that is empty only because everything is quarantined.
+
+        Waiting is the right answer to a rate limit — a slot opens shortly.
+        It is the wrong answer to a model the provider deleted, which will
+        still be deleted in 24 hours. Without this check, wait=True sleeps on
+        a tier that cannot recover, which looks exactly like a hang.
+        """
+        models = self._cfg.tiers.get(tier) or []
+        if not models:
+            return None
+        if not all(self._penalties.is_quarantined(m.provider, m.model)
+                   for m in models):
+            return None
+
+        lines: list[str] = []
+        for m in models:
+            reason = self._penalties.quarantine_reason(m.provider, m.model) or "unavailable"
+            line = f"{m.provider}/{m.model}: {reason.splitlines()[0][:120]}"
+            if line not in lines:
+                lines.append(line)
+        shown = lines[:5]
+        if len(lines) > len(shown):
+            shown.append(f"...and {len(lines) - len(shown)} more")
+        joined = ("\n  ").join(shown)
+        return (f"Every model in tier {tier!r} is quarantined - this will "
+                f"not clear on its own:\n  {joined}")
+
+    def _handle_auth_failure(self, route, exc) -> None:
+        """Sideline a whole provider after it rejects our credentials.
+
+        Auth failures used to abort the entire request. That made one expired
+        key look like total breakage: every tier containing that provider
+        failed, even when the other providers in the tier were healthy. The
+        key is a property of the provider, so quarantine the provider and let
+        the retry loop rotate to a different one.
+        """
+        self._penalties.quarantine_provider(route.provider, str(exc))
+        self._events.record(
+            route.provider, route.model, "server_error",
+            detail=f"provider quarantined (auth): {exc}")
+
+    def _handle_provider_error(self, route, exc) -> None:
+        """Sideline a route after a provider error, and record why.
+
+        A permanent status (the provider saying the model is gone) quarantines
+        the route instead of penalizing it — otherwise the backoff loop retries
+        a deleted model every 30 seconds until the heat death of the universe.
+        """
+        if exc.is_provider_wide:
+            self._penalties.quarantine_provider(route.provider, str(exc))
+            self._events.record(
+                route.provider, route.model, "server_error",
+                detail=f"provider quarantined: {exc}")
+            return
+        if exc.is_permanent:
+            self._penalties.quarantine(route.provider, route.model, str(exc))
+            self._events.record(
+                route.provider, route.model, "server_error",
+                detail=f"quarantined: {exc}")
+            return
+        self._engine.penalize(route.provider, route.model)
+        self._events.record(
+            route.provider, route.model, "server_error",
+            detail=str(exc),
+            penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
 
     def generate(
         self,
@@ -137,10 +200,20 @@ class FlexRouter:
         retries = self._cfg.retry.retries
         backoff = self._cfg.retry.backoff_seconds
 
+        # If credentials are what emptied the tier, the caller needs to hear
+        # that rather than a generic "everything is busy" — one is a config
+        # problem they must fix, the other resolves itself in 30 seconds.
+        last_auth_error: RouterError | None = None
+
         for attempt in range(retries + 1):
             route = self._engine.select(tier, estimated_tokens, vision, session_id)
 
             if route is None:
+                if last_auth_error is not None:
+                    raise last_auth_error
+                blocked = self._quarantine_block_reason(tier)
+                if blocked:
+                    raise RouterBusy(blocked)
                 if not wait:
                     raise RouterBusy(f"All models in tier {tier!r} are unavailable")
                 secs = self._engine.seconds_until_available(tier)
@@ -150,10 +223,11 @@ class FlexRouter:
             start = time.monotonic()
             try:
                 result = await self._client.chat(route, messages, **kwargs)
-            except RateLimitError:
+            except RateLimitError as exc:
                 self._engine.penalize(route.provider, route.model)
                 self._events.record(
                     route.provider, route.model, "rate_limited",
+                    detail=str(exc),
                     penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
                 self._audit.log(
                     tier=tier, provider=route.provider, model=route.model,
@@ -166,13 +240,22 @@ class FlexRouter:
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
                 continue
-            except RouterError:
-                raise
-            except ProviderError:
-                self._engine.penalize(route.provider, route.model)
-                self._events.record(
-                    route.provider, route.model, "server_error",
-                    penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+            except RouterError as exc:
+                self._handle_auth_failure(route, exc)
+                last_auth_error = exc
+                self._audit.log(
+                    tier=tier, provider=route.provider, model=route.model,
+                    prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
+                    latency_ms=int((time.monotonic() - start) * 1000),
+                    status="auth_error",
+                )
+                self._history.record(self._engine.health_snapshot())
+                # No backoff: a rejected key won't un-reject in two seconds.
+                if attempt == retries:
+                    raise
+                continue
+            except ProviderError as exc:
+                self._handle_provider_error(route, exc)
                 self._audit.log(
                     tier=tier, provider=route.provider, model=route.model,
                     prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
@@ -232,6 +315,13 @@ class FlexRouter:
             route = self._engine.select(tier, estimated_tokens, vision, session_id)
 
             if route is None:
+                # Unlike the sync path this loop has no wait=False escape, so
+                # without the quarantine check it sleeps forever on a tier
+                # that can never come back — the reported hang, via the
+                # streaming route a chat client actually uses.
+                blocked = self._quarantine_block_reason(tier)
+                if blocked:
+                    raise RouterBusy(blocked)
                 secs = self._engine.seconds_until_available(tier)
                 await asyncio.sleep(max(secs, 1.0))
                 continue
@@ -279,6 +369,7 @@ class FlexRouter:
                 self._engine.penalize(route.provider, route.model)
                 self._events.record(
                     route.provider, route.model, "rate_limited",
+                    detail=str(exc),
                     penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
                 self._audit.log(
                     tier=tier, provider=route.provider, model=route.model,
@@ -296,13 +387,25 @@ class FlexRouter:
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
                 continue
-            except RouterError:
-                raise
+            except RouterError as exc:
+                self._handle_auth_failure(route, exc)
+                self._audit.log(
+                    tier=tier, provider=route.provider, model=route.model,
+                    prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
+                    latency_ms=int((time.monotonic() - start) * 1000),
+                    status="auth_error",
+                )
+                self._history.record(self._engine.health_snapshot())
+                yield AttemptFailedEvent(
+                    attempt=attempt + 1, max_attempts=max_attempts,
+                    provider=route.provider, model=route.model,
+                    reason="provider_error", detail=str(exc),
+                )
+                if attempt == retries:
+                    raise
+                continue
             except ProviderError as exc:
-                self._engine.penalize(route.provider, route.model)
-                self._events.record(
-                    route.provider, route.model, "server_error",
-                    penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                self._handle_provider_error(route, exc)
                 self._audit.log(
                     tier=tier, provider=route.provider, model=route.model,
                     prompt_tokens=0, completion_tokens=0, cost_usd=0.0,

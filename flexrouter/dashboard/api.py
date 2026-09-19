@@ -1,10 +1,9 @@
 from __future__ import annotations
 import json
 from pathlib import Path
-from flexrouter.config import discover_config, load_config, validate_config
+from flexrouter.config import validate_config
 from flexrouter.dashboard.stats import compute_stats
 from flexrouter.dashboard.uptime import compute_uptime
-from flexrouter.exceptions import ConfigError
 from flexrouter.health_history import HealthHistory
 
 
@@ -26,17 +25,46 @@ def get_logs(state_dir: str, n: int = 50) -> list[dict]:
 
 
 def get_config() -> dict:
-    path = discover_config()
-    if not path:
-        return {}
+    """The settings as flexrouter sees them: the file, plus overrides."""
     import yaml
-    return yaml.safe_load(path.read_text()) or {}
+
+    from flexrouter import home
+    from flexrouter.overrides import apply_overrides, load_overrides
+
+    home.ensure_home()
+    raw = yaml.safe_load(home.config_path().read_text(encoding="utf-8")) or {}
+    return apply_overrides(raw, load_overrides())
+
+
+def get_overrides() -> dict:
+    from flexrouter.overrides import load_overrides
+    return load_overrides()
 
 
 def post_config(raw: dict) -> None:
-    path = discover_config() or Path("flexrouter.yaml")
-    import yaml
-    path.write_text(yaml.dump(raw, default_flow_style=False))
+    """Record a settings change as an override.
+
+    config.yaml is hand-written and is never rewritten — that is what keeps
+    the owner's comments alive (spec §1).
+    """
+    from flexrouter.overrides import load_overrides, save_overrides
+
+    for name, praw in (raw.get("providers") or {}).items():
+        if not isinstance(praw, dict):
+            continue
+        if praw.get("api_key") or praw.get("api_keys"):
+            raise ValueError(
+                f"Credentials for {name!r} don't go in settings — "
+                f"add them with: flexrouter keys add {name}")
+
+    data = load_overrides()
+    for key, value in (raw.get("settings") or {}).items():
+        data.setdefault("settings", {})[key] = value
+    for name, fields in (raw.get("providers") or {}).items():
+        data.setdefault("providers", {}).setdefault(name, {}).update(fields or {})
+    for ident, fields in (raw.get("models") or {}).items():
+        data.setdefault("models", {}).setdefault(ident, {}).update(fields or {})
+    save_overrides(data)
 
 
 def get_stats(state_dir: str) -> dict:
@@ -67,6 +95,7 @@ def get_last_refresh(state_dir: str) -> dict:
 
 def run_refresh(state_dir: str) -> dict:
     from dataclasses import asdict
+
+    from flexrouter import home
     from flexrouter.refresh import refresh_config
-    path = discover_config() or Path("flexrouter.yaml")
-    return asdict(refresh_config(str(path), state_dir))
+    return asdict(refresh_config(str(home.config_path()), state_dir))

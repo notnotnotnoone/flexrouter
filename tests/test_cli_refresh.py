@@ -4,9 +4,10 @@ from flexrouter.refresh import RefreshResult
 
 
 def test_refresh_prints_summary(monkeypatch, tmp_path):
+    monkeypatch.setenv("FLEXROUTER_HOME", str(tmp_path / "home"))
     cfg = tmp_path / "flexrouter.yaml"
     cfg.write_text("providers: {}\ntiers: {}\nsettings:\n  state_dir: .flexrouter\n")
-    monkeypatch.setattr(cli, "discover_config", lambda: cfg)
+    monkeypatch.setattr(cli.home, "config_path", lambda: cfg)
     fake = RefreshResult(timestamp="2026-06-19T12:00:00+00:00", added=["groq/a"], removed=[],
                          changed=[], backup_path="/b.yaml", provider_errors=[{"provider": "x", "error": "boom"}])
     monkeypatch.setattr(cli, "refresh_config", lambda *a, **k: fake, raising=False)
