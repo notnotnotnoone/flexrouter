@@ -6,10 +6,11 @@ from pathlib import Path
 
 import yaml
 
-from flexrouter.config import is_probably_chat_model
 from flexrouter.catalogue import PROVIDERS, discover_models, score_with_aa, _context_window
+from flexrouter.config import is_probably_chat_model, resolve_keys
+from flexrouter.keys import load_keys, mask
 from flexrouter.rate_limits import RateLimitStore
-from flexrouter.store import write_json
+from flexrouter.store import read_json, write_json
 
 
 @dataclass
@@ -40,21 +41,60 @@ def _existing(config_path: Path) -> dict:
     return yaml.safe_load(config_path.read_text()) or {}
 
 
-def _provider_keys(raw: dict) -> dict:
-    out = {}
-    for name, pcfg in (raw.get("providers") or {}).items():
-        keys = (pcfg or {}).get("api_keys", [])
-        for k in keys:
-            val = k.get("key") if isinstance(k, dict) else k
-            if val:
-                out[name] = val
+def _provider_keys(raw: dict, config_path: Path | None = None) -> dict:
+    """One usable credential per provider, resolved the way everything else
+    resolves one: a key saved with `flexrouter keys add` first, then the
+    environment variable the settings name, then a key typed into the
+    settings file (deprecated).
+
+    Reading only inline `api_keys` — which is what this used to do — finds
+    nothing on a correct installation, so refresh silently checked nothing
+    and reported all clear.
+    """
+    vault = load_keys()
+    out: dict[str, str] = {}
+    for name, praw in (raw.get("providers") or {}).items():
+        records = resolve_keys(name, praw or {}, vault, config_path)
+        for r in records:
+            if r.secret:
+                out[name] = r.secret
                 break
     return out
 
 
+def _known_secrets(provider_keys: dict) -> list[str]:
+    """Every credential value in play, longest first.
+
+    Some providers echo the submitted credential back inside their error
+    bodies, and that text is stored in state/last_refresh.json and shown on
+    the dashboard. Longest-first so a key that is a prefix of another does
+    not scrub the wrong span.
+    """
+    vault = load_keys()
+    secrets = {s for s in provider_keys.values() if s}
+    for records in vault.values():
+        secrets.update(r.secret for r in records if r.secret)
+    return sorted(secrets, key=len, reverse=True)
+
+
+def _scrub(text: str, secrets: list[str]) -> str:
+    """Replace any known credential in provider error text with its mask."""
+    out = str(text)
+    for secret in secrets:
+        if secret and secret in out:
+            out = out.replace(secret, mask(secret))
+    return out
+
+
 def _old_models(raw: dict) -> dict:
+    """The models the settings file lists. `buckets:` is the preferred
+    spelling, `tiers:` the accepted fallback, exactly as load_config reads
+    them. Reading only `tiers:` found nothing in a starter home."""
+    buckets = raw.get("buckets")
+    if buckets is None:
+        buckets = raw.get("tiers")
     out = {}
-    for models in (raw.get("tiers") or {}).values():
+    for models in (buckets or {}).values():
         for m in models or []:
             out[f"{m['provider']}/{m['model']}"] = {
                 "rpm": m.get("rpm"), "tpm": m.get("tpm"), "context_window": m.get("context_window"),
@@ -101,16 +141,31 @@ def refresh_config(config_path: str, state_dir: str, aa_key: str | None = None) 
     owner accepts it). It only writes two record files under `state_dir`:
     `catalog_pending.json` (the findings, grouped by provider) and
     `last_refresh.json` (this call's `RefreshResult`, for the dashboard).
+
+    A provider whose catalogue call failed is not treated as checked: it is
+    left out of the comparison and out of this run's pending entries, and
+    whatever an earlier run recorded for it is carried forward untouched.
     """
     cfg_path = Path(config_path)
     raw = _existing(cfg_path)
-    provider_keys = _provider_keys(raw)
-    old = _old_models(raw)
+    provider_keys = _provider_keys(raw, cfg_path)
     store = RateLimitStore(state_dir)
 
     free, paid, errors = asyncio.run(_discover_all(provider_keys, store))
     free = asyncio.run(score_with_aa(free, aa_key))
     paid = asyncio.run(score_with_aa(paid, aa_key))
+
+    secrets = _known_secrets(provider_keys)
+    errors = [{**e, "error": _scrub(e.get("error", ""), secrets)} for e in errors]
+
+    # A provider whose catalogue call failed was not checked. Diffing its
+    # configured models against the nothing we got back would report every
+    # one of them as vanished, so it is excluded from the comparison
+    # entirely — "the provider is down" must never read as "all clear".
+    failed = {e["provider"] for e in errors}
+    checked = [name for name in provider_keys if name not in failed]
+    old = {k: v for k, v in _old_models(raw).items()
+           if k.split("/", 1)[0] in checked}
 
     new = {}
     facts = {}
@@ -139,8 +194,12 @@ def refresh_config(config_path: str, state_dir: str, aa_key: str | None = None) 
     # (rate limits, context window, score, free/paid) rather than bare model
     # ids, and a `changed` list is added alongside the spec's two fields, so
     # a later stage can apply an accepted item without re-discovering it.
-    pending: dict[str, dict] = {}
-    for name in provider_keys:
+    # What an earlier run found for a provider we did not reach this time is
+    # still the best information there is, so it is carried forward rather
+    # than dropped. Only a provider we actually checked gets a fresh bucket.
+    pending_path = Path(state_dir) / "catalog_pending.json"
+    pending: dict[str, dict] = read_json(pending_path, default={}) or {}
+    for name in checked:
         pending[name] = _new_pending_bucket(ts)
     for ident in added:
         provider, model_id = ident.split("/", 1)
@@ -157,7 +216,6 @@ def refresh_config(config_path: str, state_dir: str, aa_key: str | None = None) 
             "model": model_id, "field": c["field"], "old": c["old"], "new": c["new"],
         })
 
-    pending_path = Path(state_dir) / "catalog_pending.json"
     write_json(pending_path, pending)
 
     result = RefreshResult(
