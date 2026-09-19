@@ -4,7 +4,7 @@ import pytest
 import yaml
 
 from flexrouter import home
-from flexrouter.config import load_config, resolve_keys
+from flexrouter.config import FlexConfig, load_config, resolve_keys
 from flexrouter.keys import KeyRecord, add_key
 from flexrouter.overrides import set_override
 
@@ -83,6 +83,30 @@ def test_dashboard_port_is_still_accepted_as_an_alias(written_home):
     cfg = load_config()
     assert cfg.port == 7352
     assert cfg.dashboard_port == 7352
+
+
+def test_flexconfig_port_alias_neither_passed():
+    cfg = FlexConfig(tiers={}, providers={})
+    assert cfg.port == 4891
+    assert cfg.dashboard_port == 4891
+
+
+def test_flexconfig_port_alias_only_port_passed():
+    cfg = FlexConfig(tiers={}, providers={}, port=9000)
+    assert cfg.port == 9000
+    assert cfg.dashboard_port == 9000
+
+
+def test_flexconfig_port_alias_only_dashboard_port_passed():
+    cfg = FlexConfig(tiers={}, providers={}, dashboard_port=9000)
+    assert cfg.port == 9000
+    assert cfg.dashboard_port == 9000
+
+
+def test_flexconfig_port_alias_both_passed_and_equal():
+    cfg = FlexConfig(tiers={}, providers={}, port=9000, dashboard_port=9000)
+    assert cfg.port == 9000
+    assert cfg.dashboard_port == 9000
 
 
 def test_stored_key_beats_an_env_var(written_home, monkeypatch):

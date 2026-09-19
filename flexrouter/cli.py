@@ -27,8 +27,9 @@ def init():
 def _resolve_port(config_path, override):
     """Single port for everything: API, dashboard, and dashboard data.
 
-    Defaults to the config's dashboard_port so existing configs keep working;
-    the separate 7353 API port is gone — there is one server now.
+    Defaults to the config's port (accepting a legacy dashboard_port in the
+    config file as an alias) so existing configs keep working; the separate
+    7353 API port is gone — there is one server now.
     """
     if override is not None:
         return override

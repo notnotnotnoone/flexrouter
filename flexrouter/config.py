@@ -58,6 +58,16 @@ class FlexConfig:
     provider_budget: dict[str, float] = field(default_factory=dict)
     hooks: list[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        # `port` is the real field; `dashboard_port` is a deprecated alias that
+        # must always end up equal to `port`. A caller may legitimately pass
+        # either one: if `dashboard_port` was set explicitly while `port` was
+        # left at its default, that value flows into `port`. Otherwise `port`
+        # wins and `dashboard_port` is brought into line with it.
+        if self.port == 4891 and self.dashboard_port != 7352:
+            self.port = self.dashboard_port
+        self.dashboard_port = self.port
+
 
 def _line_of(text: str, needle: str) -> int | None:
     for i, line in enumerate(text.splitlines(), 1):
