@@ -119,6 +119,17 @@ def test_a_short_token_of_eight_or_fewer_chars_leaves_no_tail():
     assert "2345" not in out
 
 
+def test_api_key_equals_short_token_is_also_cut_down():
+    # Round 3: restored alongside the ": " variant above. Here "api_key="
+    # plus the 8-character value forms one contiguous 16-character run of
+    # Rule A's own token class, so Rule A legitimately claims the whole
+    # thing before Rule B ever runs - a tail is fine here (Rule A's floor
+    # is being hit honestly), the only requirement is the credential itself
+    # doesn't survive.
+    out = scrub("api_key=abc12345")
+    assert "abc12345" not in out
+
+
 def test_an_ordinary_sentence_with_no_cue_and_no_long_run_survives():
     text = "the provider is temporarily overloaded, please retry shortly"
     assert scrub(text) == text
@@ -157,3 +168,50 @@ def test_a_cue_introduced_credential_and_a_separate_bare_run_are_both_cut_down()
     out = scrub(f"key {cued} rejected; also saw {bare} in the log")
     assert cued not in out
     assert bare not in out
+
+
+# Round 3: `_pick_value` (the "which candidate is the real one" heuristic
+# added in round 2) was itself the hole - every one of the five messages
+# below leaked its credential in full under that heuristic, each for a
+# different reason (a later colon outranking the real value, punctuation or
+# a newline between the cue word and the value breaking the old adjacency
+# requirement). Rule B no longer picks a candidate at all: it scrubs every
+# qualifying run in a 48-character window after each cue word.
+
+def test_a_later_colon_no_longer_lets_the_real_value_leak():
+    out = scrub("token gsk_BBB222 rejected by upstream: retrying")
+    assert "gsk_BBB222" not in out
+
+
+def test_a_credential_followed_by_prose_no_longer_leaks():
+    out = scrub(
+        "The API key sk-live-a1 was rejected: please check your billing settings"
+    )
+    assert "sk-live-a1" not in out
+
+
+def test_a_semicolon_between_cue_and_value_no_longer_hides_the_value():
+    out = scrub("Authorization failed for key sk-Ab12Cd; reason: expired")
+    assert "sk-Ab12Cd" not in out
+
+
+def test_a_newline_between_cue_and_value_no_longer_hides_the_value():
+    out = scrub("key\nsk-AAA111 rejected")
+    assert "sk-AAA111" not in out
+
+
+def test_parentheses_around_the_value_no_longer_hide_it():
+    out = scrub("key (sk-AAA111) rejected")
+    assert "sk-AAA111" not in out
+
+
+def test_ordinary_lowercase_words_near_a_cue_word_stay_readable():
+    # This is exactly what the lowercase exemption exists for: the
+    # credential in this message must go, but the plain lowercase prose
+    # around it - the only thing standing between this rule and an error
+    # message that's just a wall of ellipses - must not.
+    out = scrub("token gsk_BBB222 rejected by upstream: retrying")
+    assert "gsk_BBB222" not in out
+    assert "rejected" in out
+    assert "upstream" in out
+    assert "retrying" in out

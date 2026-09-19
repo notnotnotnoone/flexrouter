@@ -8,40 +8,50 @@ way out. Stage 1 shipped two leaks of exactly this shape — one through raw
 parser error text, one through an export — and both were caught late.
 
 Round 1 review found three verified ways a credential still escaped the
-first version of this rule in full (split by internal separators, too short
-for the length floor, or the wrong character class), and round 2 found two
-more (the length floor still missed a real short-token example with no cue
-word nearby, and a message naming two credentials only had the second one
-caught). Both rounds amended the rule rather than patching around it:
+first version of this rule (split by internal separators, too short for the
+length floor, or the wrong character class). Round 2 found two more (the
+length floor still missed a real short-token example with no cue word
+nearby, and a message naming two credentials only had the second one
+caught) and fixed them by adding `_pick_value`: for each cue word, look at
+the candidates nearby and choose which one is "the" value.
 
-  Rule A (the blunt one). Any run of 16 or more characters from the set a
-  credential is built from — letters, digits, and the separators real
-  formats use internally (``_-./+=:``, covering JWT dots, path-style AWS
-  secrets, base64 padding, and ``key: value``/``key=value`` framing) — is
-  scrubbed outright. There is no character-class exception: a purely
-  alphabetic or purely numeric run of this length is scrubbed the same as a
-  mixed one. The floor started at 24, dropped to 20 in round 1, and dropped
-  again to 16 in round 2 after a real short-token example (19 characters,
-  no cue word nearby) survived a 20-character floor. A false negative here
-  costs a key; a false positive costs readability. The trade only goes one
-  way, which is also why no floor is "safe enough" without Rule B alongside
-  it for anything shorter still.
+Round 3's re-review found that `_pick_value` was itself the hole: choosing
+which candidate near a cue word is the credential is a parsing problem, not
+something a heuristic can close, and every attempt to tune it (prefer a
+strong delimiter, prefer the first candidate, bound the search window)
+just moved the leak rather than closing it — a later colon, an unexpected
+punctuation mark, or a newline between the cue and the value was always
+enough to make the heuristic pick the wrong thing or nothing at all.
+`_pick_value` is deleted, along with `_VALUE_CHARS` and the
+`[ :="']`-shaped delimiter pattern it depended on. Rule B no longer tries
+to identify *which* run after a cue word is the credential:
 
-  Rule B (the cue one). A short credential has no length of its own to give
-  it away, so it is caught by the word that introduces it instead: one of
-  api_key / api-key / api key / apikey / key / token / bearer / credential /
-  secret / authorization (case-insensitive, whole word). Each cue word gets
-  its own, independent search — bounded by the next cue word (if any) or 40
-  characters, whichever comes first, so one cue's match can never swallow a
-  second, later credential whole. Within that bounded span: if a run of 6+
-  token characters is preceded by a "strong" delimiter (colon, equals sign,
-  or quote — the "key: value" / "key=value" shape), the last such run is
-  taken as the value, because a real delimiter is the strongest signal of
-  where the filler ends and the value starts. If no strong delimiter is
-  found, the first run of 6+ token characters right after the cue is taken
-  instead — the plain "key sk-abc123" shape, where there's no delimiter to
-  wait for and prose describing what happened comes after the value, not
-  before it.
+  Rule A (the blunt one, unchanged since round 2). Any run of 16 or more
+  characters from the set a credential is built from — letters, digits, and
+  the separators real formats use internally (``_-./+=:``, covering JWT
+  dots, path-style AWS secrets, base64 padding, and ``key: value``/
+  ``key=value`` framing) — is scrubbed outright. There is no
+  character-class exception: a purely alphabetic or purely numeric run of
+  this length is scrubbed the same as a mixed one.
+
+  Rule B (the window one, replacing the cue-then-token rule entirely). For
+  every occurrence of a cue word — api_key / api-key / api key / apikey /
+  key / token / bearer / credential / secret / authorization
+  (case-insensitive, whole word) — take the 48 characters immediately
+  after it. Inside that window, scrub *every* run of 6 or more token
+  characters, not just one candidate. There is no delimiter requirement and
+  no adjacency requirement any more: a newline, a parenthesis, a semicolon,
+  or any other character between the cue word and the credential no longer
+  matters, because nothing has to directly follow the cue for the window
+  scan to reach it.
+
+  The one exemption, and the only one permitted: a run made entirely of
+  lowercase letters a-z is left alone. That is what keeps "rejected",
+  "upstream", "retrying", "please", "billing", "settings", "expired", and
+  "reason" — ordinary words that happen to sit near a cue word — readable.
+  A run containing a digit, an uppercase letter, or any of `_ - . / + = :`
+  is scrubbed regardless of length (down to the 6-character floor for a
+  Rule B match).
 
   The tail. The scrubbed form keeps "…" plus the token's last four
   characters — but only when the token is longer than 8 characters. An
@@ -55,14 +65,21 @@ Accepted costs, stated here rather than engineered around:
     a query string is exactly the case that must not escape. No URL
     exemption is added for this.
   - Ordinary English words of 16 or more characters ("responsibilities",
-    "uncharacteristically") are now scrubbed out of error text by Rule A
-    alone, with no cue word needed. No dictionary check, vowel-ratio
-    heuristic, or other cleverness is added to spare them — every such
-    carve-out is a hole a credential could sit in instead.
-  - A cue word followed immediately by ordinary sentence filler ("API key
-    provided: ...", "the token is ...") can catch that filler word too when
-    there's no delimiter to prefer a later value over it. Readability cost
-    only.
+    "uncharacteristically") are scrubbed out of error text by Rule A alone,
+    with no cue word needed. No dictionary check, vowel-ratio heuristic, or
+    other cleverness is added to spare them — every such carve-out is a
+    hole a credential could sit in instead.
+  - Named residual (round 3): a credential of 15 characters or fewer, made
+    entirely of lowercase a-z letters, sitting near a cue word, is not
+    caught by Rule B — the lowercase exemption above cannot tell such a
+    credential apart from an ordinary lowercase word, and Rule A's floor
+    doesn't reach it either. This is knowingly accepted: the alternative is
+    scrubbing every lowercase word within 48 characters of any cue word,
+    which makes error messages unreadable and is exactly the kind of
+    overreach that gets a scrubbing mechanism disabled rather than trusted.
+    This exemption is not widened, and no other exemption (dictionary,
+    vowel ratio, length-based cleverness, model-name, URL) is added beside
+    it.
   - The retained last-four tail is the same form the dashboard's `mask()`
     shows, so an error message lets a caller correlate which of their own
     configured keys was rejected. That is a small, known, accepted
@@ -83,41 +100,36 @@ _TOKEN_CHARS = r"[A-Za-z0-9_\-./+=:]"
 # Rule A: any long run of those characters, mixed class or not.
 _LONG_RUN = re.compile(_TOKEN_CHARS + r"{16,}")
 
-# Rule B building blocks. Cue words are searched for on their own, each one
-# handled independently (see _scrub_cued below) rather than as one big
-# cue-to-token regex, precisely so a second cue word later in the same
-# message gets its own chance instead of being swallowed as filler by the
-# first one's search.
+# Rule B: every occurrence of a cue word gets its own, independent 48
+# character window after it (see _scrub_cued below) - there is no "pick
+# the right candidate" step any more, every qualifying run inside the
+# window is scrubbed, so a second cue word later in the same message, or a
+# second credential inside one cue's own window, is never missed.
 _CUE_WORD = re.compile(
     r"(?i)\b(?:api[ _\-]?key|key|token|bearer|credential|secret|authorization)\b"
 )
 
-# The characters a Rule B *value* is made of - the same set as Rule A's,
-# minus ':'. ':' stays a pure delimiter for this rule: Rule A's class keeps
-# it (a credential can appear after "key:" or inside a scrubbed URL), but
-# if a value-matching run were also allowed to swallow a trailing ':', the
-# colon that marks "the real value starts here" (as in "key provided: sk-
-# ...") would get absorbed into the *filler* word right before it instead
-# of surviving to mark the value that follows - "provided:" would consume
-# the colon as if it belonged to "provided", leaving nothing to tell the
-# real value apart from filler. None of the credential shapes this rule
-# needs to catch use a literal ':' in the middle of the token itself.
-_VALUE_CHARS = r"[A-Za-z0-9_\-./+=]"
+# The characters a Rule B *run* is made of inside a cue word's window - the
+# same set Rule A uses, minus ':'. Unlike round 2's now-deleted
+# _VALUE_CHARS, this isn't about marking a delimiter any more (Rule B has
+# no delimiter concept left at all) - it's so an ordinary lowercase word
+# directly followed by a colon in running prose ("upstream:", "reason:")
+# doesn't get fused with that colon into one run that then fails the
+# all-lowercase exemption on the colon's account. The colon simply breaks
+# a run the same way a space already does.
+_RUN_CHARS = r"[A-Za-z0-9_\-./+=]"
+_WINDOW_RUN = re.compile(_RUN_CHARS + r"{6,}")
 
-# A short delimiter (space, colon, equals, quote) followed by a value-shaped
-# run of 6+ characters. Every non-overlapping occurrence within a cue's
-# bounded search span is a candidate; _pick_value below chooses among them.
-_GAP_TOKEN = re.compile(r"([ :=\"']{1,4})(" + _VALUE_CHARS + r"{6,})")
+# The one exemption Rule B makes: a run made entirely of lowercase a-z
+# letters. Anything else in a cue word's window - mixed case, digits,
+# underscores, hyphens, or any of the other characters _RUN_CHARS allows -
+# is scrubbed.
+_ALL_LOWER = re.compile(r"^[a-z]+$")
 
-# The delimiters strong enough to mark "the value starts here" rather than
-# just separating two ordinary words.
-_STRONG_GAP = set(':="\'')
-
-# How far past a cue word (or up to the next cue word, if sooner) Rule B
-# will look for its value. Bounded, rather than unbounded, so one cue's
-# search cannot run across an entire long message and swallow a second,
-# later credential as if it were filler.
-_CUE_WINDOW = 40
+# How far past each cue word Rule B looks. Independent per cue word - two
+# cue words close together can have overlapping windows, and a run found
+# by more than one of them is simply scrubbed once.
+_CUE_WINDOW = 48
 
 
 def _tail(token: str) -> str:
@@ -129,60 +141,39 @@ def _tail(token: str) -> str:
     return "…" + token[-4:]
 
 
-def _pick_value(matches: list[re.Match]) -> "re.Match | None":
-    """Among the gap+token candidates found after one cue word, the one that
-    is actually the value.
-
-    A strong delimiter (":", "=", a quote) is the clearest signal of where
-    filler ends and a value begins — "API key provided: sk-..." has one
-    right before the real key, and "provided" itself, which only sits
-    behind a bare space, does not. When a strong-delimited candidate
-    exists, the last one is taken, on the theory that a value near the end
-    of the cue's clause is more likely to be the actual value than earlier
-    prose that happens to contain a colon.
-
-    Without any strong delimiter, there is no such signal, so the run right
-    after the cue word is taken instead — the plain "key sk-abc123 was
-    rejected" shape, where nothing between the cue and the value needs
-    skipping, and anything after the value is prose describing what
-    happened rather than another candidate value.
-    """
-    if not matches:
-        return None
-    strong = [m for m in matches if any(c in _STRONG_GAP for c in m.group(1))]
-    if strong:
-        return strong[-1]
-    return matches[0]
-
-
 def _scrub_cued(text: str) -> str:
+    """Every run of 6+ token characters within 48 characters of any cue
+    word, except a run made entirely of lowercase letters. No candidate is
+    chosen over another - every qualifying run in every cue word's window
+    is scrubbed."""
     cues = list(_CUE_WORD.finditer(text))
     if not cues:
         return text
 
+    spans: dict[int, tuple[int, str]] = {}
+    for cue in cues:
+        window_end = min(cue.end() + _CUE_WINDOW, len(text))
+        window = text[cue.end():window_end]
+        for m in _WINDOW_RUN.finditer(window):
+            token = m.group(0)
+            if _ALL_LOWER.match(token):
+                continue
+            start = cue.end() + m.start()
+            end = cue.end() + m.end()
+            spans[start] = (end, _tail(token))
+
+    if not spans:
+        return text
+
     out: list[str] = []
     pos = 0
-    for i, cue in enumerate(cues):
-        if cue.start() < pos:
-            continue  # already inside a span this pass already replaced
-
-        window_end = min(cue.end() + _CUE_WINDOW, len(text))
-        if i + 1 < len(cues):
-            window_end = min(window_end, cues[i + 1].start())
-        span = text[cue.end():window_end]
-
-        chosen = _pick_value(list(_GAP_TOKEN.finditer(span)))
-        if chosen is None:
-            continue
-
-        token = chosen.group(2)
-        token_start = cue.end() + chosen.start(2)
-        token_end = cue.end() + chosen.end(2)
-
-        out.append(text[pos:token_start])
-        out.append(_tail(token))
-        pos = token_end
-
+    for start in sorted(spans):
+        end, replacement = spans[start]
+        if start < pos:
+            continue  # already covered by an earlier, overlapping span
+        out.append(text[pos:start])
+        out.append(replacement)
+        pos = end
     out.append(text[pos:])
     return "".join(out)
 
