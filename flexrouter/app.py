@@ -35,6 +35,7 @@ from flexrouter.dashboard.api import (
 )
 from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.probe import probe_key, stale_models
+from flexrouter.redact import scrub
 from flexrouter.wire import bucket_id, model_id, parse_model, resolve
 
 STATIC_DIR = Path(__file__).parent / "dashboard" / "static"
@@ -84,7 +85,9 @@ def _state_dir() -> str:
 
 def openai_error(message: str, error_type: str = "server_error",
                  code: str | None = None, status: int = 500) -> JSONResponse:
-    err: dict = {"message": message, "type": error_type}
+    # Scrubbed here, at the single exit, rather than at each raise site. A
+    # raise site added later would otherwise be a leak nobody notices.
+    err: dict = {"message": scrub(message), "type": error_type}
     if code is not None:
         err["code"] = code
     return JSONResponse({"error": err}, status_code=status)
@@ -270,7 +273,7 @@ def _sse(payload: dict) -> str:
 
 def _sse_error(message: str, error_type: str = "server_error",
                code: str | None = None) -> str:
-    err: dict = {"message": message, "type": error_type}
+    err: dict = {"message": scrub(message), "type": error_type}
     if code is not None:
         err["code"] = code
     return _sse({"error": err})
