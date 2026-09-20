@@ -1,7 +1,7 @@
 """The flexrouter daemon: one process, one port, everything on it.
 
 Replaces the two stdlib ``http.server`` instances this used to run (dashboard
-on 7352, OpenAI API on 7353). Those shared a single FlexRouter across
+on 7352, OpenAI API on 7353). Those shared a single LocalRouter across
 ThreadingMixIn worker threads while the router drove one non-thread-safe
 asyncio loop via ``run_until_complete`` — so the second overlapping request
 either raised "this event loop is already running" or deadlocked. That is not
@@ -17,6 +17,8 @@ Layout on the single port:
 from __future__ import annotations
 
 import asyncio
+import copy
+import hmac
 import json
 import os
 import time
@@ -35,6 +37,8 @@ from flexrouter.dashboard.api import (
 )
 from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.probe import probe_key, stale_models
+from flexrouter.redact import scrub
+from flexrouter.wire import bucket_id, model_id, parse_model, resolve
 
 STATIC_DIR = Path(__file__).parent / "dashboard" / "static"
 
@@ -72,8 +76,8 @@ state = _State()
 
 def get_router():
     if state.router is None:
-        from flexrouter._router import FlexRouter
-        state.router = FlexRouter(state.config_path)
+        from flexrouter._router import LocalRouter
+        state.router = LocalRouter(state.config_path)
     return state.router
 
 
@@ -82,11 +86,62 @@ def _state_dir() -> str:
 
 
 def openai_error(message: str, error_type: str = "server_error",
-                 code: str | None = None, status: int = 500) -> JSONResponse:
-    err: dict = {"message": message, "type": error_type}
+                 code: str | None = None, status: int = 500, *,
+                 scrub_message: bool = True) -> JSONResponse:
+    """`scrub_message=False` is only for a fixed string this codebase wrote
+    itself - never for anything derived from a provider response, an
+    exception, a config file, or a request. The default is True so a new
+    call site that forgets this parameter is safe by accident, not by luck.
+    """
+    # Scrubbed here, at the single exit, rather than at each raise site. A
+    # raise site added later would otherwise be a leak nobody notices.
+    text = scrub(message) if scrub_message else message
+    err: dict = {"message": text, "type": error_type}
     if code is not None:
         err["code"] = code
     return JSONResponse({"error": err}, status_code=status)
+
+
+_UNAUTHORIZED = ("This flexrouter needs a key. Send it as an Authorization "
+                 "header: Bearer <your key>. It is the auth_token line in "
+                 "your settings.")
+
+
+def _check_token(request: Request):
+    """None when the request may proceed, an error response when it may not.
+
+    Guards /v1 only. The dashboard and its data stay open: a browser has no
+    way to carry this header, and the service binds to 127.0.0.1. ADR 0009.
+    """
+    expected = get_router()._cfg.auth_token
+    if not expected:
+        return None
+    header = request.headers.get("authorization") or ""
+    prefix = "Bearer "
+    given = header[len(prefix):] if header.startswith(prefix) else ""
+    # compare_digest, not ==, so how long this takes says nothing about how
+    # much of the key was right. Compared as bytes, not str: compare_digest
+    # rejects a non-ASCII str operand outright, and a key typed with an
+    # accented character is plausible enough (it is hand-written) that this
+    # must not surface as a bare 500. Encoded as latin-1, not utf-8: HTTP
+    # header values are latin-1 on the wire (what Starlette decoded `given`
+    # from), so that is the encoding that reconstructs the bytes a real
+    # client actually sent. If `expected` itself holds a character no header
+    # can carry, it can never match anything a real request presents, so
+    # that failure means "wrong key", not a 500.
+    try:
+        given_bytes = given.encode("latin-1")
+        expected_bytes = expected.encode("latin-1")
+    except UnicodeEncodeError:
+        given_bytes = expected_bytes = None
+    if given and given_bytes is not None and hmac.compare_digest(
+            given_bytes, expected_bytes):
+        return None
+    # The message contains neither key, right or wrong - it is a fixed
+    # string this codebase wrote, not anything derived from the request, so
+    # scrubbing it buys nothing and only makes it unreadable.
+    return openai_error(_UNAUTHORIZED, "invalid_request_error",
+                        "invalid_api_key", 401, scrub_message=False)
 
 
 # --------------------------------------------------------------------------
@@ -96,44 +151,73 @@ def openai_error(message: str, error_type: str = "server_error",
 v1 = APIRouter(prefix="/v1")
 
 
-@v1.get("/models")
-async def list_models():
-    router = get_router()
-    tiers = router._cfg.tiers
-    models: list[dict] = [
-        {"id": "auto", "object": "model", "created": 0, "owned_by": "flexrouter"}
-    ]
+def _best_bucket(router) -> str:
+    """The bucket holding the single highest-scoring model. What `auto` means."""
+    buckets = list(router._cfg.tiers.keys())
+    if not buckets:
+        return "default"
+    best_score = None
+    best = buckets[0]
+    for name in buckets:
+        for mc in router._cfg.tiers[name]:
+            if best_score is None or mc.score > best_score:
+                best_score, best = mc.score, name
+    return best
 
-    for tier_name, model_configs in tiers.items():
-        providers = sorted({mc.provider for mc in model_configs})
-        models.append({
-            "id": f"auto-{tier_name}",
+
+def _model_entries(router) -> list[dict]:
+    """Everything /v1/models advertises: buckets first, then `auto`, then every
+    model by its own name.
+
+    Buckets come first because they are the normal path — the owner's code and
+    his chat clients ask for "smart", not for a particular provider's model. A
+    chat client that renders this list in a dropdown shows him the names he
+    chose himself, at the top.
+    """
+    tiers = router._cfg.tiers
+    penalties = router._engine._penalties
+    entries: list[dict] = []
+
+    for name, model_configs in tiers.items():
+        entries.append({
+            "id": bucket_id(name),
             "object": "model",
             "created": 0,
-            "owned_by": ", ".join(providers),
+            "owned_by": "flexrouter",
+            "flexrouter": {
+                "kind": "bucket",
+                "models": [model_id(mc.provider, mc.model) for mc in model_configs],
+            },
         })
 
-    # Every concrete (tier, provider, model) this router can reach, with the
-    # routing metadata that explains why it would or wouldn't be chosen.
-    # Discovery only — sending one of these back as `model` still resolves via
-    # its tier rather than pinning that exact model.
-    penalties = router._engine._penalties
-    seen: set[tuple[str, str, str]] = set()
-    for tier_name, model_configs in tiers.items():
+    entries.append({
+        "id": "auto", "object": "model", "created": 0, "owned_by": "flexrouter",
+        "flexrouter": {"kind": "bucket", "models": [],
+                       "resolves_to": _best_bucket(router)},
+    })
+
+    buckets_by_model: dict[tuple[str, str], list[str]] = {}
+    for name, model_configs in tiers.items():
         for mc in model_configs:
-            key = (tier_name, mc.provider, mc.model)
+            buckets_by_model.setdefault((mc.provider, mc.model), []).append(name)
+
+    seen: set[tuple[str, str]] = set()
+    for model_configs in tiers.values():
+        for mc in model_configs:
+            key = (mc.provider, mc.model)
             if key in seen:
                 continue
             seen.add(key)
-            models.append({
-                "id": f"{tier_name}::{mc.provider}/{mc.model}",
+            entries.append({
+                "id": model_id(mc.provider, mc.model),
                 "object": "model",
                 "created": 0,
                 "owned_by": mc.provider,
                 "flexrouter": {
-                    "tier": tier_name,
+                    "kind": "model",
                     "provider": mc.provider,
                     "model": mc.model,
+                    "buckets": buckets_by_model[key],
                     "score": mc.score,
                     "rpm": mc.rpm,
                     "tpm": mc.tpm,
@@ -144,32 +228,30 @@ async def list_models():
                 },
             })
 
-    return {"object": "list", "data": models}
+    return entries
 
 
-def _parse_model_to_tier(model: str) -> str:
-    if model == "auto":
-        return "auto"
-    if model.startswith("auto-"):
-        return model[len("auto-"):]
-    if "::" in model:
-        return model.split("::", 1)[0]
-    return "default"
+@v1.get("/models")
+async def list_models():
+    return {"object": "list", "data": _model_entries(get_router())}
 
 
-def _resolve_tier(router, tier: str) -> str:
-    available = list(router._cfg.tiers.keys())
-    if not available:
-        return "default"
-    if tier == "auto":
-        best_score = None
-        best_tier = available[0]
-        for name in available:
-            for mc in router._cfg.tiers[name]:
-                if best_score is None or mc.score > best_score:
-                    best_score, best_tier = mc.score, name
-        return best_tier
-    return tier if tier in available else available[0]
+@v1.get("/models/{wanted:path}")
+async def get_model(wanted: str):
+    """One entry.
+
+    The path converter is needed because a model's name contains a slash,
+    which FastAPI would otherwise read as another path segment.
+    """
+    router = get_router()
+    target = parse_model(wanted)
+    looking_for = target.name if target.kind == "pin" else bucket_id(target.name)
+    for entry in _model_entries(router):
+        if entry["id"] == looking_for:
+            return entry
+    return openai_error(
+        f"There is no bucket or model named {wanted!r}.",
+        "invalid_request_error", "model_not_found", 404)
 
 
 def _kwargs_from(body: dict) -> dict:
@@ -189,9 +271,14 @@ async def chat_completions(request: Request):
         return openai_error("messages is required", "invalid_request_error",
                             status=400)
 
-    model = body.get("model", "auto-default")
+    model = body.get("model", "auto")
     router = get_router()
-    tier = _resolve_tier(router, _parse_model_to_tier(model))
+    try:
+        tier = resolve(parse_model(model), list(router._cfg.tiers.keys()),
+                       _best_bucket(router))
+    except KeyError as exc:
+        return openai_error(str(exc.args[0]), "invalid_request_error",
+                            "model_not_found", 404)
     kwargs = _kwargs_from(body)
 
     if body.get("stream"):
@@ -213,7 +300,18 @@ async def chat_completions(request: Request):
     except RouterBusy as exc:
         return openai_error(str(exc), "server_error", "provider_unavailable", 503)
     except RouterError as exc:
-        return openai_error(str(exc), "invalid_request_error", status=400)
+        # A provider-side failure, not the caller's mistake. Since Task 7
+        # RouterError also means "every provider failed" and "the model
+        # produced nothing after partial output"; calling that
+        # invalid_request_error sent callers to debug their own payload.
+        return openai_error(str(exc), "server_error", status=502)
+    except KeyError:
+        # The pin engine raises KeyError for a model that is not in the
+        # settings at all. The client asked for something specific by name;
+        # say so rather than returning a bare 500.
+        return openai_error(
+            f"There is no bucket or model named {model!r}.",
+            "invalid_request_error", "model_not_found", 404)
     except Exception as exc:  # noqa: BLE001
         return openai_error(str(exc))
 
@@ -230,10 +328,23 @@ def _sse(payload: dict) -> str:
 
 def _sse_error(message: str, error_type: str = "server_error",
                code: str | None = None) -> str:
-    err: dict = {"message": message, "type": error_type}
+    err: dict = {"message": scrub(message), "type": error_type}
     if code is not None:
         err["code"] = code
     return _sse({"error": err})
+
+
+def _tool_call_delta(event) -> dict:
+    """The lossy rebuild, kept only for events that carry no raw dictionary."""
+    delta: dict = {"index": event.index}
+    if event.id is not None:
+        delta["id"] = event.id
+        delta["type"] = "function"
+    if event.name is not None:
+        delta["function"] = {"name": event.name}
+    if event.arguments is not None:
+        delta.setdefault("function", {})["arguments"] = event.arguments
+    return delta
 
 
 async def _stream_chat(router, messages: list[dict], tier: str, model: str,
@@ -252,52 +363,88 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
         payload.update(extra)
         return _sse(payload)
 
+    def error_chunk(message: str, error_type: str = "server_error",
+                    code: str | None = None) -> str:
+        """One chunk a client can actually parse, carrying the failure.
+
+        A bare {"error": ...} object is what this used to send; a client that
+        expects every payload to be a chat.completion.chunk throws on it and
+        shows the user nothing, losing the partial answer that already
+        arrived. This uses the same envelope as every other chunk, so a client
+        that ignores unknown keys renders the partial answer and stops
+        cleanly.
+        """
+        err: dict = {"message": scrub(message), "type": error_type}
+        if code is not None:
+            err["code"] = code
+        return chunk([{"index": 0, "delta": {}, "finish_reason": "error"}],
+                     error=err)
+
     try:
         events = router.agenerate_stream(messages, tier, **kwargs).__aiter__()
         first = True
+        emitted = False       # at least one content chunk has gone out
+        # One absolute deadline for the whole call, fixed before the first
+        # attempt. Waiting ROUTE_TIMEOUT_SECONDS per __anext__ re-armed the
+        # bound on every routing attempt, so a bucket that kept failing over
+        # held the client for retries x ROUTE_TIMEOUT_SECONDS while the
+        # non-streaming path capped the same call once.
+        deadline = time.monotonic() + ROUTE_TIMEOUT_SECONDS
         while True:
             try:
                 if first:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
                     event = await asyncio.wait_for(
-                        events.__anext__(), timeout=ROUTE_TIMEOUT_SECONDS)
+                        events.__anext__(), timeout=remaining)
                 else:
                     event = await events.__anext__()
             except StopAsyncIteration:
                 break
             except (asyncio.TimeoutError, TimeoutError):
-                yield _sse_error(
-                    _TIMEOUT_HINT.format(tier=tier, secs=ROUTE_TIMEOUT_SECONDS),
-                    "server_error", "provider_unavailable")
+                message = _TIMEOUT_HINT.format(tier=tier, secs=ROUTE_TIMEOUT_SECONDS)
+                if emitted:
+                    yield error_chunk(message, "server_error", "provider_unavailable")
+                else:
+                    yield _sse_error(message, "server_error", "provider_unavailable")
                 yield "data: [DONE]\n\n"
                 return
             if isinstance(event, (AttemptEvent, AttemptFailedEvent)):
-                # Routing-progress chatter, not output. The bound must stay
-                # armed until real content arrives, or a tier that keeps
-                # retrying resets the clock forever.
+                # Routing-progress chatter, not output: `first` stays True,
+                # so the bound stays armed until real content arrives. It is
+                # not re-armed - the next wait runs against what is left of
+                # the one deadline fixed above, so a tier that keeps retrying
+                # runs that deadline down instead of resetting it.
                 continue
             first = False
 
             if isinstance(event, DeltaEvent):
                 yield chunk([{"index": 0, "delta": {"content": event.text},
                               "finish_reason": None}])
+                emitted = True
 
             elif isinstance(event, ReasoningDeltaEvent):
                 yield chunk([{"index": 0,
                               "delta": {"reasoning_content": event.text},
                               "finish_reason": None}])
+                emitted = True
 
             elif isinstance(event, ToolCallDeltaEvent):
-                delta: dict = {}
-                if event.id is not None:
-                    delta["id"] = event.id
-                    delta["type"] = "function"
-                if event.name is not None:
-                    delta["function"] = {"name": event.name}
-                if event.arguments is not None:
-                    delta.setdefault("function", {})["arguments"] = event.arguments
-                yield chunk([{"index": 0,
-                              "delta": {"tool_calls": [delta] if delta else []},
+                # Forwarded exactly as the provider wrote it. Rebuilding it
+                # from the parsed fields is how LiteLLM loses tool calls
+                # (BerriAI/litellm#17246), and the spec names that explicitly.
+                # `raw` is empty only for an event built by older code; fall
+                # back to the parsed fields in that case.
+                # Deep copy: `raw`'s nested `function` sub-dict is the same
+                # object the provider client's chunk holds. A shallow copy
+                # would only isolate the top level, letting a later edit to
+                # delta["function"] reach back into the stream the router is
+                # still reading.
+                delta = copy.deepcopy(event.raw) if event.raw else _tool_call_delta(event)
+                yield chunk([{"index": 0, "delta": {"tool_calls": [delta]},
                               "finish_reason": None}])
+                emitted = True
 
             elif isinstance(event, DoneEvent):
                 choices = event.result.get("choices") or []
@@ -312,17 +459,43 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
                 yield "data: [DONE]\n\n"
                 return
 
+        # Unconditionally _sse_error, not emitted-branched: this line is only
+        # reached when the `while True` loop above exits via
+        # StopAsyncIteration without ever seeing a DoneEvent. Every event
+        # that carries content, reasoning or a tool call sets emitted = True
+        # and is followed either by a DoneEvent (which returns above) or an
+        # exception from the router (caught by the handlers below, which are
+        # emitted-branched) — so this point is only reachable with
+        # emitted == False.
         yield _sse_error("No model available", "server_error", "provider_unavailable")
         yield "data: [DONE]\n\n"
 
     except RouterBusy as exc:
-        yield _sse_error(str(exc), "server_error", "provider_unavailable")
+        if emitted:
+            yield error_chunk(str(exc), "server_error", "provider_unavailable")
+        else:
+            yield _sse_error(str(exc), "server_error", "provider_unavailable")
         yield "data: [DONE]\n\n"
     except RouterError as exc:
-        yield _sse_error(str(exc), "invalid_request_error")
+        # Same relabel as the non-streaming path: a RouterError here is the
+        # providers failing, not the request being malformed.
+        if emitted:
+            yield error_chunk(str(exc), "server_error")
+        else:
+            yield _sse_error(str(exc), "server_error")
+        yield "data: [DONE]\n\n"
+    except KeyError:
+        message = f"There is no bucket or model named {model!r}."
+        if emitted:
+            yield error_chunk(message, "invalid_request_error", "model_not_found")
+        else:
+            yield _sse_error(message, "invalid_request_error", "model_not_found")
         yield "data: [DONE]\n\n"
     except Exception as exc:  # noqa: BLE001
-        yield _sse_error(str(exc))
+        if emitted:
+            yield error_chunk(str(exc))
+        else:
+            yield _sse_error(str(exc))
         yield "data: [DONE]\n\n"
 
 
@@ -554,10 +727,42 @@ def create_app(config_path: str | None = None) -> FastAPI:
     state.router = None
 
     app = FastAPI(title="flexrouter", version="0.1.0", lifespan=lifespan)
+
+    # Registered *before* add_middleware(CORSMiddleware) below, on purpose:
+    # Starlette wraps middleware in registration order, so whatever is added
+    # via add_middleware() after this ends up outermost, running first on the
+    # way in and last on the way out. That makes CORSMiddleware see every
+    # request before the guard does - so it answers a CORS preflight (an
+    # OPTIONS carrying Access-Control-Request-Method) itself, without the
+    # guard ever running - and it also gets to add
+    # Access-Control-Allow-Origin to the guard's own 401 response on the way
+    # back out. The reverse order (guard added after CORSMiddleware) made the
+    # guard outermost instead: it 401'd preflights before CORSMiddleware ever
+    # saw them, and its 401s left the response without CORS headers, breaking
+    # every browser-based client of /v1 the moment a key was set.
+    #
+    # The explicit `method != "OPTIONS"` skip below is a second, independent
+    # layer, not a substitute for the ordering above: it protects a bare
+    # OPTIONS request that carries no Origin/Access-Control-Request-Method
+    # (so CORSMiddleware treats it as an ordinary request and passes it
+    # through rather than answering it). That is still not a bypass, because
+    # no /v1 route defines an OPTIONS handler - every one is GET or POST - so
+    # such a request reaches no handler that reads or changes anything; it
+    # falls through to Starlette's routing, which answers 405 Method Not
+    # Allowed. Nothing that can carry request data ever skips the check.
+    @app.middleware("http")
+    async def _guard_v1(request: Request, call_next):
+        if request.url.path.startswith("/v1/") and request.method != "OPTIONS":
+            denied = _check_token(request)
+            if denied is not None:
+                return denied
+        return await call_next(request)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
     )
+
     app.include_router(v1)
     app.include_router(api)
 

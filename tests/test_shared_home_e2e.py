@@ -49,7 +49,7 @@ def test_the_settings_file_is_byte_identical_after_a_full_run(shared_home, monke
     dashboard settings change, building a router, and re-creating a home that
     already exists."""
     import flexrouter.refresh as refresh
-    from flexrouter import FlexRouter
+    from flexrouter import LocalRouter
     from flexrouter.dashboard.api import post_config
     from flexrouter.refresh import refresh_config
 
@@ -82,7 +82,7 @@ def test_the_settings_file_is_byte_identical_after_a_full_run(shared_home, monke
         "models": {"groq/llama-3.3-70b-versatile": {"enabled": False}},
     })
 
-    router = FlexRouter()
+    router = LocalRouter()
     try:
         assert router._cfg.port == 7000
     finally:

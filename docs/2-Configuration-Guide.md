@@ -14,7 +14,7 @@ flexrouter doctor
 
 If you want that shared place to live somewhere else, set `FLEXROUTER_HOME` to the folder you want before running flexrouter.
 
-You can pass an explicit path instead, to point at a different file on purpose: `FlexRouter("path/to/config.yaml")`.
+You can pass an explicit path instead, to point at a different file on purpose: `FlexRouter("path/to/config.yaml")`. Note that the importable `FlexRouter` is a client of the flexrouter service (see the [Getting Started guide](1-Getting-Started.md)), so all it takes from that file is the port and the optional local key — the providers, models and keys are read by the service, from the service's own settings.
 
 ---
 
@@ -351,13 +351,17 @@ flexrouter doctor
 
 This reads your settings the same way flexrouter itself does and tells you what it found, including anything it could not make sense of. The dashboard shows the same check on its Settings tab.
 
-Or check programmatically:
+Or check programmatically. `FlexRouter` is a client of the service, so this
+only proves your settings file can be read and that the service answered — the
+providers and models in it are validated by the service, which must already be
+running (`flexrouter serve`):
 
 ```python
 from flexrouter import FlexRouter
 
 try:
     router = FlexRouter()
+    router.generate([{"role": "user", "content": "ping"}], tier="cheap")
     print("Config valid!")
 except Exception as e:
     print(f"Config error: {e}")

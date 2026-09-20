@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 from flexrouter import home
-from flexrouter._router import FlexRouter
+from flexrouter._router import LocalRouter
 from flexrouter.keys import add_key
 from flexrouter.overrides import save_overrides
 
@@ -29,7 +29,7 @@ def router(tmp_path, monkeypatch):
     monkeypatch.setenv("FLEXROUTER_HOME", str(tmp_path / "home"))
     home.ensure_home()
     home.config_path().write_text(yaml.dump(SETTINGS), encoding="utf-8")
-    r = FlexRouter()
+    r = LocalRouter()
     yield r
     r.close()
 

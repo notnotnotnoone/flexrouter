@@ -2,8 +2,8 @@
 import pytest
 
 from flexrouter import (
-    FlexRouter, RouterBusy, AttemptEvent, AttemptFailedEvent, DeltaEvent,
-    ReasoningDeltaEvent, ToolCallDeltaEvent, DoneEvent,
+    LocalRouter, RouterBusy, RouterError, AttemptEvent, AttemptFailedEvent,
+    DeltaEvent, ReasoningDeltaEvent, ToolCallDeltaEvent, DoneEvent,
 )
 from flexrouter.client import RateLimitError, ProviderError, StreamChunk
 from flexrouter.engine import RouteResult
@@ -21,7 +21,7 @@ MESSAGES = [{"role": "user", "content": "hi"}]
 
 
 def _router(config_file):
-    router = FlexRouter(str(config_file))
+    router = LocalRouter(str(config_file))
     router._cfg.retry.backoff_seconds = 0  # keep failed-attempt tests fast
     return router
 
@@ -246,14 +246,15 @@ async def test_multiple_tool_calls_sharing_index_zero_are_kept_separate(config_f
 
 
 @pytest.mark.asyncio
-async def test_empty_committed_stream_retries_next_provider_instead_of_terminating(
+async def test_reasoning_only_empty_completion_fails_without_retry(
     config_file, monkeypatch
 ):
-    # A stream that yields a chunk (so it's past the pre-first-chunk retry
-    # window) but ends with no content and no tool calls — e.g. a reasoning
-    # model that burns its whole token budget on reasoning — must still
-    # rotate to the next provider instead of being treated as a committed,
-    # terminal success with a silently empty reply.
+    # A stream that yields reasoning (so it's past the pre-first-chunk retry
+    # window, and the caller may already be showing that reasoning text) but
+    # ends with no content and no tool calls must NOT rotate to another
+    # provider — that would be a silent mid-answer model swap, the one thing
+    # streaming is not allowed to do once anything has reached the caller.
+    # It must fail the request instead of retrying.
     router = _router(config_file)
     monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE, ROUTE]))
 
@@ -266,15 +267,70 @@ async def test_empty_committed_stream_retries_next_provider_instead_of_terminati
         _stream_chat_sequence([_empty_stream, _ok_stream(["real answer"])]),
     )
 
+    events = []
+    with pytest.raises(RouterError):
+        async for e in router.agenerate_stream(MESSAGES, tier="low"):
+            events.append(e)
+
+    kinds = [type(e).__name__ for e in events]
+    assert kinds == ["AttemptEvent", "ReasoningDeltaEvent"]
+
+
+async def test_reasoning_only_empty_completion_still_penalizes_the_model(
+    config_file, monkeypatch
+):
+    # Declining to retry within this request is not the same as declining to
+    # remember: the penalty box is what keeps a model that reliably produces
+    # reasoning and nothing else from being picked first on the *next*
+    # request. That bookkeeping must happen even though this request fails
+    # without trying another provider.
+    router = _router(config_file)
+    monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE]))
+
+    async def _empty_stream(route, messages, **kwargs):
+        yield StreamChunk(reasoning="thinking forever")
+
+    monkeypatch.setattr(
+        router._client, "stream_chat", _stream_chat_sequence([_empty_stream]),
+    )
+
+    with pytest.raises(RouterError):
+        async for _ in router.agenerate_stream(MESSAGES, tier="low"):
+            pass
+
+    assert router._engine._penalties.is_penalized(ROUTE.provider, ROUTE.model)
+
+
+async def test_empty_committed_stream_with_no_yields_still_retries_next_provider(
+    config_file, monkeypatch
+):
+    # Regression guard for the branch the original empty-completion retry
+    # was written for: a stream whose one chunk carries no content, no
+    # reasoning and no tool call has shown the caller nothing at all
+    # (any_yielded stays False), so it's still safe — and required — to
+    # rotate to the next provider rather than failing the whole request.
+    # This would fail if the `any_yielded` check were inverted.
+    router = _router(config_file)
+    monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE, ROUTE]))
+
+    async def _empty_stream(route, messages, **kwargs):
+        yield StreamChunk()  # carries nothing: no content, reasoning, or tool call
+
+    monkeypatch.setattr(
+        router._client,
+        "stream_chat",
+        _stream_chat_sequence([_empty_stream, _ok_stream(["real answer"])]),
+    )
+
     events = [e async for e in router.agenerate_stream(MESSAGES, tier="low")]
 
     kinds = [type(e).__name__ for e in events]
     assert kinds == [
-        "AttemptEvent", "ReasoningDeltaEvent", "AttemptFailedEvent",
+        "AttemptEvent", "AttemptFailedEvent",
         "AttemptEvent", "DeltaEvent", "DoneEvent",
     ]
-    assert events[2].reason == "provider_error"
-    assert events[2].attempt == 1
+    assert events[1].reason == "provider_error"
+    assert events[1].attempt == 1
     assert events[-1].result["choices"][0]["message"]["content"] == "real answer"
 
 

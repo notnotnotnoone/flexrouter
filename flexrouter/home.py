@@ -23,6 +23,10 @@ STARTER_CONFIG = """\
 
 settings:
   port: 4891
+  # Optional. Set this and every app pointed at flexrouter must send it as
+  # its API key. Leave it out and anything on this machine can use the
+  # service. Your provider keys do not go here - they live in keys.json.
+  # auth_token: pick-something-long
 
 # Add providers here, or let the daily catalogue check discover their models.
 providers: {}

@@ -16,3 +16,7 @@ Delete the modules the new app makes redundant: `flexrouter/server.py`, `tests/t
 - One server process, one port (4891 by default), no cross-thread event-loop hazard.
 - `flexrouter.start_server()` no longer exists — any code or docs that called it directly needs to switch to `flexrouter serve` / `flexrouter dashboard` on the CLI, or to `flexrouter.app.create_app()` for programmatic use.
 - The dual-port layout (7352 dashboard / 7353 API) is gone; anything hardcoding those ports needs updating to the single port.
+
+---
+
+*Later note (ADR 0009): the class named `FlexRouter` above is now called `LocalRouter` (`flexrouter/_router.py`), and it runs inside the flexrouter service rather than inside each caller's process. `FlexRouter` is now the thin client that talks to that service. The decision recorded here is unchanged; only the name is.*

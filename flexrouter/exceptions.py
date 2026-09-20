@@ -12,3 +12,13 @@ class ConfigFieldError(ConfigError):
 
 class ContextWindowWarning(UserWarning):
     """Some models in tier skipped due to context window size."""
+
+class ServiceNotRunning(RouterError):
+    """Nothing is listening where the flexrouter service should be.
+
+    A subclass of RouterError so code that already catches RouterError keeps
+    working. Deliberately not handled by starting the service: auto-start was
+    rejected twice, and a silent local fallback would give every process its
+    own settings and its own private idea of how much of each provider's
+    allowance was left.
+    """

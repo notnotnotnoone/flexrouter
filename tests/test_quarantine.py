@@ -13,7 +13,7 @@ import httpx
 import pytest
 import respx
 
-from flexrouter import FlexRouter, RouterBusy
+from flexrouter import LocalRouter, RouterBusy
 from flexrouter.client import ProviderError
 from flexrouter.recovery import PenaltyBox
 
@@ -120,7 +120,7 @@ def _events(config_file):
 def test_404_quarantines_the_model(config_file):
     respx.post(CHAT_URL).mock(return_value=httpx.Response(
         404, json={"error": {"message": "model not found"}}))
-    router = FlexRouter(str(config_file))
+    router = LocalRouter(str(config_file))
     with pytest.raises(RouterBusy):
         router.generate([{"role": "user", "content": "hi"}], tier="low", wait=False)
     assert router._engine._penalties.is_quarantined("groq", MODEL) is True
@@ -129,7 +129,7 @@ def test_404_quarantines_the_model(config_file):
 @respx.mock
 def test_500_penalizes_but_does_not_quarantine(config_file):
     respx.post(CHAT_URL).mock(return_value=httpx.Response(500, text="upstream exploded"))
-    router = FlexRouter(str(config_file))
+    router = LocalRouter(str(config_file))
     with pytest.raises(RouterBusy):
         router.generate([{"role": "user", "content": "hi"}], tier="low", wait=False)
     pens = router._engine._penalties
@@ -142,7 +142,7 @@ def test_provider_message_is_recorded_not_discarded(config_file):
     # The whole point: 239 failures in the real log carried zero explanation.
     respx.post(CHAT_URL).mock(return_value=httpx.Response(
         500, text="upstream exploded spectacularly"))
-    router = FlexRouter(str(config_file))
+    router = LocalRouter(str(config_file))
     with pytest.raises(RouterBusy):
         router.generate([{"role": "user", "content": "hi"}], tier="low", wait=False)
 
@@ -156,7 +156,7 @@ def test_provider_message_is_recorded_not_discarded(config_file):
 @respx.mock
 def test_rate_limit_message_is_recorded(config_file):
     respx.post(CHAT_URL).mock(return_value=httpx.Response(429, json={"error": "slow down"}))
-    router = FlexRouter(str(config_file))
+    router = LocalRouter(str(config_file))
     with pytest.raises(RouterBusy):
         router.generate([{"role": "user", "content": "hi"}], tier="low", wait=False)
 
@@ -169,7 +169,7 @@ def test_rate_limit_message_is_recorded(config_file):
 @respx.mock
 def test_quarantine_event_is_emitted(config_file):
     respx.post(CHAT_URL).mock(return_value=httpx.Response(404, text="no such model"))
-    router = FlexRouter(str(config_file))
+    router = LocalRouter(str(config_file))
     with pytest.raises(RouterBusy):
         router.generate([{"role": "user", "content": "hi"}], tier="low", wait=False)
 
@@ -256,7 +256,7 @@ def test_auth_failure_rotates_to_a_healthy_provider(two_provider_config):
     respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
         return_value=httpx.Response(200, json=OK_RESPONSE))
 
-    router = FlexRouter(str(two_provider_config))
+    router = LocalRouter(str(two_provider_config))
     result = router.generate([{"role": "user", "content": "hi"}], tier="low")
 
     assert result["choices"][0]["message"]["content"] == "hello"
@@ -270,7 +270,7 @@ def test_auth_failure_is_recorded_with_its_reason(two_provider_config):
     respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
         return_value=httpx.Response(200, json=OK_RESPONSE))
 
-    router = FlexRouter(str(two_provider_config))
+    router = LocalRouter(str(two_provider_config))
     router.generate([{"role": "user", "content": "hi"}], tier="low")
 
     import yaml
@@ -292,7 +292,7 @@ def test_every_provider_dead_still_raises_a_clear_auth_error(two_provider_config
         return_value=httpx.Response(401, json={"error": "nope"}))
 
     from flexrouter.exceptions import RouterError
-    router = FlexRouter(str(two_provider_config))
+    router = LocalRouter(str(two_provider_config))
     with pytest.raises(RouterError, match="Auth failure"):
         router.generate([{"role": "user", "content": "hi"}], tier="low", wait=False)
 
@@ -312,7 +312,7 @@ def test_payment_required_sidelines_provider_and_rotates(two_provider_config):
     respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
         return_value=httpx.Response(200, json=OK_RESPONSE))
 
-    router = FlexRouter(str(two_provider_config))
+    router = LocalRouter(str(two_provider_config))
     result = router.generate([{"role": "user", "content": "hi"}], tier="low")
 
     assert result["choices"][0]["message"]["content"] == "hello"
@@ -333,7 +333,7 @@ def test_fully_quarantined_tier_fails_fast_instead_of_waiting(two_provider_confi
     respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
         return_value=httpx.Response(404, text="model gone"))
 
-    router = FlexRouter(str(two_provider_config))
+    router = LocalRouter(str(two_provider_config))
     started = time.monotonic()
     with pytest.raises(RouterBusy, match="quarantined"):
         router.generate([{"role": "user", "content": "hi"}], tier="low")
@@ -347,7 +347,7 @@ def test_quarantine_failure_names_the_dead_models(two_provider_config):
     respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
         return_value=httpx.Response(404, text="Model gpt-oss-120b does not exist"))
 
-    router = FlexRouter(str(two_provider_config))
+    router = LocalRouter(str(two_provider_config))
     with pytest.raises(RouterBusy) as excinfo:
         router.generate([{"role": "user", "content": "hi"}], tier="low")
     message = str(excinfo.value)
@@ -362,7 +362,7 @@ def test_streaming_fully_quarantined_tier_fails_fast(two_provider_config):
     respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
         return_value=httpx.Response(404, text="gone"))
 
-    router = FlexRouter(str(two_provider_config))
+    router = LocalRouter(str(two_provider_config))
 
     async def drain():
         async for _ in router.agenerate_stream(

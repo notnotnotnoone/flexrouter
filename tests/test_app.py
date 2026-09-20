@@ -1,7 +1,7 @@
 """The daemon's HTTP layer.
 
 The headline test here is test_overlapping_requests_run_concurrently. The old
-stdlib server shared one FlexRouter across ThreadingMixIn threads while the
+stdlib server shared one LocalRouter across ThreadingMixIn threads while the
 router drove a single non-thread-safe asyncio loop through run_until_complete,
 so the second overlapping request raised or hung. These tests pin down that
 requests now genuinely overlap instead.
@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 import flexrouter.app as app_module
-from flexrouter._router import DeltaEvent, DoneEvent
+from flexrouter._router import (AttemptEvent, AttemptFailedEvent,
+                                DeltaEvent, DoneEvent)
 from flexrouter.app import create_app
 from flexrouter.exceptions import RouterBusy, RouterError
 
@@ -52,7 +54,7 @@ def _model(provider, model, score=85, vision=False):
 
 
 class FakeRouter:
-    """Stands in for FlexRouter so these tests exercise the HTTP layer only."""
+    """Stands in for LocalRouter so these tests exercise the HTTP layer only."""
 
     def __init__(self, delay: float = 0.0, raises: Exception | None = None):
         self._cfg = SimpleNamespace(
@@ -68,6 +70,7 @@ class FakeRouter:
                 "ollama": SimpleNamespace(
                     base_url="http://localhost:11434/v1", api_keys=[]),
             },
+            auth_token=None,
         )
         self._engine = SimpleNamespace(_penalties=FakePenalties())
         self.delay = delay
@@ -196,18 +199,24 @@ def test_model_name_selects_tier(client, fake):
 
 
 def test_concrete_model_id_resolves_to_its_tier(client, fake):
-    # "high::openai/gpt-4o" used to fall through to the "default" tier, which
-    # doesn't exist here — so it silently landed on whatever was first.
+    # Legacy discovery id "<tier>::<provider>/<model>" is still accepted, but
+    # the model half now pins that exact model rather than being dropped in
+    # favour of the tier — pinning is real behaviour now, not a no-op.
     client.post("/v1/chat/completions", json={
         "model": "high::openai/gpt-4o",
         "messages": [{"role": "user", "content": "hi"}]})
-    assert fake.calls[-1][0] == "high"
+    assert fake.calls[-1][0] == "openai/gpt-4o"
 
 
-def test_unknown_tier_falls_back_to_first(client, fake):
-    client.post("/v1/chat/completions", json={
+def test_unknown_bucket_is_a_404(client, fake):
+    # An unrecognized bucket used to silently fall back to whichever tier
+    # came first. It now reports the mistake back to the caller instead of
+    # guessing.
+    r = client.post("/v1/chat/completions", json={
         "model": "auto-nonsense", "messages": [{"role": "user", "content": "hi"}]})
-    assert fake.calls[-1][0] == "low"
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "model_not_found"
+    assert fake.calls == []
 
 
 def test_auto_picks_highest_scoring_tier(client, fake):
@@ -250,12 +259,50 @@ def test_router_busy_maps_to_503():
     assert r.json()["error"]["code"] == "provider_unavailable"
 
 
-def test_router_error_maps_to_400():
+def test_router_error_maps_to_502_not_400():
+    """A RouterError is the providers failing, not a malformed request.
+
+    This asserted 400/invalid_request_error until the whole-branch review:
+    since Task 7 a RouterError also means "every provider failed" and "the
+    model produced nothing after partial output", so calling it the caller's
+    mistake sent them to debug the wrong end. The message text is unchanged;
+    only the label and the status are.
+    """
     with _client_for(FakeRouter(raises=RouterError("auth failure"))) as c:
         r = c.post("/v1/chat/completions", json={
             "model": "auto-low", "messages": [{"role": "user", "content": "hi"}]})
     app_module.state.router = None
-    assert r.status_code == 400
+    assert r.status_code == 502
+    assert r.json()["error"]["type"] == "server_error"
+    assert r.json()["error"]["message"] == "auth failure"
+
+
+def test_an_auth_failure_still_reads_correctly_as_a_server_error():
+    """The other caller of this handler: every provider rejecting our keys.
+
+    That is the service's own configured credential being refused upstream,
+    which is a server-side problem however it is labelled - the text still
+    names the provider and the status, and 502 is the honest status for it.
+    """
+    exc = RouterError("Auth failure for provider 'groq': 401")
+    with _client_for(FakeRouter(raises=exc)) as c:
+        r = c.post("/v1/chat/completions", json={
+            "model": "auto-low", "messages": [{"role": "user", "content": "hi"}]})
+    app_module.state.router = None
+    assert r.status_code == 502
+    assert "Auth failure for provider 'groq': 401" in r.json()["error"]["message"]
+
+
+def test_a_streaming_router_error_is_a_server_error_too():
+    with _client_for(FakeRouter(raises=RouterError("every provider failed"))) as c:
+        r = c.post("/v1/chat/completions", json={
+            "model": "auto-low", "stream": True,
+            "messages": [{"role": "user", "content": "hi"}]})
+    app_module.state.router = None
+    payloads = _sse_payloads(r.text)
+    errors = [p["error"] for p in payloads if p.get("error")]
+    assert errors and errors[0]["type"] == "server_error"
+    assert errors[0]["message"] == "every provider failed"
 
 
 # --- streaming ---------------------------------------------------------------
@@ -314,14 +361,14 @@ def test_stream_surfaces_busy_as_sse_error():
 def test_models_lists_auto_and_tiers(client):
     ids = [m["id"] for m in client.get("/v1/models").json()["data"]]
     assert "auto" in ids
-    assert "auto-low" in ids
-    assert "auto-high" in ids
-    assert "low::groq/llama-3.1-8b-instant" in ids
+    assert "low" in ids
+    assert "high" in ids
+    assert "groq/llama-3.1-8b-instant" in ids
 
 
 def test_models_carries_routing_metadata(client):
     data = client.get("/v1/models").json()["data"]
-    entry = next(m for m in data if m["id"] == "high::openai/gpt-4o")
+    entry = next(m for m in data if m["id"] == "openai/gpt-4o")
     assert entry["flexrouter"]["vision"] is True
     assert entry["flexrouter"]["score"] == 95
     assert entry["flexrouter"]["quarantined"] is False
@@ -331,7 +378,7 @@ def test_models_flags_quarantined_routes(client, fake):
     fake._engine._penalties._q["groq/llama-3.1-8b-instant"] = {
         "until": 1e12, "reason": "404 model not found"}
     data = client.get("/v1/models").json()["data"]
-    entry = next(m for m in data if m["id"] == "low::groq/llama-3.1-8b-instant")
+    entry = next(m for m in data if m["id"] == "groq/llama-3.1-8b-instant")
     assert entry["flexrouter"]["quarantined"] is True
     assert "404" in entry["flexrouter"]["quarantine_reason"]
 
@@ -558,3 +605,45 @@ def test_a_failing_retest_leaves_the_quarantine_alone(client, fake, monkeypatch)
 
     client.post("/api/providers/groq/test")
     assert fake._engine._penalties.is_quarantined("groq", "*") is True
+
+
+def test_the_streaming_bound_covers_the_whole_call_not_each_attempt(monkeypatch):
+    """One deadline for the call, not a fresh one per routing attempt.
+
+    `first` stays True while routing-progress events go by, which is right -
+    chatter is not content - but the wait was re-armed with the full
+    ROUTE_TIMEOUT_SECONDS every time round the loop, so a bucket that kept
+    failing over held the client for roughly retries x the bound while the
+    non-streaming path capped the same call once. Each attempt below takes
+    0.4s against a 0.5s bound, so under the old code nothing timed out until
+    the sixth attempt gave up (~2.9s); under one absolute deadline the
+    timeout fires once, at 0.5s.
+    """
+    monkeypatch.setattr(app_module, "ROUTE_TIMEOUT_SECONDS", 0.5)
+
+    class FailingOver(FakeRouter):
+        async def agenerate_stream(self, messages, tier, **kwargs):
+            for attempt in range(1, 7):
+                await asyncio.sleep(0.4)
+                yield AttemptEvent(attempt=attempt, max_attempts=6,
+                                   provider="groq", model="m1")
+                yield AttemptFailedEvent(attempt=attempt, max_attempts=6,
+                                         provider="groq", model="m1",
+                                         reason="rate_limited")
+            await asyncio.sleep(30)
+            yield DoneEvent(result=dict(OK_RESULT))
+
+    started = time.monotonic()
+    with _client_for(FailingOver()) as c:
+        r = c.post("/v1/chat/completions", json={
+            "model": "auto-low", "stream": True,
+            "messages": [{"role": "user", "content": "hi"}]})
+    elapsed = time.monotonic() - started
+    app_module.state.router = None
+
+    assert r.status_code == 200
+    assert r.text.count("became available within") == 1   # once, not per attempt
+    assert r.text.rstrip().endswith("data: [DONE]")
+    # Generous headroom over the 0.5s bound, still far under the ~2.9s the
+    # per-attempt re-arm produced.
+    assert elapsed < 1.5, elapsed

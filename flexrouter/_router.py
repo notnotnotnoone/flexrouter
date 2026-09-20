@@ -1,9 +1,10 @@
 from __future__ import annotations
 import asyncio
+import dataclasses
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Literal, Optional
 
@@ -18,6 +19,7 @@ from flexrouter.hooks import HookRunner, HookContext
 from flexrouter.quota import QuotaTracker
 from flexrouter.rate_limits import RateLimitStore
 from flexrouter.recovery import PenaltyBox
+from flexrouter.redact import scrub
 from flexrouter.sampler import PassiveSampler
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,14 @@ class ToolCallDeltaEvent:
     id: Optional[str]
     name: Optional[str]
     arguments: Optional[str]
+    raw: dict = field(default_factory=dict)
+    """The provider's own delta dictionary, unmodified.
+
+    The four fields above are a lossy reading of it, kept because DoneEvent
+    assembly and existing library callers use them. Anything forwarding this
+    to a client must forward `raw`: LiteLLM's tool-call drops come from
+    re-parsing, and the four fields are exactly that re-parse.
+    """
 
 
 @dataclass
@@ -67,7 +77,7 @@ class DoneEvent:
 StreamEvent = AttemptEvent | AttemptFailedEvent | DeltaEvent | ReasoningDeltaEvent | ToolCallDeltaEvent | DoneEvent
 
 
-class FlexRouter:
+class LocalRouter:
     def __init__(self, config_path: Optional[str] = None) -> None:
         from flexrouter import home
 
@@ -84,6 +94,7 @@ class FlexRouter:
         self._engine = RoutingEngine(
             self._cfg, rate_limit_store=self._rate_limit_store, penalties=self._penalties,
             quota_tracker=self._quota_tracker)
+        self._pin_engine = self._build_pin_engine()
         self._audit = AuditLogger(self._cfg.state_dir)
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
         self._sampler = PassiveSampler(
@@ -134,11 +145,19 @@ class FlexRouter:
         failed, even when the other providers in the tier were healthy. The
         key is a property of the provider, so quarantine the provider and let
         the retry loop rotate to a different one.
+
+        The reason is scrubbed here, at the write site, not where it is later
+        displayed. A provider's 4xx/5xx text can echo the rejected credential
+        back at us, and this reason is persisted to the penalties file on disk
+        and then served verbatim by the unauthenticated /api/* routes and by
+        /v1/models, none of which pass through the error envelope's scrubber.
+        Scrubbing on the way in means nothing unscrubbed is ever written down.
         """
-        self._penalties.quarantine_provider(route.provider, str(exc))
+        reason = scrub(str(exc))
+        self._penalties.quarantine_provider(route.provider, reason)
         self._events.record(
             route.provider, route.model, "server_error",
-            detail=f"provider quarantined (auth): {exc}")
+            detail=f"provider quarantined (auth): {reason}")
 
     def _handle_provider_error(self, route, exc) -> None:
         """Sideline a route after a provider error, and record why.
@@ -146,23 +165,28 @@ class FlexRouter:
         A permanent status (the provider saying the model is gone) quarantines
         the route instead of penalizing it — otherwise the backoff loop retries
         a deleted model every 30 seconds until the heat death of the universe.
+
+        Scrubbed at the write site for the same reason as _handle_auth_failure:
+        a provider error's text is built from the provider's own response body,
+        and this reason is persisted and then served unauthenticated.
         """
+        reason = scrub(str(exc))
         if exc.is_provider_wide:
-            self._penalties.quarantine_provider(route.provider, str(exc))
+            self._penalties.quarantine_provider(route.provider, reason)
             self._events.record(
                 route.provider, route.model, "server_error",
-                detail=f"provider quarantined: {exc}")
+                detail=f"provider quarantined: {reason}")
             return
         if exc.is_permanent:
-            self._penalties.quarantine(route.provider, route.model, str(exc))
+            self._penalties.quarantine(route.provider, route.model, reason)
             self._events.record(
                 route.provider, route.model, "server_error",
-                detail=f"quarantined: {exc}")
+                detail=f"quarantined: {reason}")
             return
         self._engine.penalize(route.provider, route.model)
         self._events.record(
             route.provider, route.model, "server_error",
-            detail=str(exc),
+            detail=reason,
             penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
 
     def generate(
@@ -205,7 +229,7 @@ class FlexRouter:
         last_auth_error: RouterError | None = None
 
         for attempt in range(retries + 1):
-            route = self._engine.select(tier, estimated_tokens, vision, session_id)
+            route = self._engine_for(tier).select(tier, estimated_tokens, vision, session_id)
 
             if route is None:
                 if last_auth_error is not None:
@@ -215,7 +239,7 @@ class FlexRouter:
                     raise RouterBusy(blocked)
                 if not wait:
                     raise RouterBusy(f"All models in tier {tier!r} are unavailable")
-                secs = self._engine.seconds_until_available(tier)
+                secs = self._engine_for(tier).seconds_until_available(tier)
                 await asyncio.sleep(max(secs, 1.0))
                 continue
 
@@ -311,7 +335,7 @@ class FlexRouter:
         max_attempts = retries + 1
 
         for attempt in range(retries + 1):
-            route = self._engine.select(tier, estimated_tokens, vision, session_id)
+            route = self._engine_for(tier).select(tier, estimated_tokens, vision, session_id)
 
             if route is None:
                 # Unlike the sync path this loop has no wait=False escape, so
@@ -321,7 +345,7 @@ class FlexRouter:
                 blocked = self._quarantine_block_reason(tier)
                 if blocked:
                     raise RouterBusy(blocked)
-                secs = self._engine.seconds_until_available(tier)
+                secs = self._engine_for(tier).seconds_until_available(tier)
                 await asyncio.sleep(max(secs, 1.0))
                 continue
 
@@ -482,17 +506,28 @@ class FlexRouter:
                         id=tc.get("id"),
                         name=fn.get("name"),
                         arguments=fn.get("arguments"),
+                        raw=tc,
                     ))
                 if sc.usage:
                     final_usage.update(sc.usage)
                 return events
 
+            # Whether *anything* — content, reasoning, or a tool-call
+            # fragment — has already reached the consumer on this attempt.
+            # Once true, this attempt is committed: an empty completion from
+            # here on is a failed answer, not a reason to try another
+            # provider, because the caller's screen may already be showing
+            # what was sent.
+            any_yielded = False
+
             if first_chunk is not None:
                 for ev in _events_for(first_chunk):
+                    any_yielded = True
                     yield ev
 
             async for sc in stream:
                 for ev in _events_for(sc):
+                    any_yielded = True
                     yield ev
 
             latency_ms = int((time.monotonic() - start) * 1000)
@@ -512,15 +547,58 @@ class FlexRouter:
             )
 
             # A stream that ends with no content and no tool calls has shown
-            # the consumer nothing (no DeltaEvent, no ToolCallDeltaEvent —
-            # both are only yielded when accumulated/has_tool_calls end up
-            # non-empty), so it's safe to retry against the next provider
-            # exactly like the pre-first-chunk failures above, instead of
-            # treating "we received at least one chunk" as an irreversible
-            # commit. Without this, a model that spends its whole token
-            # budget on reasoning (nothing usable back) looks identical to a
-            # real success and the caller is left with a silent empty reply.
+            # the consumer nothing *usable*. If it also never yielded a
+            # single event (no DeltaEvent, no ReasoningDeltaEvent, no
+            # ToolCallDeltaEvent — `any_yielded` is False), it's safe to
+            # retry against the next provider exactly like the
+            # pre-first-chunk failures above, instead of treating "we
+            # received at least one chunk" as an irreversible commit.
+            # Without this, a model that spends its whole token budget on
+            # reasoning (nothing usable back) looks identical to a real
+            # success and the caller is left with a silent empty reply.
+            #
+            # But if something *was* already yielded — reasoning text is the
+            # live case — the caller may already be showing it, and
+            # switching providers now would be exactly the silent mid-answer
+            # model swap streaming is not allowed to do. That case falls
+            # through to the `any_yielded` branch below instead of retrying.
             if not full_text and not has_tool_calls:
+                if any_yielded:
+                    logger.warning(
+                        "empty completion after partial output, failing "
+                        "without retry",
+                        extra={
+                            "event": "router.stream.empty_completion_after_partial",
+                            "provider": route.provider, "model": route.model,
+                            "attempt": attempt + 1, "max_attempts": max_attempts,
+                        },
+                    )
+                    # Declining to retry this request is not the same as
+                    # declining to remember: the penalty box is what keeps
+                    # this model from being picked first on the *next*
+                    # request, and that isn't conditional on retrying within
+                    # this one. Same penalize/record calls as the retry path
+                    # below, just without the retry.
+                    self._engine.penalize(route.provider, route.model)
+                    self._events.record(
+                        route.provider, route.model, "server_error",
+                        detail="empty response after partial output (no content, no tool calls)",
+                        penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                    self._audit.log(
+                        tier=tier, provider=route.provider, model=route.model,
+                        prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
+                        latency_ms=latency_ms, status="empty_response",
+                    )
+                    self._history.record(self._engine.health_snapshot())
+                    # No except clause below catches this — it propagates
+                    # straight out of the generator, same as any other
+                    # post-commit failure. app.py renders it as the
+                    # well-formed failure chunk, not a bare error object,
+                    # because content/reasoning already went out.
+                    raise RouterError(
+                        f"{route.provider}/{route.model}: empty completion "
+                        "after partial output (no content, no tool calls)")
+
                 logger.warning(
                     "empty completion, retrying next provider",
                     extra={
@@ -609,6 +687,40 @@ class FlexRouter:
 
         raise RouterBusy(f"All models in tier {tier!r} are unavailable after {retries} retries")
 
+    def _build_pin_engine(self) -> RoutingEngine:
+        """A second engine whose buckets are one model each, named
+        "provider/model".
+
+        This exists because a request may name one specific model instead of a
+        bucket, and `RoutingEngine.select` looks its candidates up by bucket
+        name in the config it was given. `engine.py` is reused unchanged by
+        spec decree, so instead of teaching it about pins we hand a second
+        instance a shadow config. Both share the same rate-limit store,
+        penalty box and quota tracker, so a pinned call consumes and respects
+        exactly the same allowances as a bucket call, and a model quarantined
+        through one is quarantined through the other.
+        """
+        pinned: dict[str, list] = {}
+        for model_configs in self._cfg.tiers.values():
+            for mc in model_configs:
+                pinned.setdefault(f"{mc.provider}/{mc.model}", [mc])
+        shadow = dataclasses.replace(self._cfg, tiers=pinned)
+        return RoutingEngine(
+            shadow,
+            rate_limit_store=self._rate_limit_store,
+            penalties=self._penalties,
+            quota_tracker=self._quota_tracker,
+        )
+
+    def _engine_for(self, tier: str) -> RoutingEngine:
+        """The engine that knows about `tier`.
+
+        A name with a "/" in it is one specific model; bucket names never
+        contain one. See `flexrouter/wire.py`, which is what produces these
+        strings from a request.
+        """
+        return self._pin_engine if "/" in tier else self._engine
+
     def reload(self) -> None:
         # Load first, assign after: a settings file that has gone bad
         # must leave the router exactly as it was, not half swapped.
@@ -619,6 +731,7 @@ class FlexRouter:
         self._engine.update_config(self._cfg)
         self._engine._rate_limit_store = self._rate_limit_store
         self._engine._quota_tracker = self._quota_tracker
+        self._pin_engine = self._build_pin_engine()
         self._client._rate_limit_store = self._rate_limit_store
         self._audit = AuditLogger(self._cfg.state_dir)
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
@@ -631,13 +744,13 @@ class FlexRouter:
         unknown tier, same as generate()/agenerate().
         """
         self._maybe_hot_reload()
-        return self._engine.remaining_capacity(tier)
+        return self._engine_for(tier).remaining_capacity(tier)
 
     def close(self) -> None:
         self._sampler.stop()
         self._loop.close()
 
-    def __enter__(self) -> "FlexRouter":
+    def __enter__(self) -> "LocalRouter":
         return self
 
     def __exit__(self, *_) -> None:

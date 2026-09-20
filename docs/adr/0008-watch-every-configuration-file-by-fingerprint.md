@@ -30,3 +30,7 @@ A file that cannot be stat'ed keeps the last fingerprint that was seen for it, r
 - Same-tick edits that change a file's length, and files moving backwards in time, are both caught. An edit that changes content while keeping the byte count identical *and* lands within the same 100ns tick is still theoretically missable; this is not reachable in practice.
 - A broken edit no longer fails requests in flight. The cost is that the router can be serving stale settings with nothing in `status`, `doctor` or the dashboard saying so — tracked as a follow-up in `.scratch/v2-stage1-followups/issues/03-surface-stale-settings.md`.
 - Comparing a tuple per request instead of one float is a stat call per watched file rather than one. At three files, on the request path of a network-bound operation, this does not signify.
+
+---
+
+*Later note (ADR 0009): the class named `FlexRouter` above is now called `LocalRouter` (`flexrouter/_router.py`), and it runs inside the flexrouter service rather than inside each caller's process. `FlexRouter` is now the thin client that talks to that service. The decision recorded here is unchanged; only the name is.*
