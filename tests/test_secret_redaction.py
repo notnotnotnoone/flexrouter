@@ -381,3 +381,121 @@ def test_export_explains_itself_when_the_file_cannot_be_read_at_all(
     assert SECRET not in emitted
     assert "Traceback" not in emitted
     assert "Nothing was shared." in emitted
+
+
+# --- a sidelining reason is a leak path of its own ---------------------------
+#
+# A provider that answers 4xx/5xx has its response body folded into the
+# ProviderError text by describe_http_error, and several providers echo the
+# rejected credential back in that body. That text was handed to the penalty
+# box as the quarantine reason, written to quarantine.json on disk, and then
+# served verbatim by /v1/models, /api/providers and /api/quarantine - none of
+# which pass through openai_error or _sse_error, so the scrubber was simply
+# not on that exit, and /api/* is unauthenticated and CORS-open. The fix
+# scrubs at the write sites in _router.py, so nothing unscrubbed is persisted.
+
+SIDELINE_KEY = "sk-live-QUARANTINE-LEAK-9f3a2b1c8d7e6f5a"
+
+
+def _sideline_client(tmp_path, monkeypatch):
+    from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig
+    from flexrouter import app as app_mod
+
+    def _cfg(_path):
+        return FlexConfig(
+            tiers={"low": [ModelConfig(provider="groq", model="m1",
+                                       score=85, rpm=60, tpm=60000)]},
+            providers={"groq": ProviderConfig(
+                base_url="https://api.groq.com/openai/v1", api_keys=["k"])},
+            state_dir=str(tmp_path / "state"),
+        )
+
+    monkeypatch.setattr("flexrouter._router.load_config", _cfg)
+    app_mod.state.router = None
+    client = TestClient(create_app(str(tmp_path / "config.yaml")))
+    # The router is built lazily on first use; force it now so the test can
+    # drive its sidelining handlers directly.
+    client.get("/v1/models")
+    return client, app_mod
+
+
+def _state_dir_text(tmp_path) -> str:
+    """Everything the penalty box and the event log wrote to disk."""
+    # errors="ignore": the event log is written in the platform encoding, so
+    # the "…" the scrubber leaves behind is not decodable as utf-8 here. The
+    # only thing this helper looks for is a key, which is plain ASCII.
+    return "".join(p.read_text(encoding="utf-8", errors="ignore")
+                   for p in (tmp_path / "state").glob("*")
+                   if p.is_file())
+
+
+def test_a_sidelined_provider_does_not_persist_or_serve_the_key(
+        tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from flexrouter.exceptions import RouterError
+
+    client, app_mod = _sideline_client(tmp_path, monkeypatch)
+    try:
+        router = app_mod.state.router
+        route = SimpleNamespace(provider="groq", model="m1")
+        router._handle_auth_failure(
+            route,
+            RouterError(f"401 from groq: Incorrect API key provided: "
+                        f"{SIDELINE_KEY}"))
+
+        assert SIDELINE_KEY not in _state_dir_text(tmp_path)
+        assert SIDELINE_KEY not in client.get("/v1/models").text
+        assert SIDELINE_KEY not in client.get("/api/providers").text
+        assert SIDELINE_KEY not in client.get("/api/quarantine").text
+        # The rest of the message is still there to explain itself.
+        assert "Incorrect API key" in client.get("/api/providers").text
+    finally:
+        app_mod.state.router = None
+
+
+def test_a_sidelined_route_does_not_persist_or_serve_the_key(
+        tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from flexrouter.client import ProviderError
+
+    client, app_mod = _sideline_client(tmp_path, monkeypatch)
+    try:
+        router = app_mod.state.router
+        route = SimpleNamespace(provider="groq", model="m1")
+        exc = ProviderError(
+            f"404 from groq: no such model (key {SIDELINE_KEY})",
+            status_code=404)
+        assert exc.is_permanent            # the route-quarantine branch
+        router._handle_provider_error(route, exc)
+
+        assert SIDELINE_KEY not in _state_dir_text(tmp_path)
+        assert SIDELINE_KEY not in client.get("/v1/models").text
+        assert SIDELINE_KEY not in client.get("/api/providers").text
+        assert SIDELINE_KEY not in client.get("/api/quarantine").text
+        assert "no such model" in client.get("/api/quarantine").text
+    finally:
+        app_mod.state.router = None
+
+
+def test_a_penalized_route_does_not_record_the_key_in_its_event(
+        tmp_path, monkeypatch):
+    """The third write site: a temporary penalty, whose detail is logged."""
+    from types import SimpleNamespace
+    from flexrouter.client import ProviderError
+
+    client, app_mod = _sideline_client(tmp_path, monkeypatch)
+    try:
+        router = app_mod.state.router
+        exc = ProviderError(
+            f"500 from groq: upstream said key {SIDELINE_KEY} blew up",
+            status_code=500)
+        assert not exc.is_permanent and not exc.is_provider_wide
+        router._handle_provider_error(
+            SimpleNamespace(provider="groq", model="m1"), exc)
+        assert SIDELINE_KEY not in _state_dir_text(tmp_path)
+        events = tmp_path / "state" / "events.csv"
+        assert events.exists()
+        assert SIDELINE_KEY not in events.read_text(
+            encoding="utf-8", errors="ignore")
+    finally:
+        app_mod.state.router = None

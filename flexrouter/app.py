@@ -300,7 +300,11 @@ async def chat_completions(request: Request):
     except RouterBusy as exc:
         return openai_error(str(exc), "server_error", "provider_unavailable", 503)
     except RouterError as exc:
-        return openai_error(str(exc), "invalid_request_error", status=400)
+        # A provider-side failure, not the caller's mistake. Since Task 7
+        # RouterError also means "every provider failed" and "the model
+        # produced nothing after partial output"; calling that
+        # invalid_request_error sent callers to debug their own payload.
+        return openai_error(str(exc), "server_error", status=502)
     except KeyError:
         # The pin engine raises KeyError for a model that is not in the
         # settings at all. The client asked for something specific by name;
@@ -380,11 +384,20 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
         events = router.agenerate_stream(messages, tier, **kwargs).__aiter__()
         first = True
         emitted = False       # at least one content chunk has gone out
+        # One absolute deadline for the whole call, fixed before the first
+        # attempt. Waiting ROUTE_TIMEOUT_SECONDS per __anext__ re-armed the
+        # bound on every routing attempt, so a bucket that kept failing over
+        # held the client for retries x ROUTE_TIMEOUT_SECONDS while the
+        # non-streaming path capped the same call once.
+        deadline = time.monotonic() + ROUTE_TIMEOUT_SECONDS
         while True:
             try:
                 if first:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
                     event = await asyncio.wait_for(
-                        events.__anext__(), timeout=ROUTE_TIMEOUT_SECONDS)
+                        events.__anext__(), timeout=remaining)
                 else:
                     event = await events.__anext__()
             except StopAsyncIteration:
@@ -398,9 +411,11 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
                 yield "data: [DONE]\n\n"
                 return
             if isinstance(event, (AttemptEvent, AttemptFailedEvent)):
-                # Routing-progress chatter, not output. The bound must stay
-                # armed until real content arrives, or a tier that keeps
-                # retrying resets the clock forever.
+                # Routing-progress chatter, not output: `first` stays True,
+                # so the bound stays armed until real content arrives. It is
+                # not re-armed - the next wait runs against what is left of
+                # the one deadline fixed above, so a tier that keeps retrying
+                # runs that deadline down instead of resetting it.
                 continue
             first = False
 
@@ -462,10 +477,12 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
             yield _sse_error(str(exc), "server_error", "provider_unavailable")
         yield "data: [DONE]\n\n"
     except RouterError as exc:
+        # Same relabel as the non-streaming path: a RouterError here is the
+        # providers failing, not the request being malformed.
         if emitted:
-            yield error_chunk(str(exc), "invalid_request_error")
+            yield error_chunk(str(exc), "server_error")
         else:
-            yield _sse_error(str(exc), "invalid_request_error")
+            yield _sse_error(str(exc), "server_error")
         yield "data: [DONE]\n\n"
     except KeyError:
         message = f"There is no bucket or model named {model!r}."

@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 import flexrouter.app as app_module
-from flexrouter._router import DeltaEvent, DoneEvent
+from flexrouter._router import (AttemptEvent, AttemptFailedEvent,
+                                DeltaEvent, DoneEvent)
 from flexrouter.app import create_app
 from flexrouter.exceptions import RouterBusy, RouterError
 
@@ -257,12 +259,50 @@ def test_router_busy_maps_to_503():
     assert r.json()["error"]["code"] == "provider_unavailable"
 
 
-def test_router_error_maps_to_400():
+def test_router_error_maps_to_502_not_400():
+    """A RouterError is the providers failing, not a malformed request.
+
+    This asserted 400/invalid_request_error until the whole-branch review:
+    since Task 7 a RouterError also means "every provider failed" and "the
+    model produced nothing after partial output", so calling it the caller's
+    mistake sent them to debug the wrong end. The message text is unchanged;
+    only the label and the status are.
+    """
     with _client_for(FakeRouter(raises=RouterError("auth failure"))) as c:
         r = c.post("/v1/chat/completions", json={
             "model": "auto-low", "messages": [{"role": "user", "content": "hi"}]})
     app_module.state.router = None
-    assert r.status_code == 400
+    assert r.status_code == 502
+    assert r.json()["error"]["type"] == "server_error"
+    assert r.json()["error"]["message"] == "auth failure"
+
+
+def test_an_auth_failure_still_reads_correctly_as_a_server_error():
+    """The other caller of this handler: every provider rejecting our keys.
+
+    That is the service's own configured credential being refused upstream,
+    which is a server-side problem however it is labelled - the text still
+    names the provider and the status, and 502 is the honest status for it.
+    """
+    exc = RouterError("Auth failure for provider 'groq': 401")
+    with _client_for(FakeRouter(raises=exc)) as c:
+        r = c.post("/v1/chat/completions", json={
+            "model": "auto-low", "messages": [{"role": "user", "content": "hi"}]})
+    app_module.state.router = None
+    assert r.status_code == 502
+    assert "Auth failure for provider 'groq': 401" in r.json()["error"]["message"]
+
+
+def test_a_streaming_router_error_is_a_server_error_too():
+    with _client_for(FakeRouter(raises=RouterError("every provider failed"))) as c:
+        r = c.post("/v1/chat/completions", json={
+            "model": "auto-low", "stream": True,
+            "messages": [{"role": "user", "content": "hi"}]})
+    app_module.state.router = None
+    payloads = _sse_payloads(r.text)
+    errors = [p["error"] for p in payloads if p.get("error")]
+    assert errors and errors[0]["type"] == "server_error"
+    assert errors[0]["message"] == "every provider failed"
 
 
 # --- streaming ---------------------------------------------------------------
@@ -565,3 +605,45 @@ def test_a_failing_retest_leaves_the_quarantine_alone(client, fake, monkeypatch)
 
     client.post("/api/providers/groq/test")
     assert fake._engine._penalties.is_quarantined("groq", "*") is True
+
+
+def test_the_streaming_bound_covers_the_whole_call_not_each_attempt(monkeypatch):
+    """One deadline for the call, not a fresh one per routing attempt.
+
+    `first` stays True while routing-progress events go by, which is right -
+    chatter is not content - but the wait was re-armed with the full
+    ROUTE_TIMEOUT_SECONDS every time round the loop, so a bucket that kept
+    failing over held the client for roughly retries x the bound while the
+    non-streaming path capped the same call once. Each attempt below takes
+    0.4s against a 0.5s bound, so under the old code nothing timed out until
+    the sixth attempt gave up (~2.9s); under one absolute deadline the
+    timeout fires once, at 0.5s.
+    """
+    monkeypatch.setattr(app_module, "ROUTE_TIMEOUT_SECONDS", 0.5)
+
+    class FailingOver(FakeRouter):
+        async def agenerate_stream(self, messages, tier, **kwargs):
+            for attempt in range(1, 7):
+                await asyncio.sleep(0.4)
+                yield AttemptEvent(attempt=attempt, max_attempts=6,
+                                   provider="groq", model="m1")
+                yield AttemptFailedEvent(attempt=attempt, max_attempts=6,
+                                         provider="groq", model="m1",
+                                         reason="rate_limited")
+            await asyncio.sleep(30)
+            yield DoneEvent(result=dict(OK_RESULT))
+
+    started = time.monotonic()
+    with _client_for(FailingOver()) as c:
+        r = c.post("/v1/chat/completions", json={
+            "model": "auto-low", "stream": True,
+            "messages": [{"role": "user", "content": "hi"}]})
+    elapsed = time.monotonic() - started
+    app_module.state.router = None
+
+    assert r.status_code == 200
+    assert r.text.count("became available within") == 1   # once, not per attempt
+    assert r.text.rstrip().endswith("data: [DONE]")
+    # Generous headroom over the 0.5s bound, still far under the ~2.9s the
+    # per-attempt re-arm produced.
+    assert elapsed < 1.5, elapsed

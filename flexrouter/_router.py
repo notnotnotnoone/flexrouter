@@ -19,6 +19,7 @@ from flexrouter.hooks import HookRunner, HookContext
 from flexrouter.quota import QuotaTracker
 from flexrouter.rate_limits import RateLimitStore
 from flexrouter.recovery import PenaltyBox
+from flexrouter.redact import scrub
 from flexrouter.sampler import PassiveSampler
 
 logger = logging.getLogger(__name__)
@@ -144,11 +145,19 @@ class LocalRouter:
         failed, even when the other providers in the tier were healthy. The
         key is a property of the provider, so quarantine the provider and let
         the retry loop rotate to a different one.
+
+        The reason is scrubbed here, at the write site, not where it is later
+        displayed. A provider's 4xx/5xx text can echo the rejected credential
+        back at us, and this reason is persisted to the penalties file on disk
+        and then served verbatim by the unauthenticated /api/* routes and by
+        /v1/models, none of which pass through the error envelope's scrubber.
+        Scrubbing on the way in means nothing unscrubbed is ever written down.
         """
-        self._penalties.quarantine_provider(route.provider, str(exc))
+        reason = scrub(str(exc))
+        self._penalties.quarantine_provider(route.provider, reason)
         self._events.record(
             route.provider, route.model, "server_error",
-            detail=f"provider quarantined (auth): {exc}")
+            detail=f"provider quarantined (auth): {reason}")
 
     def _handle_provider_error(self, route, exc) -> None:
         """Sideline a route after a provider error, and record why.
@@ -156,23 +165,28 @@ class LocalRouter:
         A permanent status (the provider saying the model is gone) quarantines
         the route instead of penalizing it — otherwise the backoff loop retries
         a deleted model every 30 seconds until the heat death of the universe.
+
+        Scrubbed at the write site for the same reason as _handle_auth_failure:
+        a provider error's text is built from the provider's own response body,
+        and this reason is persisted and then served unauthenticated.
         """
+        reason = scrub(str(exc))
         if exc.is_provider_wide:
-            self._penalties.quarantine_provider(route.provider, str(exc))
+            self._penalties.quarantine_provider(route.provider, reason)
             self._events.record(
                 route.provider, route.model, "server_error",
-                detail=f"provider quarantined: {exc}")
+                detail=f"provider quarantined: {reason}")
             return
         if exc.is_permanent:
-            self._penalties.quarantine(route.provider, route.model, str(exc))
+            self._penalties.quarantine(route.provider, route.model, reason)
             self._events.record(
                 route.provider, route.model, "server_error",
-                detail=f"quarantined: {exc}")
+                detail=f"quarantined: {reason}")
             return
         self._engine.penalize(route.provider, route.model)
         self._events.record(
             route.provider, route.model, "server_error",
-            detail=str(exc),
+            detail=reason,
             penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
 
     def generate(
