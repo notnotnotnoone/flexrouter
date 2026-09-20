@@ -68,6 +68,7 @@ class FakeRouter:
                 "ollama": SimpleNamespace(
                     base_url="http://localhost:11434/v1", api_keys=[]),
             },
+            auth_token=None,
         )
         self._engine = SimpleNamespace(_penalties=FakePenalties())
         self.delay = delay

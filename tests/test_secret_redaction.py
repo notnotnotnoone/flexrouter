@@ -156,6 +156,17 @@ def test_redact_config_masks_every_shape_a_key_can_take():
     assert raw["providers"]["a"]["api_keys"] == ["sk-aaaa1111"]
 
 
+def test_redact_config_masks_auth_token():
+    from flexrouter.config import redact_config
+
+    raw = {"settings": {"auth_token": "flx-AAAABBBBCCCCDDDD1234"}}
+    safe = redact_config(raw)
+    assert safe["settings"]["auth_token"] == "…1234"
+    assert "flx-AAAABBBBCCCCDDDD1234" not in str(safe)
+    # the caller's own structure is untouched
+    assert raw["settings"]["auth_token"] == "flx-AAAABBBBCCCCDDDD1234"
+
+
 def test_redact_config_survives_an_override_layered_on_top(home_with_an_inline_key):
     """Overrides are merged before redaction, so a merged-in provider entry
     has to come through masked too."""

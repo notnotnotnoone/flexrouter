@@ -26,6 +26,8 @@ ALLOWED_FIELDS: dict[str, frozenset[str]] = {
         "sample_interval_seconds", "health_history_days", "retry_policy",
         "retries", "backoff_seconds", "provider_budget", "hooks",
     }),
+    # Not `auth_token`: it is a credential. A key that could be set from the
+    # dashboard could be set by anything that reached the dashboard.
     # Not `api_key`/`api_keys` (credentials never go in settings) and not
     # `api_key_env` (it would let a caller point a provider at any environment
     # variable on the machine).

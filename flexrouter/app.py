@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hmac
 import json
 import os
 import time
@@ -92,6 +93,32 @@ def openai_error(message: str, error_type: str = "server_error",
     if code is not None:
         err["code"] = code
     return JSONResponse({"error": err}, status_code=status)
+
+
+_UNAUTHORIZED = ("This flexrouter needs a key. Send it as an Authorization "
+                 "header: Bearer <your key>. It is the auth_token line in "
+                 "your settings.")
+
+
+def _check_token(request: Request):
+    """None when the request may proceed, an error response when it may not.
+
+    Guards /v1 only. The dashboard and its data stay open: a browser has no
+    way to carry this header, and the service binds to 127.0.0.1. ADR 0009.
+    """
+    expected = get_router()._cfg.auth_token
+    if not expected:
+        return None
+    header = request.headers.get("authorization") or ""
+    prefix = "Bearer "
+    given = header[len(prefix):] if header.startswith(prefix) else ""
+    # compare_digest, not ==, so how long this takes says nothing about how
+    # much of the key was right.
+    if given and hmac.compare_digest(given, expected):
+        return None
+    # The message contains neither key, right or wrong.
+    return openai_error(_UNAUTHORIZED, "invalid_request_error",
+                        "invalid_api_key", 401)
 
 
 # --------------------------------------------------------------------------
@@ -664,6 +691,15 @@ def create_app(config_path: str | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def _guard_v1(request: Request, call_next):
+        if request.url.path.startswith("/v1/"):
+            denied = _check_token(request)
+            if denied is not None:
+                return denied
+        return await call_next(request)
+
     app.include_router(v1)
     app.include_router(api)
 

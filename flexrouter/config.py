@@ -58,6 +58,15 @@ class FlexConfig:
     retry: RetryConfig = field(default_factory=RetryConfig)
     provider_budget: dict[str, float] = field(default_factory=dict)
     hooks: list[str] = field(default_factory=list)
+    auth_token: str | None = None
+    """An optional key this machine's service requires on every /v1 request.
+
+    Hand-written in the settings file and never written by the tool, like
+    everything else in there. It is a credential, so it is masked everywhere
+    settings are shown and it is not in overrides.ALLOWED_FIELDS - a key that
+    could be set from the dashboard could be set by anything that reached the
+    dashboard.
+    """
 
     def __post_init__(self) -> None:
         # `port` is the real field; `dashboard_port` is a deprecated alias that
@@ -167,6 +176,9 @@ def _bare_api_keys_string(praw: dict) -> list[str]:
 def _all_inline_secrets(raw: dict) -> list[str]:
     """Every secret typed straight into a parsed settings structure."""
     found: list[str] = []
+    settings = raw.get("settings")
+    if isinstance(settings, dict) and settings.get("auth_token"):
+        found.append(str(settings["auth_token"]))
     providers = raw.get("providers") or {}
     if not isinstance(providers, dict):
         return found
@@ -213,6 +225,9 @@ def redact_config(raw: dict) -> dict:
     from flexrouter.keys import mask
 
     safe = copy.deepcopy(raw)
+    settings = safe.get("settings")
+    if isinstance(settings, dict) and settings.get("auth_token"):
+        settings["auth_token"] = mask(str(settings["auth_token"]))
     for praw in (safe.get("providers") or {}).values():
         if not isinstance(praw, dict):
             continue
@@ -379,6 +394,7 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
 
     port_name = "port" if "port" in settings else "dashboard_port"
     port = _number(settings, port_name, home.DEFAULT_PORT, int)
+    auth_token = settings.get("auth_token") or None
     return FlexConfig(
         tiers=tiers,
         providers=providers,
@@ -394,6 +410,7 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
         retry=retry,
         provider_budget=settings.get("provider_budget", {}),
         hooks=settings.get("hooks", []),
+        auth_token=auth_token,
     )
 
 
