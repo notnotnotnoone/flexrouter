@@ -321,3 +321,97 @@ def test_settings_that_parse_but_name_no_port_still_fall_back_quietly(monkeypatc
         assert router._base_url == "http://127.0.0.1:4891"
     finally:
         router.close()
+
+
+# -- the connection dying while the service is answering ------------------
+
+
+def _dying_stream(failure, deltas=("par", "tial")):
+    """A stream that delivers real deltas and then drops the connection."""
+    chunks = [
+        ('data: {"id":"c1","object":"chat.completion.chunk","choices":'
+         '[{"index":0,"delta":{"content":"' + d + '"},"finish_reason":null}]}'
+         "\n\n").encode()
+        for d in deltas
+    ]
+
+    async def stream():
+        for chunk in chunks:
+            yield chunk
+        raise failure
+
+    def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              content=stream())
+
+    return handler
+
+
+@pytest.mark.parametrize("failure", [
+    httpx.ReadError("the connection dropped"),
+    httpx.RemoteProtocolError("the service hung up mid-answer"),
+])
+async def test_a_drop_part_way_through_is_a_router_error_after_the_deltas(failure):
+    """The one failure the pre-response catch can never see, on the path that
+    matters most: a long answer whose connection dies half-way. It used to
+    surface as a raw httpx error, so a caller streaming inside
+    `except RouterError` got an unhandled library exception and no DoneEvent."""
+    seen = []
+    with pytest.raises(RouterError) as exc:
+        async for e in _router(_dying_stream(failure)).agenerate_stream([], "smart"):
+            seen.append(e)
+
+    assert [e.text for e in seen if isinstance(e, DeltaEvent)] == ["par", "tial"]
+    assert not isinstance(exc.value, httpx.HTTPError)
+    assert not isinstance(exc.value, ServiceNotRunning), (
+        "the service did answer; the connection died while it was answering")
+    assert "cut off part-way through" in str(exc.value)
+    assert BASE in str(exc.value)
+
+
+async def test_a_drop_part_way_through_yields_no_done_event():
+    seen = []
+    with pytest.raises(RouterError):
+        async for e in _router(
+                _dying_stream(httpx.ReadError("gone"))).agenerate_stream([], "smart"):
+            seen.append(e)
+    assert not any(isinstance(e, DoneEvent) for e in seen)
+
+
+# -- the home and the settings, when the caller named the address ---------
+
+
+def test_an_unreachable_home_is_a_configuration_error_not_a_raw_oserror(monkeypatch):
+    """Dropping the blanket guard uncovered failures that are not read
+    failures: a home that cannot be created raised a bare FileExistsError out
+    of the constructor, which is not a project error type."""
+    from flexrouter.exceptions import ConfigError
+
+    monkeypatch.setattr("flexrouter.home.ensure_home",
+                        lambda: (_ for _ in ()).throw(FileExistsError("in the way")))
+    with pytest.raises(ConfigError) as exc:
+        FlexRouter()
+    assert "shared settings folder" in str(exc.value)
+    assert "FileExistsError" in str(exc.value)
+
+
+def test_an_explicit_base_url_survives_an_unrelated_broken_settings_file(tmp_path):
+    """The caller has already said where the service is. An unrelated broken
+    settings file must not stop them."""
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("settings: {port: [unclosed", encoding="utf-8")
+    router = FlexRouter(str(broken), base_url="http://127.0.0.1:9999")
+    try:
+        assert router._base_url == "http://127.0.0.1:9999"
+        assert router._token is None
+    finally:
+        router.close()
+
+
+def test_without_an_explicit_base_url_a_broken_settings_file_still_raises(tmp_path):
+    from flexrouter.exceptions import ConfigError
+
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("settings: {port: [unclosed", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        FlexRouter(str(broken))

@@ -28,13 +28,41 @@ _NOT_RUNNING = """flexrouter isn't running. Start it with:
 
 (then this will work). Checked {base_url} - nothing listening."""
 
+_CUT_OFF = ("The answer from flexrouter at {base_url} was cut off part-way "
+            "through: the connection dropped while it was still answering. "
+            "Everything received before the drop was delivered.")
+
+
+def _read_settings(config_path: Optional[str]):
+    """Read the shared settings, reporting a broken home as a ConfigError.
+
+    Dropping the old blanket `except` around this uncovered failures that are
+    not read failures at all: if the shared settings folder cannot be created
+    or reached, `ensure_home()` raises a bare `OSError` (a `FileExistsError`,
+    say) straight out of the constructor. That is not a project error type and
+    a caller has nothing to catch. Map it onto the one the project already
+    has.
+    """
+    from flexrouter import home
+    from flexrouter.config import load_config
+    from flexrouter.exceptions import ConfigError
+
+    try:
+        home.ensure_home()
+    except ConfigError:
+        raise
+    except OSError as exc:
+        raise ConfigError(
+            f"Cannot open the shared settings folder at {home.home_dir()}: "
+            f"{type(exc).__name__}") from exc
+    return load_config(config_path)
+
 
 class FlexRouter:
     def __init__(self, config_path: Optional[str] = None, *,
                  base_url: Optional[str] = None,
                  timeout: float = 300.0) -> None:
         from flexrouter import home
-        from flexrouter.config import load_config
 
         # The port and the optional local key both live in the settings this
         # machine shares. Reading them is the only thing the client still
@@ -50,9 +78,21 @@ class FlexRouter:
         # "no settings yet" never reaches here; only a genuinely unreadable
         # file does. Settings that parse but name no port still fall back
         # quietly, which is what the `or` below is for.
-        cfg = load_config(config_path)
-        port = cfg.port or home.DEFAULT_PORT
-        self._token = cfg.auth_token
+        #
+        # The exception is an explicit `base_url`. A caller who names the
+        # address has already said where the service is and needs nothing from
+        # the settings but the key; an unrelated broken settings file must not
+        # stop them. In that one case a failure is tolerated and we carry on
+        # with no key.
+        try:
+            cfg = _read_settings(config_path)
+        except Exception:
+            if base_url is None:
+                raise
+            cfg = None
+
+        port = (cfg.port if cfg is not None else None) or home.DEFAULT_PORT
+        self._token = cfg.auth_token if cfg is not None else None
 
         self._base_url = base_url or f"http://127.0.0.1:{port}"
         self._http = httpx.AsyncClient(base_url=self._base_url, timeout=timeout)
@@ -127,42 +167,53 @@ class FlexRouter:
             finish = "stop"
             failure: Optional[str] = None
 
-            async for line in response.aiter_lines():
-                line = line.strip()
-                if not line.startswith("data: "):
-                    continue
-                data = line[len("data: "):].strip()
-                if data == "[DONE]":
-                    break
-                chunk = json.loads(data)
+            try:
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[len("data: "):].strip()
+                    if data == "[DONE]":
+                        break
+                    chunk = json.loads(data)
 
-                if chunk.get("error"):
-                    # The service's one error chunk. Everything already
-                    # yielded stays yielded; the caller finds out by this
-                    # generator raising once the stream ends, which is what a
-                    # partial answer that failed actually is.
-                    failure = chunk["error"].get("message") or "stream failed"
-                    continue
+                    if chunk.get("error"):
+                        # The service's one error chunk. Everything already
+                        # yielded stays yielded; the caller finds out by this
+                        # generator raising once the stream ends, which is what a
+                        # partial answer that failed actually is.
+                        failure = chunk["error"].get("message") or "stream failed"
+                        continue
 
-                choices = chunk.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                if choices[0].get("finish_reason"):
-                    finish = choices[0]["finish_reason"]
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    if choices[0].get("finish_reason"):
+                        finish = choices[0]["finish_reason"]
 
-                if delta.get("content"):
-                    text_parts.append(delta["content"])
-                    yield DeltaEvent(text=delta["content"])
-                if delta.get("reasoning_content"):
-                    yield ReasoningDeltaEvent(text=delta["reasoning_content"])
-                for raw in delta.get("tool_calls") or []:
-                    fn = raw.get("function") or {}
-                    tool_calls.append(raw)
-                    yield ToolCallDeltaEvent(
-                        index=raw.get("index", 0), id=raw.get("id"),
-                        name=fn.get("name"), arguments=fn.get("arguments"),
-                        raw=raw)
+                    if delta.get("content"):
+                        text_parts.append(delta["content"])
+                        yield DeltaEvent(text=delta["content"])
+                    if delta.get("reasoning_content"):
+                        yield ReasoningDeltaEvent(text=delta["reasoning_content"])
+                    for raw in delta.get("tool_calls") or []:
+                        fn = raw.get("function") or {}
+                        tool_calls.append(raw)
+                        yield ToolCallDeltaEvent(
+                            index=raw.get("index", 0), id=raw.get("id"),
+                            name=fn.get("name"), arguments=fn.get("arguments"),
+                            raw=raw)
+            except httpx.TransportError as exc:
+                # The connection died while the service was still
+                # answering. Not ServiceNotRunning: it did answer. The
+                # pre-response catch can never see this one, and it is
+                # the ordinary failure on a long answer. Everything
+                # already yielded stays yielded and the caller then
+                # sees the error -- the same shape as the service's own
+                # mid-stream failure chunk.
+                raise RouterError(
+                    _CUT_OFF.format(base_url=self._base_url)) from exc
 
             if failure is not None:
                 raise RouterError(failure)
