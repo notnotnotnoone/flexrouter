@@ -298,3 +298,43 @@ def test_a_credential_with_a_trailing_delimiter_is_still_scrubbed():
     # that was caught becomes uncaught.
     out = scrub("token abc123:")
     assert "abc123" not in out
+
+
+# Round 6: the edge trim's own hole. Trimming a leading '=' or ':' off a run
+# threw away the very character that marked what followed as a value, and the
+# all-lowercase exemption then covered it. Confirmed live before the fix:
+# scrub('key=abcdef') and friends returned their input unchanged. The
+# exemption now stops at a run sitting directly behind an '=' or a ':'.
+
+def test_a_lowercase_value_bolted_to_an_equals_sign_is_scrubbed():
+    assert "abcdef" not in scrub("key=abcdef")
+
+
+def test_a_lowercase_value_bolted_to_an_equals_sign_with_a_tail_is_scrubbed():
+    assert "letmein" not in scrub("token=letmein;")
+
+
+def test_a_lowercase_secret_bolted_to_an_equals_sign_is_scrubbed():
+    assert "passwd" not in scrub("secret=passwd;")
+
+
+def test_a_lowercase_value_bolted_to_a_colon_is_scrubbed():
+    assert "letmein" not in scrub("Authorization:letmein")
+
+
+def test_the_delimiter_itself_stays_where_it_was():
+    # The trim is unchanged: the '=' is still in the output, only what
+    # followed it is cut down.
+    out = scrub("key=abcdef")
+    assert out.startswith("key=")
+
+
+def test_the_carve_out_is_one_sided_and_prose_stays_readable():
+    # The whole point of judging only the *leading* side: in prose the
+    # lowercase word comes before its colon, never after one, so every word
+    # the exemption exists to protect keeps it.
+    out = scrub("Incorrect API key provided: sk-abc123XYZ was rejected "
+                "by upstream: please check your billing settings")
+    assert "sk-abc123XYZ" not in out
+    for word in ("provided", "rejected", "upstream", "please", "billing"):
+        assert word in out

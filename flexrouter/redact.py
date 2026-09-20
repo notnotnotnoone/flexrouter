@@ -42,10 +42,19 @@ The two rules, in the order they run:
   "upstream:", "reason:") losing its exemption over that colon alone. It
   is not an exemption: a trimmed run is still judged on its own
   characters, so "abc123:" trims to "abc123", still has digits in it, and
-  is still scrubbed. Nothing that was caught becomes uncaught.
+  is still scrubbed. What the trim does cost is stated as a named
+  residual below - the claim once made here, that nothing which was
+  caught becomes uncaught, was not true.
 
   The one exemption, and the only one permitted: a run made entirely of
-  lowercase letters a-z is left alone. That is what keeps ordinary words
+  lowercase letters a-z, *and not immediately preceded by '=' or ':'*, is
+  left alone. A lowercase word standing on its own is prose; a lowercase
+  word bolted to an equals sign or a colon is a value, and "key=abcdef",
+  "token=letmein" and "Bearer letmein." are exactly the shapes the edge
+  trim would otherwise hand back unchanged. The carve-out is one-sided on
+  purpose: "upstream:" and "provided:" in ordinary prose are *followed* by
+  the colon, not preceded by one, so they stay readable. That is what keeps
+  ordinary words
   that happen to sit near a cue word - "rejected", "retrying", "please",
   "billing", "expired" - readable. A run containing a digit, an uppercase
   letter, or any of ``_ - . / + = :`` is scrubbed regardless of length,
@@ -84,6 +93,17 @@ Accepted costs, stated here rather than engineered around:
     is scrubbing every lowercase word within 48 characters of any cue word,
     which makes error messages unreadable and is exactly the kind of
     overreach that gets a scrubbing mechanism disabled rather than trusted.
+  - Named residual, and the cost the edge trim charges: a lowercase value
+    separated from its cue word by a character the trim removes on the
+    *trailing* side or by plain whitespace - "Bearer letmein." - keeps the
+    exemption, because that is character-for-character the same shape as
+    the prose the exemption exists to protect ("API key provided:", "...
+    rejected by upstream:"). Only the leading side can be told apart, and
+    only there is the carve-out made: a run immediately preceded by '=' or
+    ':' is a value, not prose, so "key=abcdef" and "token=letmein;" lose
+    the exemption. No rule can separate "letmein." from "provided:"
+    without either an adjacency heuristic - deleted in round 3, and it was
+    a hole - or scrubbing every sentence-final lowercase word near a cue.
   - The retained last-four tail is the same form the dashboard's `mask()`
     shows, so a caller can correlate which of their own configured keys was
     rejected. A small, known, accepted disclosure.
@@ -130,6 +150,16 @@ _RUN_CHAR = re.compile(_RUN_CHARS)
 # underscores, hyphens, or any of the other characters _RUN_CHARS allows -
 # is scrubbed.
 _ALL_LOWER = re.compile(r"^[a-z]+$")
+
+# ...with one carve-out, and only on the leading side. The edge trim strips
+# a leading '=' or ':' off a run before the exemption is judged, which is
+# how "key=abcdef" and "token=letmein;" came back in clear: the trim threw
+# away the very character that marked the rest as a value. A lowercase word
+# standing on its own is prose; a lowercase word bolted to an equals sign or
+# a colon is a value. The check is one-sided on purpose - "upstream:" and
+# "provided:" are *followed* by their colon, never preceded by one, so they
+# keep the exemption and error messages stay readable.
+_VALUE_LEAD = ("=", ":")
 
 # How far past each cue word Rule B looks. Independent per cue word - two
 # cue words close together can have overlapping windows, and a run found
@@ -199,7 +229,14 @@ def _scrub_cued(text: str) -> str:
             start += lead
             end -= trail
             token = text[start:end]
-            if not token or _ALL_LOWER.match(token):
+            if not token:
+                continue
+            # The lowercase exemption, minus its one carve-out: a run sitting
+            # directly behind an '=' or a ':' is a value someone assigned,
+            # not a word someone wrote, and the edge trim had just thrown
+            # that marker away before the exemption was judged.
+            if _ALL_LOWER.match(token) and not (
+                    start > 0 and text[start - 1] in _VALUE_LEAD):
                 continue
             spans[start] = (end, _tail(token))
 
