@@ -17,6 +17,7 @@ Layout on the single port:
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import time
@@ -348,7 +349,12 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
                 # (BerriAI/litellm#17246), and the spec names that explicitly.
                 # `raw` is empty only for an event built by older code; fall
                 # back to the parsed fields in that case.
-                delta = dict(event.raw) if event.raw else _tool_call_delta(event)
+                # Deep copy: `raw`'s nested `function` sub-dict is the same
+                # object the provider client's chunk holds. A shallow copy
+                # would only isolate the top level, letting a later edit to
+                # delta["function"] reach back into the stream the router is
+                # still reading.
+                delta = copy.deepcopy(event.raw) if event.raw else _tool_call_delta(event)
                 yield chunk([{"index": 0, "delta": {"tool_calls": [delta]},
                               "finish_reason": None}])
 

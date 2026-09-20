@@ -77,3 +77,29 @@ def test_the_argument_delta_keeps_its_index_without_an_id(tmp_path, monkeypatch)
     second = _tool_deltas(_chunks(_client(tmp_path, monkeypatch)))[1]
     assert second["index"] == 0
     assert "id" not in second
+
+
+def test_mutating_the_forwarded_delta_does_not_corrupt_the_source_fixture(tmp_path, monkeypatch):
+    # Capture the actual dict handed to _sse before it is serialized to JSON
+    # text: a JSON round trip would hide a shallow copy, since it always
+    # produces fresh objects on the way back in. Mutating the pre-serialize
+    # dict is what proves whether app.py's copy of `event.raw` is deep.
+    from flexrouter import app as app_mod
+    captured = []
+    real_sse = app_mod._sse
+
+    def spy_sse(payload):
+        captured.append(payload)
+        return real_sse(payload)
+
+    monkeypatch.setattr(app_mod, "_sse", spy_sse)
+
+    _chunks(_client(tmp_path, monkeypatch))
+
+    tool_call_payloads = [p for p in captured
+                           if p.get("choices") and p["choices"][0]["delta"].get("tool_calls")]
+    first_delta = tool_call_payloads[0]["choices"][0]["delta"]["tool_calls"][0]
+    first_delta["function"]["name"] = "corrupted"
+    first_delta["cache_control"]["type"] = "corrupted"
+    assert RAW_DELTA["function"]["name"] == "get_weather"
+    assert RAW_DELTA["cache_control"] == {"type": "ephemeral"}
