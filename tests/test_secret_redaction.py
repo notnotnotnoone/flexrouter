@@ -167,6 +167,22 @@ def test_redact_config_masks_auth_token():
     assert raw["settings"]["auth_token"] == "flx-AAAABBBBCCCCDDDD1234"
 
 
+def test_redact_settings_text_masks_auth_token():
+    from flexrouter.config import redact_settings_text
+
+    secret = "flx-AAAABBBBCCCCDDDD1234"
+    text = (
+        "settings:\n"
+        f"  auth_token: {secret}\n"
+        "providers:\n"
+        "  groq:\n"
+        "    base_url: https://api.groq.com/openai/v1\n"
+    )
+    out = redact_settings_text(text)
+    assert secret not in out
+    assert "…1234" in out
+
+
 def test_redact_config_survives_an_override_layered_on_top(home_with_an_inline_key):
     """Overrides are merged before redaction, so a merged-in provider entry
     has to come through masked too."""

@@ -394,7 +394,13 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
 
     port_name = "port" if "port" in settings else "dashboard_port"
     port = _number(settings, port_name, home.DEFAULT_PORT, int)
-    auth_token = settings.get("auth_token") or None
+    # A hand-written value can come back from YAML as an int, a float, or
+    # anything else that parses as a bare scalar (`auth_token: 12345678`), and
+    # str.encode()/hmac.compare_digest downstream both require a string.
+    # Coerced here, once, so nothing that reads FlexConfig.auth_token has to
+    # guard against a non-string.
+    raw_auth_token = settings.get("auth_token")
+    auth_token = str(raw_auth_token) if raw_auth_token else None
     return FlexConfig(
         tiers=tiers,
         providers=providers,

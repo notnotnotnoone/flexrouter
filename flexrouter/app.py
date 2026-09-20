@@ -113,8 +113,22 @@ def _check_token(request: Request):
     prefix = "Bearer "
     given = header[len(prefix):] if header.startswith(prefix) else ""
     # compare_digest, not ==, so how long this takes says nothing about how
-    # much of the key was right.
-    if given and hmac.compare_digest(given, expected):
+    # much of the key was right. Compared as bytes, not str: compare_digest
+    # rejects a non-ASCII str operand outright, and a key typed with an
+    # accented character is plausible enough (it is hand-written) that this
+    # must not surface as a bare 500. Encoded as latin-1, not utf-8: HTTP
+    # header values are latin-1 on the wire (what Starlette decoded `given`
+    # from), so that is the encoding that reconstructs the bytes a real
+    # client actually sent. If `expected` itself holds a character no header
+    # can carry, it can never match anything a real request presents, so
+    # that failure means "wrong key", not a 500.
+    try:
+        given_bytes = given.encode("latin-1")
+        expected_bytes = expected.encode("latin-1")
+    except UnicodeEncodeError:
+        given_bytes = expected_bytes = None
+    if given and given_bytes is not None and hmac.compare_digest(
+            given_bytes, expected_bytes):
         return None
     # The message contains neither key, right or wrong.
     return openai_error(_UNAUTHORIZED, "invalid_request_error",
@@ -687,18 +701,41 @@ def create_app(config_path: str | None = None) -> FastAPI:
     state.router = None
 
     app = FastAPI(title="flexrouter", version="0.1.0", lifespan=lifespan)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
-    )
 
+    # Registered *before* add_middleware(CORSMiddleware) below, on purpose:
+    # Starlette wraps middleware in registration order, so whatever is added
+    # via add_middleware() after this ends up outermost, running first on the
+    # way in and last on the way out. That makes CORSMiddleware see every
+    # request before the guard does - so it answers a CORS preflight (an
+    # OPTIONS carrying Access-Control-Request-Method) itself, without the
+    # guard ever running - and it also gets to add
+    # Access-Control-Allow-Origin to the guard's own 401 response on the way
+    # back out. The reverse order (guard added after CORSMiddleware) made the
+    # guard outermost instead: it 401'd preflights before CORSMiddleware ever
+    # saw them, and its 401s left the response without CORS headers, breaking
+    # every browser-based client of /v1 the moment a key was set.
+    #
+    # The explicit `method != "OPTIONS"` skip below is a second, independent
+    # layer, not a substitute for the ordering above: it protects a bare
+    # OPTIONS request that carries no Origin/Access-Control-Request-Method
+    # (so CORSMiddleware treats it as an ordinary request and passes it
+    # through rather than answering it). That is still not a bypass, because
+    # no /v1 route defines an OPTIONS handler - every one is GET or POST - so
+    # such a request reaches no handler that reads or changes anything; it
+    # falls through to Starlette's routing, which answers 405 Method Not
+    # Allowed. Nothing that can carry request data ever skips the check.
     @app.middleware("http")
     async def _guard_v1(request: Request, call_next):
-        if request.url.path.startswith("/v1/"):
+        if request.url.path.startswith("/v1/") and request.method != "OPTIONS":
             denied = _check_token(request)
             if denied is not None:
                 return denied
         return await call_next(request)
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    )
 
     app.include_router(v1)
     app.include_router(api)
