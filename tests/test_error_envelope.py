@@ -54,3 +54,35 @@ def test_a_key_echoed_mid_stream_never_reaches_the_client(tmp_path, monkeypatch)
             "messages": [{"role": "user", "content": "hi"}]}) as r:
         body = "".join(r.iter_text())
     assert leaked not in body
+
+
+# --- openai_error's scrub_message parameter ---
+#
+# Scrubbing exists for text that might carry a provider's or a request's own
+# words, which can include an echoed key. A fixed string this codebase wrote
+# itself never carries one, and scrubbing it anyway only mangles cue words
+# like "Authorization" and "token" that happen to sit near each other in
+# plain English. `scrub_message=False` opts a single call out of that; the
+# default stays True so a call site that omits the parameter is safe by
+# accident, not by luck.
+
+def test_openai_error_scrubs_by_default():
+    from flexrouter.app import openai_error
+
+    leaked = "sk-proj-AAAABBBBCCCCDDDDEEEE1234"
+    resp = openai_error(f"provider said: api_key {leaked} is invalid")
+    body = resp.body.decode()
+    assert leaked not in body
+    assert "…1234" in body
+
+
+def test_openai_error_leaves_the_message_alone_when_told_to():
+    from flexrouter.app import openai_error
+
+    message = ("This flexrouter needs a key. Send it as an Authorization "
+               "header: Bearer <your key>. It is the auth_token line in "
+               "your settings.")
+    resp = openai_error(message, "invalid_request_error", "invalid_api_key",
+                        401, scrub_message=False)
+    body = resp.body.decode()
+    assert message in body

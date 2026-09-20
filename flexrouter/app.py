@@ -86,10 +86,17 @@ def _state_dir() -> str:
 
 
 def openai_error(message: str, error_type: str = "server_error",
-                 code: str | None = None, status: int = 500) -> JSONResponse:
+                 code: str | None = None, status: int = 500, *,
+                 scrub_message: bool = True) -> JSONResponse:
+    """`scrub_message=False` is only for a fixed string this codebase wrote
+    itself - never for anything derived from a provider response, an
+    exception, a config file, or a request. The default is True so a new
+    call site that forgets this parameter is safe by accident, not by luck.
+    """
     # Scrubbed here, at the single exit, rather than at each raise site. A
     # raise site added later would otherwise be a leak nobody notices.
-    err: dict = {"message": scrub(message), "type": error_type}
+    text = scrub(message) if scrub_message else message
+    err: dict = {"message": text, "type": error_type}
     if code is not None:
         err["code"] = code
     return JSONResponse({"error": err}, status_code=status)
@@ -130,9 +137,11 @@ def _check_token(request: Request):
     if given and given_bytes is not None and hmac.compare_digest(
             given_bytes, expected_bytes):
         return None
-    # The message contains neither key, right or wrong.
+    # The message contains neither key, right or wrong - it is a fixed
+    # string this codebase wrote, not anything derived from the request, so
+    # scrubbing it buys nothing and only makes it unreadable.
     return openai_error(_UNAUTHORIZED, "invalid_request_error",
-                        "invalid_api_key", 401)
+                        "invalid_api_key", 401, scrub_message=False)
 
 
 # --------------------------------------------------------------------------

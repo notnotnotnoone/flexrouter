@@ -70,6 +70,24 @@ def test_the_dashboard_stays_open_on_loopback(tmp_path, monkeypatch):
     assert _client(tmp_path, monkeypatch, SECRET).get("/api/status").status_code == 200
 
 
+def test_the_rejection_message_is_readable(tmp_path, monkeypatch):
+    # openai_error scrubs every message by default, which is right for a
+    # provider's own words but wrong for a fixed string this codebase wrote:
+    # scrub()'s cue-word window used to eat "Authorization", "Bearer" and
+    # "auth_token" out of this exact sentence, since it treats them as cues
+    # a credential might follow. There is no key in a constant string, so
+    # nothing is bought by scrubbing it - only the instructions are lost.
+    r = _client(tmp_path, monkeypatch, SECRET).get("/v1/models")
+    message = r.json()["error"]["message"]
+    assert "Authorization" in message
+    assert "Bearer" in message
+    assert "auth_token" in message
+    assert message == (
+        "This flexrouter needs a key. Send it as an Authorization "
+        "header: Bearer <your key>. It is the auth_token line in "
+        "your settings.")
+
+
 # --- Fix round 1: CORS preflight must not be guarded ---
 #
 # `@app.middleware("http")` wraps whatever middleware was already registered,
