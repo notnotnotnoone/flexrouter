@@ -40,15 +40,19 @@ class FlexRouter:
         # machine shares. Reading them is the only thing the client still
         # needs the settings file for: it does not read providers, models or
         # provider keys, and it never routes.
-        try:
-            cfg = load_config(config_path)
-            port = cfg.port or home.DEFAULT_PORT
-            self._token = cfg.auth_token
-        except Exception:
-            # No settings yet is not this class's problem to report. Either
-            # the service will say so, or the connection fails with the
-            # message above, which is the one the owner can act on.
-            port, self._token = home.DEFAULT_PORT, None
+        #
+        # A settings file that cannot be read at all is not swallowed. It used
+        # to be, and the fallback then guessed the default port -- so an owner
+        # whose service was running happily on a configured port was told
+        # "flexrouter isn't running", the one case where that message is
+        # actively wrong. A broken settings file is its own problem and says
+        # so. `load_config` creates a starter home when there is none, so
+        # "no settings yet" never reaches here; only a genuinely unreadable
+        # file does. Settings that parse but name no port still fall back
+        # quietly, which is what the `or` below is for.
+        cfg = load_config(config_path)
+        port = cfg.port or home.DEFAULT_PORT
+        self._token = cfg.auth_token
 
         self._base_url = base_url or f"http://127.0.0.1:{port}"
         self._http = httpx.AsyncClient(base_url=self._base_url, timeout=timeout)
@@ -85,7 +89,15 @@ class FlexRouter:
         try:
             response = await self._http.post("/v1/chat/completions",
                                              json=payload, headers=self._headers())
-        except httpx.ConnectError as exc:
+        except httpx.TransportError as exc:
+            # TransportError is the common parent of connect, read, write and
+            # protocol errors. Nothing listening, listening but never
+            # answering, and a reset mid-request are all "could not get an
+            # answer out of the service", and all want the one message that
+            # says how to start it and which address was tried. Catching only
+            # ConnectError left a connect timeout, a 300s read timeout and a
+            # reset escaping as raw httpx errors, which are not RouterError
+            # either, so `except RouterError` did not see them.
             raise ServiceNotRunning(
                 _NOT_RUNNING.format(base_url=self._base_url)) from exc
         if response.status_code >= 400:
@@ -101,7 +113,7 @@ class FlexRouter:
                                            json=payload, headers=self._headers())
         try:
             response = await self._http.send(request, stream=True)
-        except httpx.ConnectError as exc:
+        except httpx.TransportError as exc:
             raise ServiceNotRunning(
                 _NOT_RUNNING.format(base_url=self._base_url)) from exc
 
@@ -185,16 +197,52 @@ class FlexRouter:
         """
         return None
 
+    async def aclose(self) -> None:
+        """Release the connection pool from a caller that already has a loop.
+
+        The correct way to release an instance that was only ever awaited.
+        """
+        await self._http.aclose()
+
     def close(self) -> None:
+        """Release the connection pool. Safe to call more than once.
+
+        Two shapes, because there are two ways to have used this object. If
+        `generate()` made a loop of our own, close through it and then close
+        the loop. If it did not -- the caller only ever awaited `agenerate()`
+        -- there is still an open `httpx.AsyncClient` to release, and the old
+        version returned without touching it, leaking the pool until garbage
+        collection.
+        """
         if self._loop is not None and not self._loop.is_closed():
             self._loop.run_until_complete(self._http.aclose())
             self._loop.close()
+            self._loop = None
+            return
+        if self._http.is_closed:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self._http.aclose())
+        else:
+            # Synchronous close cannot await inside someone else's running
+            # loop. Saying so is better than the silent leak this replaces.
+            raise RuntimeError(
+                "close() cannot run inside a running event loop; "
+                "use `await router.aclose()` (or `async with router`).")
 
     def __enter__(self) -> "FlexRouter":
         return self
 
     def __exit__(self, *_) -> None:
         self.close()
+
+    async def __aenter__(self) -> "FlexRouter":
+        return self
+
+    async def __aexit__(self, *_) -> None:
+        await self.aclose()
 
 
 def _assemble(deltas: list[dict]) -> list[dict]:

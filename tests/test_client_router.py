@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -185,3 +186,138 @@ async def test_the_client_sends_the_local_key_when_one_is_set():
 
 def test_reload_is_a_no_op_that_does_not_explode():
     FlexRouter(base_url=BASE).reload()
+
+
+# -- the failure envelope around the happy path ---------------------------
+
+
+@pytest.mark.parametrize("failure", [
+    httpx.ConnectTimeout("took too long to connect"),
+    httpx.ReadTimeout("listening, but never answered"),
+    httpx.ReadError("reset mid-request"),
+    httpx.RemoteProtocolError("the service hung up"),
+])
+async def test_every_way_of_not_getting_an_answer_is_the_same_clear_error(failure):
+    """A refused connection was the only one that produced the clear message.
+
+    A connect timeout, a service that listens but never answers, and a reset
+    mid-request all escaped as raw httpx errors, which are not RouterError
+    either -- so a caller wrapping `except RouterError` caught none of them.
+    """
+    def handler(request):
+        raise failure
+
+    with pytest.raises(ServiceNotRunning) as exc:
+        await _router(handler).agenerate([], "smart")
+    message = str(exc.value)
+    assert "flexrouter isn't running" in message
+    assert "flexrouter serve" in message
+    assert BASE in message
+
+
+@pytest.mark.parametrize("failure", [
+    httpx.ConnectTimeout("took too long to connect"),
+    httpx.ReadTimeout("listening, but never answered"),
+    httpx.RemoteProtocolError("the service hung up"),
+])
+async def test_the_stream_reports_a_silent_service_the_same_way(failure):
+    def handler(request):
+        raise failure
+
+    with pytest.raises(ServiceNotRunning) as exc:
+        async for _ in _router(handler).agenerate_stream([], "smart"):
+            pass
+    assert "flexrouter serve" in str(exc.value)
+
+
+async def test_a_transport_failure_is_catchable_as_a_router_error():
+    def handler(request):
+        raise httpx.ReadTimeout("listening, but never answered")
+
+    with pytest.raises(RouterError):
+        await _router(handler).agenerate([], "smart")
+
+
+def test_close_releases_the_pool_when_only_agenerate_was_used():
+    """`close()` used to be a no-op unless `generate()` had made a loop, so an
+    async caller's connection pool stayed open until garbage collection."""
+    def handler(request):
+        return httpx.Response(200, json={"choices": []})
+
+    router = _router(handler)
+    asyncio.run(router.agenerate([], "smart"))
+    assert not router._http.is_closed
+    router.close()
+    assert router._http.is_closed
+
+
+def test_close_is_safe_to_call_twice():
+    def handler(request):
+        return httpx.Response(200, json={"choices": []})
+
+    router = _router(handler)
+    router.close()
+    router.close()
+    assert router._http.is_closed
+
+
+def test_close_still_works_after_the_synchronous_generate():
+    def handler(request):
+        return httpx.Response(200, json={"choices": []})
+
+    router = _router(handler)
+    router.generate([], "smart")
+    router.close()
+    assert router._http.is_closed
+    assert router._loop is None
+
+
+async def test_async_with_releases_the_client():
+    def handler(request):
+        return httpx.Response(200, json={"choices": []})
+
+    router = _router(handler)
+    async with router as r:
+        await r.agenerate([], "smart")
+        assert not r._http.is_closed
+    assert router._http.is_closed
+
+
+async def test_close_inside_a_running_loop_says_what_to_do_instead():
+    """Better than the silent leak it replaces."""
+    def handler(request):
+        return httpx.Response(200, json={"choices": []})
+
+    router = _router(handler)
+    with pytest.raises(RuntimeError, match="aclose"):
+        router.close()
+    await router.aclose()
+    assert router._http.is_closed
+
+
+def test_a_broken_settings_file_is_not_reported_as_a_dead_service(tmp_path):
+    """Swallowing it guessed port 4891, so an owner running the service on a
+    configured port was told it was not running -- the one case where that
+    message is wrong. A broken settings file is its own problem and says so."""
+    from flexrouter.exceptions import ConfigError
+
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("settings: {port: [unclosed", encoding="utf-8")
+    with pytest.raises(ConfigError) as exc:
+        FlexRouter(str(broken))
+    assert "broken.yaml" in str(exc.value)
+    assert not isinstance(exc.value, ServiceNotRunning)
+
+
+def test_settings_that_parse_but_name_no_port_still_fall_back_quietly(monkeypatch):
+    from types import SimpleNamespace
+
+    import flexrouter._client_router as mod
+
+    monkeypatch.setattr("flexrouter.config.load_config",
+                        lambda p=None: SimpleNamespace(port=None, auth_token=None))
+    router = mod.FlexRouter()
+    try:
+        assert router._base_url == "http://127.0.0.1:4891"
+    finally:
+        router.close()
