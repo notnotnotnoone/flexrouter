@@ -3,7 +3,7 @@ import os
 import pytest
 import yaml
 
-from flexrouter import FlexRouter, RouterBusy
+from flexrouter import LocalRouter, RouterBusy
 from flexrouter.quota import QuotaTracker
 
 
@@ -45,6 +45,6 @@ def test_router_raises_busy_when_daily_quota_exhausted(quota_config_file):
     # Pre-populate the daily quota as already exhausted before the router exists.
     QuotaTracker(state_dir).record("groq", "llama-3.1-8b-instant")
 
-    router = FlexRouter(str(config_path))
+    router = LocalRouter(str(config_path))
     with pytest.raises(RouterBusy):
         router.generate([{"role": "user", "content": "hi"}], tier="low", wait=False)

@@ -1,9 +1,10 @@
+from flexrouter._client_router import FlexRouter
 from flexrouter._router import (
     AttemptEvent,
     AttemptFailedEvent,
     DeltaEvent,
     DoneEvent,
-    FlexRouter,
+    LocalRouter,
     ReasoningDeltaEvent,
     ToolCallDeltaEvent,
 )
@@ -13,6 +14,7 @@ from flexrouter.exceptions import (
     ContextWindowWarning,
     RouterBusy,
     RouterError,
+    ServiceNotRunning,
 )
 
 __all__ = [
@@ -24,9 +26,10 @@ __all__ = [
     "DeltaEvent",
     "DoneEvent",
     "FlexRouter",
+    "LocalRouter",
     "ReasoningDeltaEvent",
     "RouterBusy",
     "RouterError",
+    "ServiceNotRunning",
     "ToolCallDeltaEvent",
 ]
-

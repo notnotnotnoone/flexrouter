@@ -2,7 +2,7 @@
 import pytest
 
 from flexrouter import (
-    FlexRouter, RouterBusy, RouterError, AttemptEvent, AttemptFailedEvent,
+    LocalRouter, RouterBusy, RouterError, AttemptEvent, AttemptFailedEvent,
     DeltaEvent, ReasoningDeltaEvent, ToolCallDeltaEvent, DoneEvent,
 )
 from flexrouter.client import RateLimitError, ProviderError, StreamChunk
@@ -21,7 +21,7 @@ MESSAGES = [{"role": "user", "content": "hi"}]
 
 
 def _router(config_file):
-    router = FlexRouter(str(config_file))
+    router = LocalRouter(str(config_file))
     router._cfg.retry.backoff_seconds = 0  # keep failed-attempt tests fast
     return router
 

@@ -1,7 +1,7 @@
 """The flexrouter daemon: one process, one port, everything on it.
 
 Replaces the two stdlib ``http.server`` instances this used to run (dashboard
-on 7352, OpenAI API on 7353). Those shared a single FlexRouter across
+on 7352, OpenAI API on 7353). Those shared a single LocalRouter across
 ThreadingMixIn worker threads while the router drove one non-thread-safe
 asyncio loop via ``run_until_complete`` — so the second overlapping request
 either raised "this event loop is already running" or deadlocked. That is not
@@ -76,8 +76,8 @@ state = _State()
 
 def get_router():
     if state.router is None:
-        from flexrouter._router import FlexRouter
-        state.router = FlexRouter(state.config_path)
+        from flexrouter._router import LocalRouter
+        state.router = LocalRouter(state.config_path)
     return state.router
 
 

@@ -1,6 +1,6 @@
 import pytest
 
-from flexrouter._router import FlexRouter
+from flexrouter._router import LocalRouter
 from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig
 
 
@@ -23,7 +23,7 @@ def _cfg(tmp_path):
 def _built_router(tmp_path, monkeypatch):
     """A real router over the fixture config, with no file on disk."""
     monkeypatch.setattr("flexrouter._router.load_config", lambda _p: _cfg(tmp_path))
-    return FlexRouter(str(tmp_path / "config.yaml"))
+    return LocalRouter(str(tmp_path / "config.yaml"))
 
 
 def test_pin_engine_has_one_bucket_per_model(tmp_path, monkeypatch):

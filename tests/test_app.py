@@ -1,7 +1,7 @@
 """The daemon's HTTP layer.
 
 The headline test here is test_overlapping_requests_run_concurrently. The old
-stdlib server shared one FlexRouter across ThreadingMixIn threads while the
+stdlib server shared one LocalRouter across ThreadingMixIn threads while the
 router drove a single non-thread-safe asyncio loop through run_until_complete,
 so the second overlapping request raised or hung. These tests pin down that
 requests now genuinely overlap instead.
@@ -52,7 +52,7 @@ def _model(provider, model, score=85, vision=False):
 
 
 class FakeRouter:
-    """Stands in for FlexRouter so these tests exercise the HTTP layer only."""
+    """Stands in for LocalRouter so these tests exercise the HTTP layer only."""
 
     def __init__(self, delay: float = 0.0, raises: Exception | None = None):
         self._cfg = SimpleNamespace(

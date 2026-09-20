@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 import pytest
-from flexrouter._router import FlexRouter
+from flexrouter._router import LocalRouter
 
 CONFIG = """
 providers:
@@ -17,11 +17,11 @@ settings:
   sample_interval_seconds: 0
 """
 
-def _make(tmp_path) -> FlexRouter:
+def _make(tmp_path) -> LocalRouter:
     state = tmp_path / "st"
     cfg = tmp_path / "flexrouter.yaml"
     cfg.write_text(CONFIG.replace("STATE", str(state).replace("\\", "/")))
-    return FlexRouter(config_path=str(cfg))
+    return LocalRouter(config_path=str(cfg))
 
 def test_router_constructs_persistence_files(tmp_path):
     r = _make(tmp_path)

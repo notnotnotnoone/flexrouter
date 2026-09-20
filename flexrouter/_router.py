@@ -76,7 +76,7 @@ class DoneEvent:
 StreamEvent = AttemptEvent | AttemptFailedEvent | DeltaEvent | ReasoningDeltaEvent | ToolCallDeltaEvent | DoneEvent
 
 
-class FlexRouter:
+class LocalRouter:
     def __init__(self, config_path: Optional[str] = None) -> None:
         from flexrouter import home
 
@@ -736,7 +736,7 @@ class FlexRouter:
         self._sampler.stop()
         self._loop.close()
 
-    def __enter__(self) -> "FlexRouter":
+    def __enter__(self) -> "LocalRouter":
         return self
 
     def __exit__(self, *_) -> None:
