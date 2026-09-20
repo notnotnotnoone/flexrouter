@@ -559,6 +559,17 @@ class FlexRouter:
                             "attempt": attempt + 1, "max_attempts": max_attempts,
                         },
                     )
+                    # Declining to retry this request is not the same as
+                    # declining to remember: the penalty box is what keeps
+                    # this model from being picked first on the *next*
+                    # request, and that isn't conditional on retrying within
+                    # this one. Same penalize/record calls as the retry path
+                    # below, just without the retry.
+                    self._engine.penalize(route.provider, route.model)
+                    self._events.record(
+                        route.provider, route.model, "server_error",
+                        detail="empty response after partial output (no content, no tool calls)",
+                        penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
                     self._audit.log(
                         tier=tier, provider=route.provider, model=route.model,
                         prompt_tokens=0, completion_tokens=0, cost_usd=0.0,

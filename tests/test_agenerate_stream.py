@@ -276,6 +276,31 @@ async def test_reasoning_only_empty_completion_fails_without_retry(
     assert kinds == ["AttemptEvent", "ReasoningDeltaEvent"]
 
 
+async def test_reasoning_only_empty_completion_still_penalizes_the_model(
+    config_file, monkeypatch
+):
+    # Declining to retry within this request is not the same as declining to
+    # remember: the penalty box is what keeps a model that reliably produces
+    # reasoning and nothing else from being picked first on the *next*
+    # request. That bookkeeping must happen even though this request fails
+    # without trying another provider.
+    router = _router(config_file)
+    monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE]))
+
+    async def _empty_stream(route, messages, **kwargs):
+        yield StreamChunk(reasoning="thinking forever")
+
+    monkeypatch.setattr(
+        router._client, "stream_chat", _stream_chat_sequence([_empty_stream]),
+    )
+
+    with pytest.raises(RouterError):
+        async for _ in router.agenerate_stream(MESSAGES, tier="low"):
+            pass
+
+    assert router._engine._penalties.is_penalized(ROUTE.provider, ROUTE.model)
+
+
 async def test_empty_committed_stream_with_no_yields_still_retries_next_provider(
     config_file, monkeypatch
 ):

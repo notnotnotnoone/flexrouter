@@ -134,14 +134,18 @@ def test_reasoning_only_empty_completion_ends_with_one_well_formed_error(tmp_pat
     assert body.rstrip().endswith("data: [DONE]")
 
 
-def test_a_stream_that_yields_nothing_at_all_still_fails_over(tmp_path, monkeypatch):
-    """Regression guard for the branch the empty-completion retry was written for.
+def test_a_provider_that_never_streams_anything_still_fails_over(tmp_path, monkeypatch):
+    """End-to-end companion to the pre-first-chunk empty-stream retry.
 
-    Nothing at all reached the caller here (no content, no reasoning, no
-    tool call), so this must still behave like the pre-existing "empty
-    completion" case: retry against the next model rather than failing the
-    whole request. This is the case that would break if the any-yielded
-    check were inverted.
+    Alpha's fake returns before yielding a single chunk, so this exercises
+    the pre-first-chunk `StopAsyncIteration` handler in `_router.py`
+    (nothing has been attempted yet, let alone committed), not the
+    post-commit "empty completion after a yielded chunk" branch — that
+    branch (a stream whose one chunk carries no content, reasoning, or tool
+    call) is covered directly in
+    test_agenerate_stream.py::test_empty_committed_stream_with_no_yields_still_retries_next_provider.
+    This test still earns its keep as an end-to-end check that a provider
+    which streams nothing at all fails over through the real HTTP path.
     """
     seen: list = []
 
