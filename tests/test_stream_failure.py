@@ -96,3 +96,63 @@ def test_the_stream_ends_with_the_done_marker_exactly_once(tmp_path, monkeypatch
     body = _run(tmp_path, monkeypatch, fake)
     assert body.count("data: [DONE]") == 1
     assert body.rstrip().endswith("data: [DONE]")
+
+
+def test_reasoning_only_empty_completion_never_switches_model(tmp_path, monkeypatch):
+    """Reasoning already reached the caller; an empty finish must not retry.
+
+    A stream that spends its whole budget on reasoning and ends with no
+    content and no tool calls used to look like "nothing happened yet" and
+    fail over to the next provider - even though the caller may already be
+    showing the reasoning text on screen. That's the same silent mid-answer
+    model swap the content case is forbidden from doing.
+    """
+    seen: list = []
+
+    async def fake(self, route, messages, **kwargs):
+        seen.append(route.provider)
+        yield StreamChunk(reasoning="thinking out loud")
+
+    body = _run(tmp_path, monkeypatch, fake)
+    assert seen == ["alpha"]
+    assert "thinking out loud" in body
+
+
+def test_reasoning_only_empty_completion_ends_with_one_well_formed_error(tmp_path, monkeypatch):
+    async def fake(self, route, messages, **kwargs):
+        yield StreamChunk(reasoning="thinking out loud")
+
+    chunks = _parsed(_run(tmp_path, monkeypatch, fake))
+    assert len({c["id"] for c in chunks}) == 1
+    last = chunks[-1]
+    assert last["object"] == "chat.completion.chunk"
+    assert last["choices"][0]["delta"] == {}
+    assert last["choices"][0]["finish_reason"] == "error"
+
+    body = _run(tmp_path, monkeypatch, fake)
+    assert body.count("data: [DONE]") == 1
+    assert body.rstrip().endswith("data: [DONE]")
+
+
+def test_a_stream_that_yields_nothing_at_all_still_fails_over(tmp_path, monkeypatch):
+    """Regression guard for the branch the empty-completion retry was written for.
+
+    Nothing at all reached the caller here (no content, no reasoning, no
+    tool call), so this must still behave like the pre-existing "empty
+    completion" case: retry against the next model rather than failing the
+    whole request. This is the case that would break if the any-yielded
+    check were inverted.
+    """
+    seen: list = []
+
+    async def fake(self, route, messages, **kwargs):
+        seen.append(route.provider)
+        if route.provider == "alpha":
+            return
+            yield  # pragma: no cover - makes this an async generator
+        yield StreamChunk(content="hello")
+
+    body = _run(tmp_path, monkeypatch, fake)
+    assert seen == ["alpha", "beta"]
+    assert "hello" in body
+    assert '"error"' not in body

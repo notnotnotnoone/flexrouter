@@ -498,12 +498,22 @@ class FlexRouter:
                     final_usage.update(sc.usage)
                 return events
 
+            # Whether *anything* — content, reasoning, or a tool-call
+            # fragment — has already reached the consumer on this attempt.
+            # Once true, this attempt is committed: an empty completion from
+            # here on is a failed answer, not a reason to try another
+            # provider, because the caller's screen may already be showing
+            # what was sent.
+            any_yielded = False
+
             if first_chunk is not None:
                 for ev in _events_for(first_chunk):
+                    any_yielded = True
                     yield ev
 
             async for sc in stream:
                 for ev in _events_for(sc):
+                    any_yielded = True
                     yield ev
 
             latency_ms = int((time.monotonic() - start) * 1000)
@@ -523,15 +533,47 @@ class FlexRouter:
             )
 
             # A stream that ends with no content and no tool calls has shown
-            # the consumer nothing (no DeltaEvent, no ToolCallDeltaEvent —
-            # both are only yielded when accumulated/has_tool_calls end up
-            # non-empty), so it's safe to retry against the next provider
-            # exactly like the pre-first-chunk failures above, instead of
-            # treating "we received at least one chunk" as an irreversible
-            # commit. Without this, a model that spends its whole token
-            # budget on reasoning (nothing usable back) looks identical to a
-            # real success and the caller is left with a silent empty reply.
+            # the consumer nothing *usable*. If it also never yielded a
+            # single event (no DeltaEvent, no ReasoningDeltaEvent, no
+            # ToolCallDeltaEvent — `any_yielded` is False), it's safe to
+            # retry against the next provider exactly like the
+            # pre-first-chunk failures above, instead of treating "we
+            # received at least one chunk" as an irreversible commit.
+            # Without this, a model that spends its whole token budget on
+            # reasoning (nothing usable back) looks identical to a real
+            # success and the caller is left with a silent empty reply.
+            #
+            # But if something *was* already yielded — reasoning text is the
+            # live case — the caller may already be showing it, and
+            # switching providers now would be exactly the silent mid-answer
+            # model swap streaming is not allowed to do. That case falls
+            # through to the `any_yielded` branch below instead of retrying.
             if not full_text and not has_tool_calls:
+                if any_yielded:
+                    logger.warning(
+                        "empty completion after partial output, failing "
+                        "without retry",
+                        extra={
+                            "event": "router.stream.empty_completion_after_partial",
+                            "provider": route.provider, "model": route.model,
+                            "attempt": attempt + 1, "max_attempts": max_attempts,
+                        },
+                    )
+                    self._audit.log(
+                        tier=tier, provider=route.provider, model=route.model,
+                        prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
+                        latency_ms=latency_ms, status="empty_response",
+                    )
+                    self._history.record(self._engine.health_snapshot())
+                    # No except clause below catches this — it propagates
+                    # straight out of the generator, same as any other
+                    # post-commit failure. app.py renders it as the
+                    # well-formed failure chunk, not a bare error object,
+                    # because content/reasoning already went out.
+                    raise RouterError(
+                        f"{route.provider}/{route.model}: empty completion "
+                        "after partial output (no content, no tool calls)")
+
                 logger.warning(
                     "empty completion, retrying next provider",
                     extra={

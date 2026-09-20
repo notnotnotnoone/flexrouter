@@ -394,6 +394,14 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
                 yield "data: [DONE]\n\n"
                 return
 
+        # Unconditionally _sse_error, not emitted-branched: this line is only
+        # reached when the `while True` loop above exits via
+        # StopAsyncIteration without ever seeing a DoneEvent. Every event
+        # that carries content, reasoning or a tool call sets emitted = True
+        # and is followed either by a DoneEvent (which returns above) or an
+        # exception from the router (caught by the handlers below, which are
+        # emitted-branched) — so this point is only reachable with
+        # emitted == False.
         yield _sse_error("No model available", "server_error", "provider_unavailable")
         yield "data: [DONE]\n\n"
 
