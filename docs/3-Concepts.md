@@ -225,6 +225,9 @@ If all models in tier are too small:
 
 You can also check proactively:
 
+The service must be running for any of this (`flexrouter serve`); `FlexRouter`
+sends the request to it and does not route by itself.
+
 ```python
 from flexrouter import FlexRouter
 

@@ -2,6 +2,12 @@
 
 **Goal:** Master session stickiness, multi-key round-robin, retry strategies, cost tracking, and the dashboard.
 
+> **Everything on this page needs the service running.** `FlexRouter` is a
+> client: it sends your request to the one flexrouter service on this machine,
+> which does the routing, the retrying and the key round-robin. Start it in its
+> own terminal with `flexrouter serve` before running any example here. The
+> code and the method signatures are exactly as they always were.
+
 ---
 
 ## Session Stickiness: Pinning to One Model
@@ -175,7 +181,7 @@ This overrides the preset. Retry logic:
 ### Example: Aggressive Retry
 
 ```python
-router = FlexRouter()  # Uses aggressive retry policy from config
+router = FlexRouter()  # The service applies the retry policy from your settings
 
 # This will retry up to 5 times with 1s backoff between retries
 response = router.generate(
@@ -411,6 +417,9 @@ asyncio.run(main())
 
 ### Async with FastAPI
 
+Close the client with `await router.aclose()` on shutdown — inside a running
+event loop, the synchronous `close()` cannot be used.
+
 ```python
 from fastapi import FastAPI
 from flexrouter import FlexRouter
@@ -555,6 +564,7 @@ os.environ["FLEXROUTER_HOME"] = "/tmp/flexrouter-test-home"
 #       rpm: 1000
 #       tpm: 100000
 #       score: 100
+# ...then start the service against that home: `flexrouter serve`
 
 router = FlexRouter()
 response = router.generate(messages=[...], tier="test")

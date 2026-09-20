@@ -12,19 +12,38 @@
 
 ## `FlexRouter`
 
-Main class for routing LLM requests.
+The client for the flexrouter service. You call the same three methods you
+always did; the request goes over a local connection to the one service on
+this machine (`flexrouter serve`), which does the routing. The in-process
+routing class still exists as `LocalRouter` (`flexrouter/_router.py`) and is
+what the service runs — importing it and driving it yourself gives your
+project its own private settings, keys and allowance counters again, which is
+the thing this design removed.
+
+**The service must be running.** If it isn't, every call raises
+`ServiceNotRunning`, whose message names the address that was tried and tells
+you to run `flexrouter serve`.
 
 ### Initialization
 
 ```python
-FlexRouter(config_path: str | None = None)
+FlexRouter(config_path: str | None = None, *,
+           base_url: str | None = None,
+           timeout: float = 300.0)
 ```
 
 **Parameters:**
-- `config_path` (str, optional): Path to a settings file. If not given, flexrouter reads the one shared settings file for this machine — run `flexrouter doctor` to see where that is. Pass a path only to point at a different file on purpose. Note that this swaps the settings file alone: your saved keys, the changes made from the dashboard, and everything flexrouter records as it runs still come from the shared place, so setting `FLEXROUTER_HOME` is the only way to keep one setup completely separate from another.
+- `base_url` (str, optional): The service's address. Defaults to
+  `http://127.0.0.1:<port>`, with the port read from your settings (4891 if
+  it isn't set).
+- `timeout` (float): Seconds to wait for the service to answer. Default 300.
+- `config_path` (str, optional): Path to a settings file. The client reads
+  only the `port` and the optional local key (`auth_token`) from it; providers,
+  models and provider keys are the service's business. If not given, flexrouter reads the one shared settings file for this machine — run `flexrouter doctor` to see where that is. Pass a path only to point at a different file on purpose. Note that this swaps the settings file alone: your saved keys, the changes made from the dashboard, and everything flexrouter records as it runs still come from the shared place, so setting `FLEXROUTER_HOME` is the only way to keep one setup completely separate from another.
 
 **Raises:**
-- `ConfigError`: If the settings file can't be found or read.
+- `ConfigError`: If the settings file can't be found or read. (Not raised when
+  you pass an explicit `base_url` — you've already said where the service is.)
 - `ConfigFieldError`: If the settings file is missing something it needs.
 
 **Example:**
@@ -37,6 +56,9 @@ router = FlexRouter()
 
 # Point at a different settings file
 router = FlexRouter("/etc/flexrouter/config.yaml")
+
+# Or name the service's address directly
+router = FlexRouter(base_url="http://127.0.0.1:4891")
 ```
 
 ---
@@ -823,7 +845,8 @@ All `generate()` and `agenerate()` responses follow OpenAI's chat completions fo
 
 | Task | Code |
 |------|------|
-| Create router | `router = FlexRouter()` |
+| Start the service (do this first) | `flexrouter serve` |
+| Create the client | `router = FlexRouter()` |
 | Make request | `router.generate(messages=[...], tier="low")` |
 | Sticky session | `router.generate(..., session_id="user-123")` |
 | Fast fail | `router.generate(..., wait=False)` |
@@ -831,7 +854,7 @@ All `generate()` and `agenerate()` responses follow OpenAI's chat completions fo
 | Catch busy | `except RouterBusy: ...` |
 | Catch error | `except RouterError as e: ...` |
 | Catch warning | `except ContextWindowWarning: ...` |
-| Reload config | `router.reload()` |
+| Reload config | Nothing to do — the service picks up changes itself (`router.reload()` is kept, and does nothing) |
 | Dashboard | `flexrouter dashboard` |
 | API server | `flexrouter serve` |
 | View status | `flexrouter status` |
@@ -846,7 +869,15 @@ All `generate()` and `agenerate()` responses follow OpenAI's chat completions fo
 
 **Q: Can I use two FlexRouter instances simultaneously?**
 
-A: Yes. Each instance is independent with its own state, sessions, and audit logs.
+A: Yes — and unlike before, they are not independent. Every instance, in every
+project on this machine, talks to the same service, so they share one set of
+state, sessions and audit logs. That's the point.
+
+**Q: Do I really have to start a service now?**
+
+A: Yes, for any call to go through. It's the one process that keeps a single
+honest count of what each provider has left; without it, every project was
+guessing on its own.
 
 **Q: What if a provider is down?**
 
@@ -862,11 +893,15 @@ A: No. It requires network access to providers. But it does work with self-hoste
 
 **Q: How do I update my API key?**
 
-A: Run `flexrouter keys add <provider>` with the new key, then call `router.reload()` or restart your app.
+A: Run `flexrouter keys add <provider>` with the new key. The service notices
+the change by itself on the next request — you don't need to restart anything.
+(`router.reload()` is still on the client and does nothing.)
 
 **Q: Can I have different state dirs per tier?**
 
-A: Not supported. One state dir per FlexRouter instance. Create separate instances if needed.
+A: Not supported. There is one state dir, in the shared home, used by the one
+service. Set `FLEXROUTER_HOME` and run a second service against it if you
+genuinely need two separate setups.
 
 ---
 
