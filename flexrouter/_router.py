@@ -4,7 +4,7 @@ import dataclasses
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Literal, Optional
 
@@ -58,6 +58,14 @@ class ToolCallDeltaEvent:
     id: Optional[str]
     name: Optional[str]
     arguments: Optional[str]
+    raw: dict = field(default_factory=dict)
+    """The provider's own delta dictionary, unmodified.
+
+    The four fields above are a lossy reading of it, kept because DoneEvent
+    assembly and existing library callers use them. Anything forwarding this
+    to a client must forward `raw`: LiteLLM's tool-call drops come from
+    re-parsing, and the four fields are exactly that re-parse.
+    """
 
 
 @dataclass
@@ -484,6 +492,7 @@ class FlexRouter:
                         id=tc.get("id"),
                         name=fn.get("name"),
                         arguments=fn.get("arguments"),
+                        raw=tc,
                     ))
                 if sc.usage:
                     final_usage.update(sc.usage)

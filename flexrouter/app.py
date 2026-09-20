@@ -279,6 +279,19 @@ def _sse_error(message: str, error_type: str = "server_error",
     return _sse({"error": err})
 
 
+def _tool_call_delta(event) -> dict:
+    """The lossy rebuild, kept only for events that carry no raw dictionary."""
+    delta: dict = {"index": event.index}
+    if event.id is not None:
+        delta["id"] = event.id
+        delta["type"] = "function"
+    if event.name is not None:
+        delta["function"] = {"name": event.name}
+    if event.arguments is not None:
+        delta.setdefault("function", {})["arguments"] = event.arguments
+    return delta
+
+
 async def _stream_chat(router, messages: list[dict], tier: str, model: str,
                        kwargs: dict) -> AsyncIterator[str]:
     from flexrouter._router import (
@@ -330,16 +343,13 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
                               "finish_reason": None}])
 
             elif isinstance(event, ToolCallDeltaEvent):
-                delta: dict = {}
-                if event.id is not None:
-                    delta["id"] = event.id
-                    delta["type"] = "function"
-                if event.name is not None:
-                    delta["function"] = {"name": event.name}
-                if event.arguments is not None:
-                    delta.setdefault("function", {})["arguments"] = event.arguments
-                yield chunk([{"index": 0,
-                              "delta": {"tool_calls": [delta] if delta else []},
+                # Forwarded exactly as the provider wrote it. Rebuilding it
+                # from the parsed fields is how LiteLLM loses tool calls
+                # (BerriAI/litellm#17246), and the spec names that explicitly.
+                # `raw` is empty only for an event built by older code; fall
+                # back to the parsed fields in that case.
+                delta = dict(event.raw) if event.raw else _tool_call_delta(event)
+                yield chunk([{"index": 0, "delta": {"tool_calls": [delta]},
                               "finish_reason": None}])
 
             elif isinstance(event, DoneEvent):
