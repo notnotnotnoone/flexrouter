@@ -309,9 +309,27 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
         payload.update(extra)
         return _sse(payload)
 
+    def error_chunk(message: str, error_type: str = "server_error",
+                    code: str | None = None) -> str:
+        """One chunk a client can actually parse, carrying the failure.
+
+        A bare {"error": ...} object is what this used to send; a client that
+        expects every payload to be a chat.completion.chunk throws on it and
+        shows the user nothing, losing the partial answer that already
+        arrived. This uses the same envelope as every other chunk, so a client
+        that ignores unknown keys renders the partial answer and stops
+        cleanly.
+        """
+        err: dict = {"message": scrub(message), "type": error_type}
+        if code is not None:
+            err["code"] = code
+        return chunk([{"index": 0, "delta": {}, "finish_reason": "error"}],
+                     error=err)
+
     try:
         events = router.agenerate_stream(messages, tier, **kwargs).__aiter__()
         first = True
+        emitted = False       # at least one content chunk has gone out
         while True:
             try:
                 if first:
@@ -322,9 +340,11 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
             except StopAsyncIteration:
                 break
             except (asyncio.TimeoutError, TimeoutError):
-                yield _sse_error(
-                    _TIMEOUT_HINT.format(tier=tier, secs=ROUTE_TIMEOUT_SECONDS),
-                    "server_error", "provider_unavailable")
+                message = _TIMEOUT_HINT.format(tier=tier, secs=ROUTE_TIMEOUT_SECONDS)
+                if emitted:
+                    yield error_chunk(message, "server_error", "provider_unavailable")
+                else:
+                    yield _sse_error(message, "server_error", "provider_unavailable")
                 yield "data: [DONE]\n\n"
                 return
             if isinstance(event, (AttemptEvent, AttemptFailedEvent)):
@@ -337,11 +357,13 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
             if isinstance(event, DeltaEvent):
                 yield chunk([{"index": 0, "delta": {"content": event.text},
                               "finish_reason": None}])
+                emitted = True
 
             elif isinstance(event, ReasoningDeltaEvent):
                 yield chunk([{"index": 0,
                               "delta": {"reasoning_content": event.text},
                               "finish_reason": None}])
+                emitted = True
 
             elif isinstance(event, ToolCallDeltaEvent):
                 # Forwarded exactly as the provider wrote it. Rebuilding it
@@ -357,6 +379,7 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
                 delta = copy.deepcopy(event.raw) if event.raw else _tool_call_delta(event)
                 yield chunk([{"index": 0, "delta": {"tool_calls": [delta]},
                               "finish_reason": None}])
+                emitted = True
 
             elif isinstance(event, DoneEvent):
                 choices = event.result.get("choices") or []
@@ -375,17 +398,29 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
         yield "data: [DONE]\n\n"
 
     except RouterBusy as exc:
-        yield _sse_error(str(exc), "server_error", "provider_unavailable")
+        if emitted:
+            yield error_chunk(str(exc), "server_error", "provider_unavailable")
+        else:
+            yield _sse_error(str(exc), "server_error", "provider_unavailable")
         yield "data: [DONE]\n\n"
     except RouterError as exc:
-        yield _sse_error(str(exc), "invalid_request_error")
+        if emitted:
+            yield error_chunk(str(exc), "invalid_request_error")
+        else:
+            yield _sse_error(str(exc), "invalid_request_error")
         yield "data: [DONE]\n\n"
     except KeyError:
-        yield _sse_error(f"There is no bucket or model named {model!r}.",
-                         "invalid_request_error", "model_not_found")
+        message = f"There is no bucket or model named {model!r}."
+        if emitted:
+            yield error_chunk(message, "invalid_request_error", "model_not_found")
+        else:
+            yield _sse_error(message, "invalid_request_error", "model_not_found")
         yield "data: [DONE]\n\n"
     except Exception as exc:  # noqa: BLE001
-        yield _sse_error(str(exc))
+        if emitted:
+            yield error_chunk(str(exc))
+        else:
+            yield _sse_error(str(exc))
         yield "data: [DONE]\n\n"
 
 
