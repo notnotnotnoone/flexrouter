@@ -1,6 +1,6 @@
 # CONTEXT.md
 
-Single-context repo. Glossary of domain terms as the code and docs actually use them. Definitions describe what Stages 1 (the shared home) and 2 (the OpenAI-shaped surface on one service) have built, not later stages of the v2 design.
+Single-context repo. Glossary of domain terms as the code and docs actually use them. Definitions describe what Stages 1 through 4 have built (the shared home, the OpenAI-shaped surface on one service, the per-request trace, and per-key state), not later stages of the v2 design.
 
 ## Glossary
 
