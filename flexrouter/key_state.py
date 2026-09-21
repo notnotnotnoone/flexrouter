@@ -62,18 +62,21 @@ class KeyStateStore:
             # nothing to persist.
             return KeyState()
         now = now if now is not None else time.time()
-        self._maybe_reset_day(state, now)
+        changed = self._maybe_reset_day(state, now)
         self._states[k] = state
-        self._save()
+        if changed:
+            self._save()
         return state
 
-    def _maybe_reset_day(self, state: KeyState, now: float) -> None:
+    def _maybe_reset_day(self, state: KeyState, now: float) -> bool:
         today = _today(now)
         if state.day != today:
             state.requests_today = 0
             state.tokens_today = 0
             state.failures_24h = 0
             state.day = today
+            return True
+        return False
 
     def _save(self) -> None:
         write_json(self._path, {k: asdict(v) for k, v in self._states.items()})

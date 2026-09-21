@@ -87,6 +87,28 @@ def test_get_alone_also_rolls_over_stale_daily_counters(tmp_path):
     assert s.failures_24h == 0
 
 
+def test_get_does_not_rewrite_state_file_when_nothing_changed(tmp_path, monkeypatch):
+    import flexrouter.key_state as key_state_module
+
+    store = KeyStateStore(str(tmp_path))
+    store.mark_success("openrouter", "or-main", tokens=10, latency_ms=50)
+
+    write_calls = []
+    original_write_json = key_state_module.write_json
+
+    def spy(*args, **kwargs):
+        write_calls.append(1)
+        return original_write_json(*args, **kwargs)
+
+    monkeypatch.setattr(key_state_module, "write_json", spy)
+
+    # Same-day, already-seen key: get() should be a pure read, no rewrite.
+    store.get("openrouter", "or-main")
+    store.get("openrouter", "or-main")
+
+    assert write_calls == []
+
+
 def test_all_unavailable_true_only_when_every_key_is_down(tmp_path):
     store = KeyStateStore(str(tmp_path))
     now = time.time()
