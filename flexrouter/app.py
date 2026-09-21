@@ -12,7 +12,7 @@ directly. Nothing here creates an event loop.
 Layout on the single port:
     /v1/*     OpenAI-compatible API (what chat clients point at)
     /api/*    dashboard data
-    /*        the dashboard SPA
+    /*        the dashboard's own pages (server-rendered, no build step)
 """
 from __future__ import annotations
 

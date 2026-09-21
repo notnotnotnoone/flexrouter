@@ -1,6 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+import flexrouter.app as app_module
 from flexrouter.app import create_app
 from flexrouter.dashboard.render import AREAS
 
@@ -57,6 +58,24 @@ def test_the_openai_surface_still_works(client):
 
 def test_the_private_api_still_works(client):
     assert client.get("/api/providers").status_code == 200
+
+
+def test_a_healthy_provider_shows_state_ok(client):
+    # The colored state marker is the first thing the owner's eye goes to;
+    # the config_file fixture's one provider has a live, unquarantined key,
+    # so it must render as "ok".
+    body = client.get("/").text
+    assert "state-ok" in body
+
+
+def test_a_quarantined_provider_shows_state_bad_and_why(client):
+    # Same router the app is already using - not a second LocalRouter - so
+    # the quarantine is visible to the request the test client makes.
+    router = app_module.get_router()
+    router._engine._penalties.quarantine_provider("groq", "key rejected")
+    body = client.get("/").text
+    assert "state-bad" in body
+    assert "key rejected" in body
 
 
 def test_a_provider_name_is_escaped_not_injected(client, config_file):
