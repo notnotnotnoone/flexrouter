@@ -114,3 +114,15 @@ def test_error_brain_state_survives_a_new_instance(tmp_path):
     reloaded = ErrorBrain(str(tmp_path), decider)
     v = reloaded.classify("boom", 402)  # same rule, but prove the file round-trips
     assert v.verdict == "needs_payment"
+
+
+def test_classify_by_rule_now_covers_bad_request():
+    from flexrouter.error_brain import classify_by_rule
+    assert classify_by_rule("malformed request body", 400).verdict == "bad_request"
+
+
+def test_error_brain_exposes_its_confidence_threshold(tmp_path):
+    from flexrouter.decider import NullDecider
+    from flexrouter.error_brain import ErrorBrain
+    brain = ErrorBrain(str(tmp_path), NullDecider(), confidence_threshold=0.8)
+    assert brain.confidence_threshold == 0.8
