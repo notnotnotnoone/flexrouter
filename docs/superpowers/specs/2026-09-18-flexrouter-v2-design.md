@@ -283,6 +283,22 @@ here. **Keep it behind the protocol.** A `NullDecider` that returns `unknown`
 for everything must be a supported configuration, so the router works fully
 without any classifier configured.
 
+**The Decider makes its own direct call to its own provider — it is never
+routed through the service's own routing engine.** (Owner's call, 2026-09-20.)
+A helper whose job is explaining why routing just failed cannot depend on the
+thing that just failed: if every configured provider is rate-limited,
+quarantined, or down, a `Decider` that had to go through `RoutingEngine`
+to reach its own model would be unreachable at exactly the moment it is
+needed. It also must not quietly consume the same shared per-provider
+allowance the rest of the design exists to conserve. The cost is a second,
+independent way of reaching a provider in the codebase — its own saved
+credential, no failover, no rotation, no rate-limit bookkeeping. This is
+accepted because it is small and because the fallback already required by
+this section (`NullDecider`) exists for exactly the case where even this
+direct call cannot be made: if the Decider's own provider is unreachable,
+that miss is treated as `unknown`/flagged-for-review, the same as having no
+classifier configured at all, never as a retryable routing failure.
+
 Both halves share the same discipline:
 
 - Every stored decision carries `source`, `confidence`, `decided_at`.
@@ -488,7 +504,13 @@ Existing stack: React 18 + Vite + Tailwind 4 + shadcn, built into
 - Builds a prompt from the current model list plus owner-supplied benchmark
   material (pasted text, or an instruction to go and look).
 - **Two modes**: the service calls a chosen model itself, or the owner copies
-  the prompt into their own chat and pastes the reply back.
+  the prompt into their own chat and pastes the reply back. When the service
+  calls it itself, this is a plain, one-off outgoing call — not a request
+  routed through the service's own bucket/failover machinery — the same
+  reasoning as the Decider's own direct call in §4: ranking is a deliberate,
+  owner-initiated action (not steady-state traffic), and it should not
+  compete with real requests for the same provider allowance, nor fail
+  because the very system being ranked is currently unhealthy.
 - Output parsed as CSV: `model_id,score,reason,source`.
 - Presented as current → proposed with per-row acceptance. Nothing applied until
   accepted. Large jumps are flagged.
