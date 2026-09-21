@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, Literal, Optional
 
@@ -21,6 +22,7 @@ from flexrouter.rate_limits import RateLimitStore
 from flexrouter.recovery import PenaltyBox
 from flexrouter.redact import scrub
 from flexrouter.sampler import PassiveSampler
+from flexrouter.traces import TraceWriter, new_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +99,7 @@ class LocalRouter:
         self._pin_engine = self._build_pin_engine()
         self._audit = AuditLogger(self._cfg.state_dir)
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
+        self._traces = TraceWriter(self._cfg.state_dir)
         self._sampler = PassiveSampler(
             self._engine.health_snapshot, self._history.record,
             self._cfg.sample_interval_seconds)
@@ -223,6 +226,36 @@ class LocalRouter:
         retries = self._cfg.retry.retries
         backoff = self._cfg.retry.backoff_seconds
 
+        trace_id = new_trace_id()
+        request_started = time.monotonic()
+        skipped = [
+            {"provider": s["provider"], "model": s["model"],
+             "reason": s["reason"], "detail": s["detail"]}
+            for s in self._engine_for(tier).explain_unavailable(tier, estimated_tokens, vision)
+            if not s["available"]
+        ]
+        attempts: list[dict] = []
+
+        def _write_trace(ok: bool, answered_by: Optional[dict] = None,
+                         tokens: Optional[dict] = None) -> None:
+            self._traces.write({
+                "id": trace_id,
+                "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds") + "Z",
+                "asked": {
+                    "bucket": tier, "stream": False,
+                    "needs": ["vision"] if vision else [],
+                    "approx_input_tokens": estimated_tokens,
+                },
+                "skipped": skipped,
+                "attempts": attempts,
+                "answered_by": answered_by,
+                "tokens": tokens or {"in": 0, "out": 0},
+                "cost_usd": 0.0,
+                "ms_total": int((time.monotonic() - request_started) * 1000),
+                "ms_to_first_token": None,
+                "ok": ok,
+            })
+
         # If credentials are what emptied the tier, the caller needs to hear
         # that rather than a generic "everything is busy" — one is a config
         # problem they must fix, the other resolves itself in 30 seconds.
@@ -233,11 +266,14 @@ class LocalRouter:
 
             if route is None:
                 if last_auth_error is not None:
+                    _write_trace(ok=False)
                     raise last_auth_error
                 blocked = self._quarantine_block_reason(tier)
                 if blocked:
+                    _write_trace(ok=False)
                     raise RouterBusy(blocked)
                 if not wait:
+                    _write_trace(ok=False)
                     raise RouterBusy(f"All models in tier {tier!r} are unavailable")
                 secs = self._engine_for(tier).seconds_until_available(tier)
                 await asyncio.sleep(max(secs, 1.0))
@@ -259,7 +295,12 @@ class LocalRouter:
                     status="rate_limited",
                 )
                 self._history.record(self._engine.health_snapshot())
+                attempts.append({"n": attempt + 1, "provider": route.provider,
+                                 "model": route.model, "status": 429,
+                                 "provider_message": str(exc), "key_id": None,
+                                 "ms": int((time.monotonic() - start) * 1000)})
                 if attempt == retries:
+                    _write_trace(ok=False)
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
                 continue
@@ -273,8 +314,13 @@ class LocalRouter:
                     status="auth_error",
                 )
                 self._history.record(self._engine.health_snapshot())
+                attempts.append({"n": attempt + 1, "provider": route.provider,
+                                 "model": route.model, "status": None,
+                                 "provider_message": str(exc), "key_id": None,
+                                 "ms": int((time.monotonic() - start) * 1000)})
                 # No backoff: a rejected key won't un-reject in two seconds.
                 if attempt == retries:
+                    _write_trace(ok=False)
                     raise
                 continue
             except ProviderError as exc:
@@ -286,7 +332,12 @@ class LocalRouter:
                     status="error",
                 )
                 self._history.record(self._engine.health_snapshot())
+                attempts.append({"n": attempt + 1, "provider": route.provider,
+                                 "model": route.model, "status": exc.status_code,
+                                 "provider_message": str(exc), "key_id": None,
+                                 "ms": int((time.monotonic() - start) * 1000)})
                 if attempt == retries:
+                    _write_trace(ok=False)
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
                 continue
@@ -310,8 +361,14 @@ class LocalRouter:
                 status="ok",
             )
             self._history.record(self._engine.health_snapshot())
+            _write_trace(
+                ok=True,
+                answered_by={"provider": route.provider, "model": route.model, "key_id": None},
+                tokens={"in": prompt_tokens, "out": completion_tokens},
+            )
             return result
 
+        _write_trace(ok=False)
         raise RouterBusy(f"All models in tier {tier!r} are unavailable after {retries} retries")
 
     async def agenerate_stream(
@@ -735,6 +792,7 @@ class LocalRouter:
         self._client._rate_limit_store = self._rate_limit_store
         self._audit = AuditLogger(self._cfg.state_dir)
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
+        self._traces = TraceWriter(self._cfg.state_dir)
 
     def remaining_capacity(self, tier: str) -> dict[str, dict]:
         """For every model in `tier` currently in the running for selection, return
