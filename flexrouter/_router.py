@@ -12,7 +12,9 @@ from typing import AsyncIterator, Literal, Optional
 from flexrouter.audit import AuditLogger
 from flexrouter.client import AsyncClient, RateLimitError, ProviderError
 from flexrouter.config import FlexConfig, load_config
+from flexrouter.decider import NullDecider
 from flexrouter.engine import RoutingEngine, RouteResult
+from flexrouter.error_brain import ErrorBrain
 from flexrouter.events import EventLogger
 from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.health_history import HealthHistory
@@ -104,6 +106,7 @@ class LocalRouter:
         self._traces = TraceWriter(self._cfg.state_dir)
         self._key_states = KeyStateStore(self._cfg.state_dir)
         self._round_robin = RoundRobinCounters()
+        self._error_brain = ErrorBrain(self._cfg.state_dir, NullDecider())
         self._sampler = PassiveSampler(
             self._engine.health_snapshot, self._history.record,
             self._cfg.sample_interval_seconds)
@@ -324,9 +327,11 @@ class LocalRouter:
                     status="rate_limited",
                 )
                 self._history.record(self._engine.health_snapshot())
+                verdict = self._error_brain.classify(str(exc), 429)
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": 429,
                                  "provider_message": str(exc), "key_id": key_id,
+                                 "verdict": verdict.verdict,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 if attempt == retries:
                     _write_trace(ok=False)
@@ -343,9 +348,11 @@ class LocalRouter:
                     status="auth_error",
                 )
                 self._history.record(self._engine.health_snapshot())
+                verdict = self._error_brain.classify(str(exc), 401)
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": None,
                                  "provider_message": str(exc), "key_id": key_id,
+                                 "verdict": verdict.verdict,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 # No backoff: a rejected key won't un-reject in two seconds.
                 if attempt == retries:
@@ -361,9 +368,11 @@ class LocalRouter:
                     status="error",
                 )
                 self._history.record(self._engine.health_snapshot())
+                verdict = self._error_brain.classify(str(exc), exc.status_code)
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": exc.status_code,
                                  "provider_message": str(exc), "key_id": key_id,
+                                 "verdict": verdict.verdict,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 if attempt == retries:
                     _write_trace(ok=False)
@@ -966,6 +975,7 @@ class LocalRouter:
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
         self._traces = TraceWriter(self._cfg.state_dir)
         self._key_states = KeyStateStore(self._cfg.state_dir)
+        self._error_brain = ErrorBrain(self._cfg.state_dir, NullDecider())
 
     def remaining_capacity(self, tier: str) -> dict[str, dict]:
         """For every model in `tier` currently in the running for selection, return
