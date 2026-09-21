@@ -32,9 +32,26 @@ OK_RESULT = {
 class FakePenalties:
     def __init__(self):
         self._q: dict[str, dict] = {}
+        self._backoff: dict[str, float] = {}  # "provider/model" -> until epoch
 
     def is_quarantined(self, provider, model):
         return f"{provider}/{model}" in self._q
+
+    def penalize(self, provider, model, seconds=60):
+        """Test helper: put a model under a timed backoff, short of
+        quarantine - mirrors PenaltyBox.penalize()/penalize_short()."""
+        self._backoff[f"{provider}/{model}"] = time.time() + seconds
+
+    def is_penalized(self, provider, model):
+        # Models real PenaltyBox.is_penalized(): true for either a
+        # quarantine or an active backoff penalty, so a test could not
+        # delete this check from facts.py without a fake-backed test
+        # noticing - it used to just alias is_quarantined and so could
+        # never diverge from it.
+        if self.is_quarantined(provider, model):
+            return True
+        until = self._backoff.get(f"{provider}/{model}")
+        return until is not None and time.time() < until
 
     def quarantine_reason(self, provider, model):
         entry = self._q.get(f"{provider}/{model}")
@@ -53,6 +70,32 @@ def _model(provider, model, score=85, vision=False):
                            vision=vision)
 
 
+class FakeKeyStates:
+    """Stands in for KeyStateStore: nothing has ever failed, so every key
+    reads as live and available - the sane default for a router that just
+    started."""
+
+    def is_available(self, provider, key_id, now=None):
+        return True
+
+    def get(self, provider, key_id, now=None):
+        return SimpleNamespace(status="live", until=None)
+
+
+class FakeErrorBrain:
+    """Stands in for ErrorBrain: nothing has been classified yet."""
+
+    def __init__(self):
+        self._entries: dict = {}
+
+
+class FakeModelFacts:
+    """Stands in for ModelFactsStore: nothing has been learned yet."""
+
+    def __init__(self):
+        self._facts: dict = {}
+
+
 class FakeRouter:
     """Stands in for LocalRouter so these tests exercise the HTTP layer only."""
 
@@ -66,13 +109,27 @@ class FakeRouter:
             providers={
                 "groq": SimpleNamespace(
                     base_url="https://api.groq.com/openai/v1",
-                    api_keys=["gsk_secret_tail1234"]),
+                    api_keys=["gsk_secret_tail1234"],
+                    # Shaped like what config.resolve_keys() actually
+                    # produces for an env-sourced credential (see
+                    # flexrouter/keys.py's KeyRecord) - api_keys and keys
+                    # come from the same records, so non-empty api_keys with
+                    # an empty keys list can't happen for real.
+                    keys=[SimpleNamespace(id="env:GROQ_API_KEY", enabled=True)]),
                 "ollama": SimpleNamespace(
-                    base_url="http://localhost:11434/v1", api_keys=[]),
+                    base_url="http://localhost:11434/v1", api_keys=[], keys=[]),
             },
             auth_token=None,
+            port=None,
+            dashboard_port=7352,
         )
         self._engine = SimpleNamespace(_penalties=FakePenalties())
+        # The dashboard's Overview page (flexrouter/dashboard/facts.py) reads
+        # these three off a real LocalRouter; a router double that doesn't
+        # carry them is the double's problem, not facts.overview()'s.
+        self._key_states = FakeKeyStates()
+        self._error_brain = FakeErrorBrain()
+        self._model_facts = FakeModelFacts()
         self.delay = delay
         self.raises = raises
         self.calls: list[tuple] = []
@@ -414,13 +471,14 @@ def test_api_and_v1_and_dashboard_share_a_port(client):
     # The whole point of the merge: these used to be two servers.
     assert client.get("/v1/models").status_code == 200
     assert client.get("/api/quarantine").status_code == 200
-    assert client.get("/").status_code in (200, 503)  # 503 if dashboard unbuilt
+    assert client.get("/").status_code == 200  # the real, server-rendered Overview
 
 
-def test_unknown_path_falls_back_to_spa(client):
+def test_unknown_path_is_a_404_now_that_there_is_no_spa(client):
+    # There is no client-side router to fall back to any more: an unknown
+    # path is a plain 404, not a stale bundle silently handed back.
     r = client.get("/some/client/side/route")
-    assert r.status_code in (200, 503)
-    assert r.status_code != 404
+    assert r.status_code == 404
 
 
 # --- the server must never hang --------------------------------------------

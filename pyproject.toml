@@ -35,7 +35,7 @@ where = ["."]
 include = ["flexrouter*"]
 
 [tool.setuptools.package-data]
-"flexrouter.dashboard" = ["static/**/*"]
+"flexrouter.dashboard" = ["static/**/*", "*.css"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

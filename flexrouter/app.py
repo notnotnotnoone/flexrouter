@@ -12,7 +12,7 @@ directly. Nothing here creates an event loop.
 Layout on the single port:
     /v1/*     OpenAI-compatible API (what chat clients point at)
     /api/*    dashboard data
-    /*        the dashboard SPA
+    /*        the dashboard's own pages (server-rendered, no build step)
 """
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ from flexrouter.dashboard.api import (
     get_config, get_config_validation, get_health_current, get_last_refresh,
     get_logs, get_stats, get_status, get_uptime, post_config, run_refresh,
 )
+from flexrouter.dashboard.pages import pages as dashboard_pages
 from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.probe import probe_key, stale_models
 from flexrouter.redact import scrub
@@ -765,24 +766,6 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     app.include_router(v1)
     app.include_router(api)
-
-    @app.get("/{full_path:path}")
-    def spa(full_path: str):
-        """Serve the dashboard, falling back to index.html for SPA routes."""
-        if full_path:
-            candidate = STATIC_DIR / full_path
-            if candidate.is_file():
-                try:
-                    candidate.resolve().relative_to(STATIC_DIR.resolve())
-                except ValueError:
-                    return JSONResponse({"error": "not found"}, status_code=404)
-                return FileResponse(candidate)
-        index = STATIC_DIR / "index.html"
-        if index.exists():
-            return FileResponse(index)
-        return JSONResponse(
-            {"error": "dashboard not built; run `npm run build` in dashboard/frontend"},
-            status_code=503,
-        )
+    app.include_router(dashboard_pages)
 
     return app
