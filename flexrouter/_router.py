@@ -799,7 +799,7 @@ class LocalRouter:
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": None,
                                  "provider_message": "empty response (no content, no tool calls)",
-                                 "key_id": None,
+                                 "key_id": key_id,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
