@@ -503,14 +503,17 @@ Existing stack: React 18 + Vite + Tailwind 4 + shadcn, built into
 
 - Builds a prompt from the current model list plus owner-supplied benchmark
   material (pasted text, or an instruction to go and look).
-- **Two modes**: the service calls a chosen model itself, or the owner copies
-  the prompt into their own chat and pastes the reply back. When the service
-  calls it itself, this is a plain, one-off outgoing call — not a request
-  routed through the service's own bucket/failover machinery — the same
-  reasoning as the Decider's own direct call in §4: ranking is a deliberate,
-  owner-initiated action (not steady-state traffic), and it should not
-  compete with real requests for the same provider allowance, nor fail
-  because the very system being ranked is currently unhealthy.
+- **Copy-paste only, for now.** (Owner's call, 2026-09-20 — cut down from
+  "two modes.") The service builds the prompt; the owner pastes it into
+  their own chat of choice and pastes the reply back. The originally
+  planned second mode — the service calling a chosen model itself to rank —
+  is deferred, not designed away: it is meaningfully more machinery (its own
+  outgoing call, its own credential, its own parsing of whatever came back)
+  for a feature the owner runs occasionally by hand, not something the
+  service needs unattended. If a self-run mode is added later, it follows
+  the same direct-call rule as §4's Decider — never routed through the
+  service's own bucket/failover machinery — but that is a future decision,
+  not this one.
 - Output parsed as CSV: `model_id,score,reason,source`.
 - Presented as current → proposed with per-row acceptance. Nothing applied until
   accepted. Large jumps are flagged.
