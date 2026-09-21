@@ -441,7 +441,8 @@ def test_a_sidelined_provider_does_not_persist_or_serve_the_key(
         router._handle_auth_failure(
             route,
             RouterError(f"401 from groq: Incorrect API key provided: "
-                        f"{SIDELINE_KEY}"))
+                        f"{SIDELINE_KEY}"),
+            None)
 
         assert SIDELINE_KEY not in _state_dir_text(tmp_path)
         assert SIDELINE_KEY not in client.get("/v1/models").text
