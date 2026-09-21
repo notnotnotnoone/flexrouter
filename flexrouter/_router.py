@@ -25,6 +25,7 @@ from flexrouter.quota import QuotaTracker
 from flexrouter.rate_limits import RateLimitStore
 from flexrouter.recovery import PenaltyBox
 from flexrouter.redact import scrub
+from flexrouter.refresh import refresh_config
 from flexrouter.sampler import PassiveSampler
 from flexrouter.scheduler import RoundRobinCounters, pick_key
 from flexrouter.traces import TraceWriter, new_trace_id
@@ -109,6 +110,7 @@ class LocalRouter:
         self._round_robin = RoundRobinCounters()
         self._error_brain = ErrorBrain(self._cfg.state_dir, NullDecider())
         self._model_facts = ModelFactsStore(self._cfg.state_dir)
+        self._run_startup_catalogue_refresh()
         self._sampler = PassiveSampler(
             self._engine.health_snapshot, self._history.record,
             self._cfg.sample_interval_seconds)
@@ -1118,3 +1120,41 @@ class LocalRouter:
                 self._reload_error)
         else:
             self._reload_error = None
+
+    def _run_startup_catalogue_refresh(self) -> None:
+        """Once per service start, check what each provider actually has.
+
+        Replaces a daily background timer (owner's call, 2026-09-20): this
+        service is started and stopped by hand, so a calendar timer only
+        matters for something left running unattended. refresh_config()
+        already tolerates one provider being unreachable — it excludes that
+        provider from comparison rather than reporting false vanishings.
+        This wrapper's only job is making sure nothing about this call can
+        stop the service from starting, the same discipline
+        _maybe_hot_reload already applies to a bad config reload.
+        """
+        import os
+
+        try:
+            result = refresh_config(
+                str(self._config_path), self._cfg.state_dir,
+                aa_key=os.environ.get("AA_API_KEY"))
+        except Exception as e:
+            logger.error(
+                "Startup catalogue refresh failed; continuing without it: %s",
+                f"{type(e).__name__}: {e}")
+            return
+
+        from flexrouter.store import read_json
+        pending_path = Path(self._cfg.state_dir) / "catalog_pending.json"
+        pending = read_json(pending_path, default={})
+        for ident in result.added:
+            provider, _, model = ident.partition("/")
+            entry = next(
+                (m for m in pending.get(provider, {}).get("appeared", [])
+                 if m.get("model") == model),
+                None,
+            )
+            if entry:
+                self._model_facts.record_discovered(
+                    provider, model, entry.get("context_window"))
