@@ -36,6 +36,12 @@ class FakePenalties:
     def is_quarantined(self, provider, model):
         return f"{provider}/{model}" in self._q
 
+    def is_penalized(self, provider, model):
+        # No test here puts a model under a timed penalty short of
+        # quarantine, so quarantine is the only source of "penalized" this
+        # double needs to model.
+        return self.is_quarantined(provider, model)
+
     def quarantine_reason(self, provider, model):
         entry = self._q.get(f"{provider}/{model}")
         return entry["reason"] if entry else None
@@ -53,6 +59,32 @@ def _model(provider, model, score=85, vision=False):
                            vision=vision)
 
 
+class FakeKeyStates:
+    """Stands in for KeyStateStore: nothing has ever failed, so every key
+    reads as live and available - the sane default for a router that just
+    started."""
+
+    def is_available(self, provider, key_id, now=None):
+        return True
+
+    def get(self, provider, key_id, now=None):
+        return SimpleNamespace(status="live")
+
+
+class FakeErrorBrain:
+    """Stands in for ErrorBrain: nothing has been classified yet."""
+
+    def __init__(self):
+        self._entries: dict = {}
+
+
+class FakeModelFacts:
+    """Stands in for ModelFactsStore: nothing has been learned yet."""
+
+    def __init__(self):
+        self._facts: dict = {}
+
+
 class FakeRouter:
     """Stands in for LocalRouter so these tests exercise the HTTP layer only."""
 
@@ -66,13 +98,21 @@ class FakeRouter:
             providers={
                 "groq": SimpleNamespace(
                     base_url="https://api.groq.com/openai/v1",
-                    api_keys=["gsk_secret_tail1234"]),
+                    api_keys=["gsk_secret_tail1234"], keys=[]),
                 "ollama": SimpleNamespace(
-                    base_url="http://localhost:11434/v1", api_keys=[]),
+                    base_url="http://localhost:11434/v1", api_keys=[], keys=[]),
             },
             auth_token=None,
+            port=None,
+            dashboard_port=7352,
         )
         self._engine = SimpleNamespace(_penalties=FakePenalties())
+        # The dashboard's Overview page (flexrouter/dashboard/facts.py) reads
+        # these three off a real LocalRouter; a router double that doesn't
+        # carry them is the double's problem, not facts.overview()'s.
+        self._key_states = FakeKeyStates()
+        self._error_brain = FakeErrorBrain()
+        self._model_facts = FakeModelFacts()
         self.delay = delay
         self.raises = raises
         self.calls: list[tuple] = []
@@ -414,13 +454,14 @@ def test_api_and_v1_and_dashboard_share_a_port(client):
     # The whole point of the merge: these used to be two servers.
     assert client.get("/v1/models").status_code == 200
     assert client.get("/api/quarantine").status_code == 200
-    assert client.get("/").status_code in (200, 503)  # 503 if dashboard unbuilt
+    assert client.get("/").status_code == 200  # the real, server-rendered Overview
 
 
-def test_unknown_path_falls_back_to_spa(client):
+def test_unknown_path_is_a_404_now_that_there_is_no_spa(client):
+    # There is no client-side router to fall back to any more: an unknown
+    # path is a plain 404, not a stale bundle silently handed back.
     r = client.get("/some/client/side/route")
-    assert r.status_code in (200, 503)
-    assert r.status_code != 404
+    assert r.status_code == 404
 
 
 # --- the server must never hang --------------------------------------------
