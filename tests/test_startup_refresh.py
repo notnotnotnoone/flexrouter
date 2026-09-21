@@ -69,3 +69,48 @@ def test_a_refresh_failure_at_startup_does_not_prevent_the_service_from_starting
     monkeypatch.setattr("flexrouter._router.refresh_config", broken_refresh_config)
     router = LocalRouter(str(tmp_path / "config.yaml"))  # must not raise
     router.close()
+
+
+def test_startup_refresh_runs_cleanly_from_inside_the_fastapi_lifespan(
+        tmp_path, monkeypatch, recwarn):
+    """The real production path: `flexrouter serve` starts uvicorn, which
+    drives `app.py`'s `lifespan()` — an `async def` that calls the sync
+    `get_router()` (and so `LocalRouter(...)`) directly from its own body,
+    on the event loop's own thread. That's unlike a plain `def` route
+    handler, which FastAPI automatically offloads to a worker thread.
+    `refresh_config()` calls `asyncio.run()` internally, and `asyncio.run()`
+    raises `RuntimeError` when called from a thread that already has a
+    running event loop — so without running it off that thread, this exact
+    path would always hit the except-and-log fallback and the refresh would
+    silently never actually happen under uvicorn. `TestClient(app)` used as
+    a context manager runs the real lifespan startup/shutdown, so this
+    reproduces that path for real rather than only unit-testing
+    `LocalRouter.__init__` in isolation the way the tests above do.
+    """
+    from fastapi.testclient import TestClient
+
+    from flexrouter import app as app_mod
+
+    monkeypatch.setattr("flexrouter._router.load_config", lambda _p: _cfg(tmp_path))
+
+    calls = []
+
+    def fake_refresh_config(config_path, state_dir, aa_key=None):
+        calls.append((config_path, state_dir))
+        from flexrouter.refresh import RefreshResult
+        return RefreshResult(timestamp="2026-09-21T00:00:00Z", added=[], removed=[],
+                             changed=[], provider_errors=[], pending_path=None)
+
+    monkeypatch.setattr("flexrouter._router.refresh_config", fake_refresh_config)
+
+    app_mod.state.router = None
+    app = app_mod.create_app(str(tmp_path / "config.yaml"))
+    with TestClient(app):
+        pass  # lifespan startup (and shutdown) already ran by here
+    app_mod.state.router = None
+
+    assert len(calls) == 1, "refresh_config must actually run from inside lifespan startup"
+    assert not any(issubclass(w.category, RuntimeWarning) for w in recwarn.list), (
+        "a RuntimeWarning here means refresh_config's asyncio.run() collided "
+        "with the app's own running event loop again"
+    )

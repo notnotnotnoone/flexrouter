@@ -1132,13 +1132,29 @@ class LocalRouter:
         This wrapper's only job is making sure nothing about this call can
         stop the service from starting, the same discipline
         _maybe_hot_reload already applies to a bad config reload.
+
+        Run in a fresh worker thread rather than called directly: under
+        `flexrouter serve`, `__init__` runs from inside `app.py`'s
+        `lifespan()` (an `async def` that calls the sync `get_router()`
+        straight from its own body, on the event loop's own thread —
+        unlike a plain `def` route handler, which FastAPI already offloads
+        to a worker thread for exactly this reason). `refresh_config()`
+        calls `asyncio.run()` internally, and `asyncio.run()` cannot be
+        called from a thread that already has a running event loop — it
+        raises `RuntimeError` every time, which the except below caught,
+        but that meant the refresh never actually ran under uvicorn. A
+        thread with no event loop of its own can call `asyncio.run()`
+        freely regardless of what the calling thread is doing.
         """
+        import concurrent.futures
         import os
 
         try:
-            result = refresh_config(
-                str(self._config_path), self._cfg.state_dir,
-                aa_key=os.environ.get("AA_API_KEY"))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                result = executor.submit(
+                    refresh_config, str(self._config_path), self._cfg.state_dir,
+                    os.environ.get("AA_API_KEY"),
+                ).result()
         except Exception as e:
             logger.error(
                 "Startup catalogue refresh failed; continuing without it: %s",
