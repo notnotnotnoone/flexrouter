@@ -1155,22 +1155,22 @@ class LocalRouter:
                     refresh_config, str(self._config_path), self._cfg.state_dir,
                     os.environ.get("AA_API_KEY"),
                 ).result()
+
+            from flexrouter.store import read_json
+            pending_path = Path(self._cfg.state_dir) / "catalog_pending.json"
+            pending = read_json(pending_path, default={})
+            for ident in result.added:
+                provider, _, model = ident.partition("/")
+                entry = next(
+                    (m for m in pending.get(provider, {}).get("appeared", [])
+                     if m.get("model") == model),
+                    None,
+                )
+                if entry:
+                    self._model_facts.record_discovered(
+                        provider, model, entry.get("context_window"))
         except Exception as e:
             logger.error(
                 "Startup catalogue refresh failed; continuing without it: %s",
                 f"{type(e).__name__}: {e}")
             return
-
-        from flexrouter.store import read_json
-        pending_path = Path(self._cfg.state_dir) / "catalog_pending.json"
-        pending = read_json(pending_path, default={})
-        for ident in result.added:
-            provider, _, model = ident.partition("/")
-            entry = next(
-                (m for m in pending.get(provider, {}).get("appeared", [])
-                 if m.get("model") == model),
-                None,
-            )
-            if entry:
-                self._model_facts.record_discovered(
-                    provider, model, entry.get("context_window"))

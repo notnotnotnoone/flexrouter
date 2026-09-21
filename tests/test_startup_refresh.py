@@ -71,6 +71,44 @@ def test_a_refresh_failure_at_startup_does_not_prevent_the_service_from_starting
     router.close()
 
 
+def test_a_record_discovered_failure_at_startup_does_not_prevent_the_service_from_starting(
+        tmp_path, monkeypatch):
+    """The refresh call itself can succeed and still find an appeared model,
+    but writing that model's facts back to disk (state/model_facts.json) can
+    fail for the same reasons the state directory can be briefly unwritable
+    -- disk full, permissions, a locked file. That write happens after the
+    refresh_config() call returns, in the catalog_pending.json read-back and
+    record_discovered() loop, so it must be covered by the same
+    never-block-startup guarantee as the refresh call itself.
+    """
+    monkeypatch.setattr("flexrouter._router.load_config", lambda _p: _cfg(tmp_path))
+
+    def fake_refresh_config(config_path, state_dir, aa_key=None):
+        from flexrouter.refresh import RefreshResult
+        import os
+        pending = {"alpha": {"checked_at": "2026-09-21T00:00:00Z",
+                             "appeared": [{"model": "new-model", "context_window": 131072,
+                                          "rpm": None, "tpm": None, "score": 50, "free": True}],
+                             "vanished": [], "changed": []}}
+        os.makedirs(state_dir, exist_ok=True)
+        with open(os.path.join(state_dir, "catalog_pending.json"), "w", encoding="utf-8") as f:
+            json.dump(pending, f)
+        return RefreshResult(timestamp="2026-09-21T00:00:00Z", added=["alpha/new-model"],
+                             removed=[], changed=[], provider_errors=[], pending_path=None)
+
+    monkeypatch.setattr("flexrouter._router.refresh_config", fake_refresh_config)
+
+    def broken_record_discovered(self, provider, model, context_window):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        "flexrouter.model_facts.ModelFactsStore.record_discovered",
+        broken_record_discovered)
+
+    router = LocalRouter(str(tmp_path / "config.yaml"))  # must not raise
+    router.close()
+
+
 def test_startup_refresh_runs_cleanly_from_inside_the_fastapi_lifespan(
         tmp_path, monkeypatch, recwarn):
     """The real production path: `flexrouter serve` starts uvicorn, which
