@@ -25,3 +25,22 @@ def test_rejects_unknown_event_type(tmp_path):
         assert False, "should have raised"
     except ValueError:
         pass
+
+def test_a_key_shaped_detail_is_scrubbed_before_it_reaches_disk(tmp_path):
+    from flexrouter.events import EventLogger
+
+    leaked = "sk-proj-AAAABBBBCCCCDDDDEEEE1234"
+    logger = EventLogger(str(tmp_path))
+    logger.record("groq", "llama", "rate_limited", detail=f"429: key {leaked} throttled")
+
+    on_disk = (tmp_path / "events.csv").read_text(encoding="utf-8")
+    assert leaked not in on_disk
+
+def test_events_csv_round_trips_as_utf8(tmp_path):
+    from flexrouter.events import EventLogger
+
+    logger = EventLogger(str(tmp_path))
+    logger.record("groq", "llama", "rate_limited", detail="took …1234 characters")
+
+    raw = (tmp_path / "events.csv").read_bytes()
+    raw.decode("utf-8")  # must not raise

@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, Literal, Optional
 
@@ -21,6 +22,7 @@ from flexrouter.rate_limits import RateLimitStore
 from flexrouter.recovery import PenaltyBox
 from flexrouter.redact import scrub
 from flexrouter.sampler import PassiveSampler
+from flexrouter.traces import TraceWriter, new_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +99,7 @@ class LocalRouter:
         self._pin_engine = self._build_pin_engine()
         self._audit = AuditLogger(self._cfg.state_dir)
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
+        self._traces = TraceWriter(self._cfg.state_dir)
         self._sampler = PassiveSampler(
             self._engine.health_snapshot, self._history.record,
             self._cfg.sample_interval_seconds)
@@ -223,6 +226,36 @@ class LocalRouter:
         retries = self._cfg.retry.retries
         backoff = self._cfg.retry.backoff_seconds
 
+        trace_id = new_trace_id()
+        request_started = time.monotonic()
+        skipped = [
+            {"provider": s["provider"], "model": s["model"],
+             "reason": s["reason"], "detail": s["detail"]}
+            for s in self._engine_for(tier).explain_unavailable(tier, estimated_tokens, vision)
+            if not s["available"]
+        ]
+        attempts: list[dict] = []
+
+        def _write_trace(ok: bool, answered_by: Optional[dict] = None,
+                         tokens: Optional[dict] = None) -> None:
+            self._traces.write({
+                "id": trace_id,
+                "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds") + "Z",
+                "asked": {
+                    "bucket": tier, "stream": False,
+                    "needs": ["vision"] if vision else [],
+                    "approx_input_tokens": estimated_tokens,
+                },
+                "skipped": skipped,
+                "attempts": attempts,
+                "answered_by": answered_by,
+                "tokens": tokens or {"in": 0, "out": 0},
+                "cost_usd": 0.0,
+                "ms_total": int((time.monotonic() - request_started) * 1000),
+                "ms_to_first_token": None,
+                "ok": ok,
+            })
+
         # If credentials are what emptied the tier, the caller needs to hear
         # that rather than a generic "everything is busy" — one is a config
         # problem they must fix, the other resolves itself in 30 seconds.
@@ -233,11 +266,14 @@ class LocalRouter:
 
             if route is None:
                 if last_auth_error is not None:
+                    _write_trace(ok=False)
                     raise last_auth_error
                 blocked = self._quarantine_block_reason(tier)
                 if blocked:
+                    _write_trace(ok=False)
                     raise RouterBusy(blocked)
                 if not wait:
+                    _write_trace(ok=False)
                     raise RouterBusy(f"All models in tier {tier!r} are unavailable")
                 secs = self._engine_for(tier).seconds_until_available(tier)
                 await asyncio.sleep(max(secs, 1.0))
@@ -250,7 +286,7 @@ class LocalRouter:
                 self._engine.penalize(route.provider, route.model)
                 self._events.record(
                     route.provider, route.model, "rate_limited",
-                    detail=str(exc),
+                    detail=scrub(str(exc)),
                     penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
                 self._audit.log(
                     tier=tier, provider=route.provider, model=route.model,
@@ -259,7 +295,12 @@ class LocalRouter:
                     status="rate_limited",
                 )
                 self._history.record(self._engine.health_snapshot())
+                attempts.append({"n": attempt + 1, "provider": route.provider,
+                                 "model": route.model, "status": 429,
+                                 "provider_message": str(exc), "key_id": None,
+                                 "ms": int((time.monotonic() - start) * 1000)})
                 if attempt == retries:
+                    _write_trace(ok=False)
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
                 continue
@@ -273,8 +314,13 @@ class LocalRouter:
                     status="auth_error",
                 )
                 self._history.record(self._engine.health_snapshot())
+                attempts.append({"n": attempt + 1, "provider": route.provider,
+                                 "model": route.model, "status": None,
+                                 "provider_message": str(exc), "key_id": None,
+                                 "ms": int((time.monotonic() - start) * 1000)})
                 # No backoff: a rejected key won't un-reject in two seconds.
                 if attempt == retries:
+                    _write_trace(ok=False)
                     raise
                 continue
             except ProviderError as exc:
@@ -286,7 +332,12 @@ class LocalRouter:
                     status="error",
                 )
                 self._history.record(self._engine.health_snapshot())
+                attempts.append({"n": attempt + 1, "provider": route.provider,
+                                 "model": route.model, "status": exc.status_code,
+                                 "provider_message": str(exc), "key_id": None,
+                                 "ms": int((time.monotonic() - start) * 1000)})
                 if attempt == retries:
+                    _write_trace(ok=False)
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
                 continue
@@ -310,8 +361,14 @@ class LocalRouter:
                 status="ok",
             )
             self._history.record(self._engine.health_snapshot())
+            _write_trace(
+                ok=True,
+                answered_by={"provider": route.provider, "model": route.model, "key_id": None},
+                tokens={"in": prompt_tokens, "out": completion_tokens},
+            )
             return result
 
+        _write_trace(ok=False)
         raise RouterBusy(f"All models in tier {tier!r} are unavailable after {retries} retries")
 
     async def agenerate_stream(
@@ -334,6 +391,37 @@ class LocalRouter:
         backoff = self._cfg.retry.backoff_seconds
         max_attempts = retries + 1
 
+        trace_id = new_trace_id()
+        request_started = time.monotonic()
+        skipped = [
+            {"provider": s["provider"], "model": s["model"],
+             "reason": s["reason"], "detail": s["detail"]}
+            for s in self._engine_for(tier).explain_unavailable(tier, estimated_tokens, vision)
+            if not s["available"]
+        ]
+        attempts: list[dict] = []
+
+        def _write_trace(ok: bool, answered_by: Optional[dict] = None,
+                         tokens: Optional[dict] = None,
+                         ms_to_first_token: Optional[int] = None) -> None:
+            self._traces.write({
+                "id": trace_id,
+                "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds") + "Z",
+                "asked": {
+                    "bucket": tier, "stream": True,
+                    "needs": ["vision"] if vision else [],
+                    "approx_input_tokens": estimated_tokens,
+                },
+                "skipped": skipped,
+                "attempts": attempts,
+                "answered_by": answered_by,
+                "tokens": tokens or {"in": 0, "out": 0},
+                "cost_usd": 0.0,
+                "ms_total": int((time.monotonic() - request_started) * 1000),
+                "ms_to_first_token": ms_to_first_token,
+                "ok": ok,
+            })
+
         for attempt in range(retries + 1):
             route = self._engine_for(tier).select(tier, estimated_tokens, vision, session_id)
 
@@ -344,6 +432,7 @@ class LocalRouter:
                 # streaming route a chat client actually uses.
                 blocked = self._quarantine_block_reason(tier)
                 if blocked:
+                    _write_trace(ok=False)
                     raise RouterBusy(blocked)
                 secs = self._engine_for(tier).seconds_until_available(tier)
                 await asyncio.sleep(max(secs, 1.0))
@@ -379,12 +468,18 @@ class LocalRouter:
                     status="empty_response",
                 )
                 self._history.record(self._engine.health_snapshot())
+                attempts.append({"n": attempt + 1, "provider": route.provider,
+                                 "model": route.model, "status": None,
+                                 "provider_message": "empty stream response",
+                                 "key_id": None,
+                                 "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
                     provider=route.provider, model=route.model, reason="provider_error",
                     detail="empty stream response",
                 )
                 if attempt == retries:
+                    _write_trace(ok=False)
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
                 continue
@@ -392,7 +487,7 @@ class LocalRouter:
                 self._engine.penalize(route.provider, route.model)
                 self._events.record(
                     route.provider, route.model, "rate_limited",
-                    detail=str(exc),
+                    detail=scrub(str(exc)),
                     penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
                 self._audit.log(
                     tier=tier, provider=route.provider, model=route.model,
@@ -401,12 +496,17 @@ class LocalRouter:
                     status="rate_limited",
                 )
                 self._history.record(self._engine.health_snapshot())
+                attempts.append({"n": attempt + 1, "provider": route.provider,
+                                 "model": route.model, "status": 429,
+                                 "provider_message": str(exc), "key_id": None,
+                                 "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
                     provider=route.provider, model=route.model, reason="rate_limited",
                     detail=str(exc),
                 )
                 if attempt == retries:
+                    _write_trace(ok=False)
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
                 continue
@@ -419,12 +519,17 @@ class LocalRouter:
                     status="auth_error",
                 )
                 self._history.record(self._engine.health_snapshot())
+                attempts.append({"n": attempt + 1, "provider": route.provider,
+                                 "model": route.model, "status": None,
+                                 "provider_message": str(exc), "key_id": None,
+                                 "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
                     provider=route.provider, model=route.model,
                     reason="provider_error", detail=str(exc),
                 )
                 if attempt == retries:
+                    _write_trace(ok=False)
                     raise
                 continue
             except ProviderError as exc:
@@ -436,12 +541,17 @@ class LocalRouter:
                     status="error",
                 )
                 self._history.record(self._engine.health_snapshot())
+                attempts.append({"n": attempt + 1, "provider": route.provider,
+                                 "model": route.model, "status": exc.status_code,
+                                 "provider_message": str(exc), "key_id": None,
+                                 "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
                     provider=route.provider, model=route.model, reason="provider_error",
                     detail=str(exc),
                 )
                 if attempt == retries:
+                    _write_trace(ok=False)
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
                 continue
@@ -466,10 +576,13 @@ class LocalRouter:
             tool_calls_by_key: dict[str, dict] = {}
             tool_call_order: list[str] = []
             last_key_by_index: dict[int, str] = {}
+            first_token_at: Optional[float] = None
 
             def _events_for(sc) -> list:
-                nonlocal has_tool_calls
+                nonlocal has_tool_calls, first_token_at
                 events: list = []
+                if first_token_at is None and (sc.content or sc.reasoning or sc.tool_call_delta):
+                    first_token_at = time.monotonic()
                 if sc.content:
                     accumulated.append(sc.content)
                     events.append(DeltaEvent(text=sc.content))
@@ -520,15 +633,28 @@ class LocalRouter:
             # what was sent.
             any_yielded = False
 
-            if first_chunk is not None:
-                for ev in _events_for(first_chunk):
-                    any_yielded = True
-                    yield ev
+            try:
+                if first_chunk is not None:
+                    for ev in _events_for(first_chunk):
+                        any_yielded = True
+                        yield ev
 
-            async for sc in stream:
-                for ev in _events_for(sc):
-                    any_yielded = True
-                    yield ev
+                async for sc in stream:
+                    for ev in _events_for(sc):
+                        any_yielded = True
+                        yield ev
+            except BaseException as exc:
+                attempts.append({"n": attempt + 1, "provider": route.provider,
+                                 "model": route.model,
+                                 "status": getattr(exc, "status_code", None),
+                                 "provider_message": str(exc), "key_id": None,
+                                 "ms": int((time.monotonic() - start) * 1000)})
+                _write_trace(
+                    ok=False,
+                    ms_to_first_token=(
+                        int((first_token_at - start) * 1000) if first_token_at else None),
+                )
+                raise
 
             latency_ms = int((time.monotonic() - start) * 1000)
             full_text = "".join(accumulated)
@@ -595,6 +721,11 @@ class LocalRouter:
                     # post-commit failure. app.py renders it as the
                     # well-formed failure chunk, not a bare error object,
                     # because content/reasoning already went out.
+                    _write_trace(
+                        ok=False,
+                        ms_to_first_token=(
+                            int((first_token_at - start) * 1000) if first_token_at else None),
+                    )
                     raise RouterError(
                         f"{route.provider}/{route.model}: empty completion "
                         "after partial output (no content, no tool calls)")
@@ -618,12 +749,18 @@ class LocalRouter:
                     latency_ms=latency_ms, status="empty_response",
                 )
                 self._history.record(self._engine.health_snapshot())
+                attempts.append({"n": attempt + 1, "provider": route.provider,
+                                 "model": route.model, "status": None,
+                                 "provider_message": "empty response (no content, no tool calls)",
+                                 "key_id": None,
+                                 "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
                     provider=route.provider, model=route.model, reason="provider_error",
                     detail="empty response (no content, no tool calls)",
                 )
                 if attempt == retries:
+                    _write_trace(ok=False)
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
                 continue
@@ -682,9 +819,17 @@ class LocalRouter:
                 status="ok",
             )
             self._history.record(self._engine.health_snapshot())
+            _write_trace(
+                ok=True,
+                answered_by={"provider": route.provider, "model": route.model, "key_id": None},
+                tokens={"in": prompt_tokens, "out": completion_tokens},
+                ms_to_first_token=(
+                    int((first_token_at - start) * 1000) if first_token_at else None),
+            )
             yield DoneEvent(result=result)
             return
 
+        _write_trace(ok=False)
         raise RouterBusy(f"All models in tier {tier!r} are unavailable after {retries} retries")
 
     def _build_pin_engine(self) -> RoutingEngine:
@@ -735,6 +880,7 @@ class LocalRouter:
         self._client._rate_limit_store = self._rate_limit_store
         self._audit = AuditLogger(self._cfg.state_dir)
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
+        self._traces = TraceWriter(self._cfg.state_dir)
 
     def remaining_capacity(self, tier: str) -> dict[str, dict]:
         """For every model in `tier` currently in the running for selection, return

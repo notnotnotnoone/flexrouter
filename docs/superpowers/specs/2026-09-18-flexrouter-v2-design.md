@@ -60,8 +60,9 @@ reintroduce them without a new decision.
   the same free-tier allowance this project exists to conserve. Rejected:
   *"modelrelay is stupid and this wastes tool calls."* This also restates the
   existing decision in `2026-06-19-dashboard-overhaul-design.md`. The
-  replacement is one catalogue call per provider per day, plus learning from
-  real traffic.
+  replacement is one catalogue call per provider each time the service
+  starts, plus learning from real traffic. (Changed 2026-09-20 from "once a
+  day" to "once per startup" — the owner's call; see §6.)
 - **Publishing a self-updating signed model catalogue.** FreeLLMAPI does this
   well because it has contributors. Rejected: *"freellmapi has contributors.
   this project has me who updated this project every time i need to use it."*
@@ -282,6 +283,22 @@ here. **Keep it behind the protocol.** A `NullDecider` that returns `unknown`
 for everything must be a supported configuration, so the router works fully
 without any classifier configured.
 
+**The Decider makes its own direct call to its own provider — it is never
+routed through the service's own routing engine.** (Owner's call, 2026-09-20.)
+A helper whose job is explaining why routing just failed cannot depend on the
+thing that just failed: if every configured provider is rate-limited,
+quarantined, or down, a `Decider` that had to go through `RoutingEngine`
+to reach its own model would be unreachable at exactly the moment it is
+needed. It also must not quietly consume the same shared per-provider
+allowance the rest of the design exists to conserve. The cost is a second,
+independent way of reaching a provider in the codebase — its own saved
+credential, no failover, no rotation, no rate-limit bookkeeping. This is
+accepted because it is small and because the fallback already required by
+this section (`NullDecider`) exists for exactly the case where even this
+direct call cannot be made: if the Decider's own provider is unreachable,
+that miss is treated as `unknown`/flagged-for-review, the same as having no
+classifier configured at all, never as a retryable routing failure.
+
 Both halves share the same discipline:
 
 - Every stored decision carries `source`, `confidence`, `decided_at`.
@@ -431,8 +448,15 @@ When a request requires a capability, order candidates:
 
 ## 6. Catalogue refresh
 
-- Once per day per provider (configurable; `manual` permitted), **one** call to
-  the provider's model list. `probe.stale_models()` already does the diff.
+- **Once per service startup per provider** (configurable; `manual` permitted),
+  **one** call to the provider's model list. `probe.stale_models()` already
+  does the diff. Changed 2026-09-20 from "once a day" — the owner found a
+  calendar timer pointless when the service is something he starts and stops
+  himself rather than leaves running unattended. Accepted cost: a service left
+  running for many days in a row will not notice a model that appeared or
+  vanished during that stretch until it is next restarted. If that turns out
+  to matter in practice, the fix is a settings toggle for a day-count on top
+  of startup, not a return to a background timer as the default.
 - Result is written to `state/catalog_pending.json`, **not applied**:
 
 ```json
@@ -479,8 +503,17 @@ Existing stack: React 18 + Vite + Tailwind 4 + shadcn, built into
 
 - Builds a prompt from the current model list plus owner-supplied benchmark
   material (pasted text, or an instruction to go and look).
-- **Two modes**: the service calls a chosen model itself, or the owner copies
-  the prompt into their own chat and pastes the reply back.
+- **Copy-paste only, for now.** (Owner's call, 2026-09-20 — cut down from
+  "two modes.") The service builds the prompt; the owner pastes it into
+  their own chat of choice and pastes the reply back. The originally
+  planned second mode — the service calling a chosen model itself to rank —
+  is deferred, not designed away: it is meaningfully more machinery (its own
+  outgoing call, its own credential, its own parsing of whatever came back)
+  for a feature the owner runs occasionally by hand, not something the
+  service needs unattended. If a self-run mode is added later, it follows
+  the same direct-call rule as §4's Decider — never routed through the
+  service's own bucket/failover machinery — but that is a future decision,
+  not this one.
 - Output parsed as CSV: `model_id,score,reason,source`.
 - Presented as current → proposed with per-row acceptance. Nothing applied until
   accepted. Large jumps are flagged.
