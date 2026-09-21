@@ -42,26 +42,26 @@ def provider_summaries(router, now: Optional[float] = None) -> list[ProviderSumm
     out = []
     for name, pcfg in router._cfg.providers.items():
         records = list(pcfg.keys or [])
-        if records:
-            live = cooling = parked = 0
-            for record in records:
+        live = cooling = parked = 0
+        for record in records:
+            if not record.enabled:
+                parked += 1
+            elif states.is_available(name, record.id, now):
+                live += 1
+            else:
+                # Key is not available and status is cooling
                 status = states.get(name, record.id, now).status
-                if not record.enabled or status in ("benched", "disabled"):
-                    parked += 1
-                elif status == "cooling":
+                if status == "cooling":
                     cooling += 1
                 else:
-                    live += 1
-            key_count = len(records)
-        else:
-            # Credentials supplied inline or from the environment carry no
-            # id, so `KeyStateStore` has nothing recorded for them.
-            key_count = live = len(pcfg.api_keys or [])
-            cooling = parked = 0
+                    parked += 1
+        key_count = len(records)
 
         quarantined = penalties.is_quarantined(name, "*")
         reason = penalties.quarantine_reason(name, "*")
         if quarantined:
+            state = "bad"
+        elif not key_count:
             state = "bad"
         elif key_count and live == 0:
             state = "bad"
@@ -100,11 +100,11 @@ def overview(router, now: Optional[float] = None) -> dict:
                     or penalties.is_penalized(name, model)):
                 models_available += 1
 
-    entries = getattr(router._error_brain, "_entries", {}) or {}
+    entries = router._error_brain._entries
     awaiting = sum(1 for e in entries.values()
                    if getattr(e, "flagged_for_review", False))
 
-    facts_store = getattr(router._model_facts, "_facts", {}) or {}
+    facts_store = router._model_facts._facts
 
     return {
         "providers": {
