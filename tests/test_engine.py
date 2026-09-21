@@ -110,6 +110,25 @@ def test_seconds_until_available():
     assert secs >= 0
 
 
+def test_seconds_until_available_measures_penalty_not_epoch():
+    """Regression test: seconds_until_available must return "seconds
+    remaining", not an epoch timestamp.
+
+    PenaltyBox.penalty_until() returns a wall-clock (time.time()-based)
+    timestamp. If seconds_until_available() ever subtracts time.monotonic()
+    (a different, arbitrary-reference clock) from that timestamp instead of
+    time.time(), the result comes out around the epoch itself (~1.7 billion
+    seconds) rather than a small number of seconds — which the old test's
+    `secs >= 0` assertion doesn't catch, since an epoch-scale value is still
+    >= 0.
+    """
+    engine = make_engine()
+    engine._penalties.penalize_short("groq", "llama-8b", seconds=5)
+    engine._penalties.penalize_short("groq", "llama-70b", seconds=5)
+    secs = engine.seconds_until_available("low")
+    assert secs < 120
+
+
 def test_make_result_empty_api_keys_uses_empty_string():
     """Ollama and other local providers have no api_keys."""
     cfg = FlexConfig(

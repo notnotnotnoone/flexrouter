@@ -103,7 +103,7 @@ class RoutingEngine:
             if self._penalties.is_penalized(m.provider, m.model):
                 until = self._penalties.penalty_until(m.provider, m.model)
                 if until:
-                    min_wait = min(min_wait, until - time.monotonic())
+                    min_wait = min(min_wait, until - time.time())
             elif self._rate_limit_store is not None and self._rate_limit_store.is_exhausted(m.provider, m.model):
                 avail = self._rate_limit_store.available_at(m.provider, m.model)
                 if avail is not None:
