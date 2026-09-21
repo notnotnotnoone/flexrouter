@@ -36,6 +36,7 @@ class ProviderConfig:
     api_keys: list[str]  # resolved secret strings, in selection order
     header_parser: str = "openai_compatible"
     keys: list[KeyRecord] = field(default_factory=list)
+    key_strategy: str = "most_headroom"
 
 @dataclass
 class RetryConfig:
@@ -55,6 +56,7 @@ class FlexConfig:
     dashboard_port: int | None = None  # deprecated alias for `port`
     sample_interval_seconds: int = 60
     health_history_days: int = 30
+    key_concurrency_cap: int = 4
     retry: RetryConfig = field(default_factory=RetryConfig)
     provider_budget: dict[str, float] = field(default_factory=dict)
     hooks: list[str] = field(default_factory=list)
@@ -365,6 +367,7 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
             api_keys=[r.secret for r in records],
             header_parser=praw.get("header_parser", "openai_compatible"),
             keys=records,
+            key_strategy=praw.get("key_strategy", "most_headroom"),
         )
 
     buckets_raw = raw.get("buckets")
@@ -413,6 +416,7 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
         dashboard_port=port,
         sample_interval_seconds=_number(settings, "sample_interval_seconds", 60, int),
         health_history_days=_number(settings, "health_history_days", 30, int),
+        key_concurrency_cap=_number(settings, "key_concurrency_cap", 4, int),
         retry=retry,
         provider_budget=settings.get("provider_budget", {}),
         hooks=settings.get("hooks", []),

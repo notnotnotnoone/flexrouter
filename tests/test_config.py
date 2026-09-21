@@ -61,3 +61,40 @@ def test_vision_flag_parsed(tmp_path):
     }))
     cfg = load_config(p)
     assert cfg.tiers["high"][0].vision is True
+
+def test_provider_key_strategy_defaults_to_most_headroom(config_file):
+    cfg = load_config(config_file)
+    assert cfg.providers["groq"].key_strategy == "most_headroom"
+
+
+def test_provider_key_strategy_is_read_from_settings(tmp_path, monkeypatch):
+    from tests.conftest import MINIMAL_CONFIG
+    cfg = dict(MINIMAL_CONFIG)
+    cfg["settings"] = dict(cfg["settings"])
+    cfg["settings"]["state_dir"] = str(tmp_path / ".flexrouter")
+    cfg["providers"] = dict(cfg["providers"])
+    cfg["providers"]["groq"] = dict(cfg["providers"]["groq"])
+    cfg["providers"]["groq"]["key_strategy"] = "round_robin"
+    p = tmp_path / "flexrouter.yaml"
+    p.write_text(yaml.dump(cfg))
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    loaded = load_config(p)
+    assert loaded.providers["groq"].key_strategy == "round_robin"
+
+
+def test_key_concurrency_cap_defaults_to_four(config_file):
+    cfg = load_config(config_file)
+    assert cfg.key_concurrency_cap == 4
+
+
+def test_key_concurrency_cap_is_read_from_settings(tmp_path, monkeypatch):
+    from tests.conftest import MINIMAL_CONFIG
+    cfg = dict(MINIMAL_CONFIG)
+    cfg["settings"] = dict(cfg["settings"])
+    cfg["settings"]["state_dir"] = str(tmp_path / ".flexrouter")
+    cfg["settings"]["key_concurrency_cap"] = 8
+    p = tmp_path / "flexrouter.yaml"
+    p.write_text(yaml.dump(cfg))
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    loaded = load_config(p)
+    assert loaded.key_concurrency_cap == 8

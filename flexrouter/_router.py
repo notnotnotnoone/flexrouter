@@ -12,16 +12,18 @@ from typing import AsyncIterator, Literal, Optional
 from flexrouter.audit import AuditLogger
 from flexrouter.client import AsyncClient, RateLimitError, ProviderError
 from flexrouter.config import FlexConfig, load_config
-from flexrouter.engine import RoutingEngine
+from flexrouter.engine import RoutingEngine, RouteResult
 from flexrouter.events import EventLogger
 from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.health_history import HealthHistory
 from flexrouter.hooks import HookRunner, HookContext
+from flexrouter.key_state import KeyStateStore
 from flexrouter.quota import QuotaTracker
 from flexrouter.rate_limits import RateLimitStore
 from flexrouter.recovery import PenaltyBox
 from flexrouter.redact import scrub
 from flexrouter.sampler import PassiveSampler
+from flexrouter.scheduler import RoundRobinCounters, pick_key
 from flexrouter.traces import TraceWriter, new_trace_id
 
 logger = logging.getLogger(__name__)
@@ -100,6 +102,8 @@ class LocalRouter:
         self._audit = AuditLogger(self._cfg.state_dir)
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
         self._traces = TraceWriter(self._cfg.state_dir)
+        self._key_states = KeyStateStore(self._cfg.state_dir)
+        self._round_robin = RoundRobinCounters()
         self._sampler = PassiveSampler(
             self._engine.health_snapshot, self._history.record,
             self._cfg.sample_interval_seconds)
@@ -140,27 +144,42 @@ class LocalRouter:
         return (f"Every model in tier {tier!r} is quarantined - this will "
                 f"not clear on its own:\n  {joined}")
 
-    def _handle_auth_failure(self, route, exc) -> None:
-        """Sideline a whole provider after it rejects our credentials.
+    def _handle_auth_failure(self, route, exc, key_id: Optional[str]) -> None:
+        """Sideline the key that was rejected, not the whole provider.
 
-        Auth failures used to abort the entire request. That made one expired
-        key look like total breakage: every tier containing that provider
-        failed, even when the other providers in the tier were healthy. The
-        key is a property of the provider, so quarantine the provider and let
-        the retry loop rotate to a different one.
+        Stage 4's whole point (spec fault 5): a rejected key used to abort
+        every route through its provider, even routes using a different,
+        perfectly good key. Now only that one key is benched. The provider
+        itself is only quarantined when every configured key for it has
+        become benched or disabled (ruling 2/4) — a fact about the account,
+        not about one credential.
 
-        The reason is scrubbed here, at the write site, not where it is later
-        displayed. A provider's 4xx/5xx text can echo the rejected credential
-        back at us, and this reason is persisted to the penalties file on disk
-        and then served verbatim by the unauthenticated /api/* routes and by
-        /v1/models, none of which pass through the error envelope's scrubber.
-        Scrubbing on the way in means nothing unscrubbed is ever written down.
+        The reason is scrubbed here, at the write site, for the same reason
+        it always has been: this text is persisted and later served
+        unauthenticated by /api/* and /v1/models.
         """
         reason = scrub(str(exc))
-        self._penalties.quarantine_provider(route.provider, reason)
-        self._events.record(
-            route.provider, route.model, "server_error",
-            detail=f"provider quarantined (auth): {reason}")
+        provider_cfg = self._cfg.providers.get(route.provider)
+        if key_id is None or not provider_cfg or not provider_cfg.keys:
+            # No key identity to bench (keyless provider, or the failure
+            # happened before a key was ever chosen) — fall back to the
+            # pre-Stage-4 behaviour rather than silently doing nothing.
+            self._penalties.quarantine_provider(route.provider, reason)
+            self._events.record(
+                route.provider, route.model, "server_error",
+                detail=f"provider quarantined (auth): {reason}")
+            return
+        self._key_states.mark_benched(route.provider, key_id, reason)
+        key_ids = [r.id for r in provider_cfg.keys]
+        if self._key_states.all_benched_or_disabled(route.provider, key_ids):
+            self._penalties.quarantine_provider(route.provider, reason)
+            self._events.record(
+                route.provider, route.model, "server_error",
+                detail=f"provider quarantined (auth, every key benched): {reason}")
+        else:
+            self._events.record(
+                route.provider, route.model, "server_error",
+                detail=f"key benched (auth): {reason}")
 
     def _handle_provider_error(self, route, exc) -> None:
         """Sideline a route after a provider error, and record why.
@@ -263,6 +282,9 @@ class LocalRouter:
 
         for attempt in range(retries + 1):
             route = self._engine_for(tier).select(tier, estimated_tokens, vision, session_id)
+            key_id: Optional[str] = None
+            if route is not None:
+                route, key_id = self._pick_key(route)
 
             if route is None:
                 if last_auth_error is not None:
@@ -280,10 +302,17 @@ class LocalRouter:
                 continue
 
             start = time.monotonic()
+            if key_id is not None:
+                self._key_states.begin_request(route.provider, key_id)
             try:
                 result = await self._client.chat(route, messages, **kwargs)
             except RateLimitError as exc:
                 self._engine.penalize(route.provider, route.model)
+                if key_id is not None:
+                    self._key_states.mark_cooling(
+                        route.provider, key_id,
+                        self._penalties.penalty_seconds(route.provider, route.model),
+                        "too_fast")
                 self._events.record(
                     route.provider, route.model, "rate_limited",
                     detail=scrub(str(exc)),
@@ -297,7 +326,7 @@ class LocalRouter:
                 self._history.record(self._engine.health_snapshot())
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": 429,
-                                 "provider_message": str(exc), "key_id": None,
+                                 "provider_message": str(exc), "key_id": key_id,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 if attempt == retries:
                     _write_trace(ok=False)
@@ -305,7 +334,7 @@ class LocalRouter:
                 await asyncio.sleep(backoff)
                 continue
             except RouterError as exc:
-                self._handle_auth_failure(route, exc)
+                self._handle_auth_failure(route, exc, key_id)
                 last_auth_error = exc
                 self._audit.log(
                     tier=tier, provider=route.provider, model=route.model,
@@ -316,7 +345,7 @@ class LocalRouter:
                 self._history.record(self._engine.health_snapshot())
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": None,
-                                 "provider_message": str(exc), "key_id": None,
+                                 "provider_message": str(exc), "key_id": key_id,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 # No backoff: a rejected key won't un-reject in two seconds.
                 if attempt == retries:
@@ -334,13 +363,16 @@ class LocalRouter:
                 self._history.record(self._engine.health_snapshot())
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": exc.status_code,
-                                 "provider_message": str(exc), "key_id": None,
+                                 "provider_message": str(exc), "key_id": key_id,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 if attempt == retries:
                     _write_trace(ok=False)
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
                 continue
+            finally:
+                if key_id is not None:
+                    self._key_states.end_request(route.provider, key_id)
 
             latency_ms = int((time.monotonic() - start) * 1000)
             usage = result.get("usage", {})
@@ -350,6 +382,8 @@ class LocalRouter:
 
             self._engine.record_request(route.provider, route.model, total_tokens)
             self._quota_tracker.record(route.provider, route.model)
+            if key_id is not None:
+                self._key_states.mark_success(route.provider, key_id, total_tokens, latency_ms)
             self._audit.log(
                 tier=tier,
                 provider=route.provider,
@@ -363,7 +397,7 @@ class LocalRouter:
             self._history.record(self._engine.health_snapshot())
             _write_trace(
                 ok=True,
-                answered_by={"provider": route.provider, "model": route.model, "key_id": None},
+                answered_by={"provider": route.provider, "model": route.model, "key_id": key_id},
                 tokens={"in": prompt_tokens, "out": completion_tokens},
             )
             return result
@@ -424,6 +458,9 @@ class LocalRouter:
 
         for attempt in range(retries + 1):
             route = self._engine_for(tier).select(tier, estimated_tokens, vision, session_id)
+            key_id: Optional[str] = None
+            if route is not None:
+                route, key_id = self._pick_key(route)
 
             if route is None:
                 # Unlike the sync path this loop has no wait=False escape, so
@@ -451,6 +488,8 @@ class LocalRouter:
             # RateLimitError/ProviderError/RouterError before its first
             # yield. Once we're past this point without an exception, no
             # further failure may trigger a retry (no retry after commit).
+            if key_id is not None:
+                self._key_states.begin_request(route.provider, key_id)
             try:
                 first_chunk = await stream.__anext__()
             except StopAsyncIteration:
@@ -471,7 +510,7 @@ class LocalRouter:
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": None,
                                  "provider_message": "empty stream response",
-                                 "key_id": None,
+                                 "key_id": key_id,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
@@ -485,6 +524,11 @@ class LocalRouter:
                 continue
             except RateLimitError as exc:
                 self._engine.penalize(route.provider, route.model)
+                if key_id is not None:
+                    self._key_states.mark_cooling(
+                        route.provider, key_id,
+                        self._penalties.penalty_seconds(route.provider, route.model),
+                        "too_fast")
                 self._events.record(
                     route.provider, route.model, "rate_limited",
                     detail=scrub(str(exc)),
@@ -498,7 +542,7 @@ class LocalRouter:
                 self._history.record(self._engine.health_snapshot())
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": 429,
-                                 "provider_message": str(exc), "key_id": None,
+                                 "provider_message": str(exc), "key_id": key_id,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
@@ -511,7 +555,7 @@ class LocalRouter:
                 await asyncio.sleep(backoff)
                 continue
             except RouterError as exc:
-                self._handle_auth_failure(route, exc)
+                self._handle_auth_failure(route, exc, key_id)
                 self._audit.log(
                     tier=tier, provider=route.provider, model=route.model,
                     prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
@@ -521,7 +565,7 @@ class LocalRouter:
                 self._history.record(self._engine.health_snapshot())
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": None,
-                                 "provider_message": str(exc), "key_id": None,
+                                 "provider_message": str(exc), "key_id": key_id,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
@@ -543,7 +587,7 @@ class LocalRouter:
                 self._history.record(self._engine.health_snapshot())
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": exc.status_code,
-                                 "provider_message": str(exc), "key_id": None,
+                                 "provider_message": str(exc), "key_id": key_id,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
@@ -555,6 +599,9 @@ class LocalRouter:
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
                 continue
+            finally:
+                if key_id is not None:
+                    self._key_states.end_request(route.provider, key_id)
 
             # Committed: a delta (or a clean empty stream) arrived with no
             # error. From here on, any failure propagates as a plain
@@ -647,7 +694,7 @@ class LocalRouter:
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model,
                                  "status": getattr(exc, "status_code", None),
-                                 "provider_message": str(exc), "key_id": None,
+                                 "provider_message": str(exc), "key_id": key_id,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 _write_trace(
                     ok=False,
@@ -752,7 +799,7 @@ class LocalRouter:
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": None,
                                  "provider_message": "empty response (no content, no tool calls)",
-                                 "key_id": None,
+                                 "key_id": key_id,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
@@ -808,6 +855,8 @@ class LocalRouter:
 
             self._engine.record_request(route.provider, route.model, total_tokens)
             self._quota_tracker.record(route.provider, route.model)
+            if key_id is not None:
+                self._key_states.mark_success(route.provider, key_id, total_tokens, latency_ms)
             self._audit.log(
                 tier=tier,
                 provider=route.provider,
@@ -821,7 +870,7 @@ class LocalRouter:
             self._history.record(self._engine.health_snapshot())
             _write_trace(
                 ok=True,
-                answered_by={"provider": route.provider, "model": route.model, "key_id": None},
+                answered_by={"provider": route.provider, "model": route.model, "key_id": key_id},
                 tokens={"in": prompt_tokens, "out": completion_tokens},
                 ms_to_first_token=(
                     int((first_token_at - start) * 1000) if first_token_at else None),
@@ -866,6 +915,41 @@ class LocalRouter:
         """
         return self._pin_engine if "/" in tier else self._engine
 
+    def _pick_key(self, route: RouteResult) -> tuple[Optional[RouteResult], Optional[str]]:
+        """Override a RouteResult's api_key with a real, stateful choice.
+
+        engine.py already picked *which model* — this picks *which key*,
+        from real per-key state instead of blind rotation (ADR 0011).
+        Returns (None, None) when every configured key for this provider is
+        currently unavailable, signalling that back to engine.py through
+        PenaltyBox primitives it already reads, never by teaching it
+        anything new.
+        """
+        provider_cfg = self._cfg.providers.get(route.provider)
+        candidates = provider_cfg.keys if provider_cfg else []
+        if not candidates:
+            return route, None  # keyless provider (e.g. local Ollama) — unchanged
+
+        model_id = f"{route.provider}/{route.model}"
+        chosen = pick_key(
+            candidates, route.provider, model_id, provider_cfg.key_strategy,
+            self._key_states, self._cfg.key_concurrency_cap,
+            counters=self._round_robin if provider_cfg.key_strategy == "round_robin" else None,
+        )
+        if chosen is None:
+            key_ids = [r.id for r in candidates]
+            if self._key_states.all_benched_or_disabled(route.provider, key_ids):
+                self._penalties.quarantine_provider(
+                    route.provider, "every configured key is benched")
+            else:
+                wait = self._key_states.min_seconds_until_available(route.provider, key_ids)
+                if wait != float("inf"):
+                    self._penalties.penalize_short(
+                        route.provider, route.model, int(max(wait, 30.0)))
+            return None, None
+
+        return dataclasses.replace(route, api_key=chosen.secret), chosen.id
+
     def reload(self) -> None:
         # Load first, assign after: a settings file that has gone bad
         # must leave the router exactly as it was, not half swapped.
@@ -881,6 +965,7 @@ class LocalRouter:
         self._audit = AuditLogger(self._cfg.state_dir)
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
         self._traces = TraceWriter(self._cfg.state_dir)
+        self._key_states = KeyStateStore(self._cfg.state_dir)
 
     def remaining_capacity(self, tier: str) -> dict[str, dict]:
         """For every model in `tier` currently in the running for selection, return
