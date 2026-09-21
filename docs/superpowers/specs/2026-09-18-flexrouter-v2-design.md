@@ -60,8 +60,9 @@ reintroduce them without a new decision.
   the same free-tier allowance this project exists to conserve. Rejected:
   *"modelrelay is stupid and this wastes tool calls."* This also restates the
   existing decision in `2026-06-19-dashboard-overhaul-design.md`. The
-  replacement is one catalogue call per provider per day, plus learning from
-  real traffic.
+  replacement is one catalogue call per provider each time the service
+  starts, plus learning from real traffic. (Changed 2026-09-20 from "once a
+  day" to "once per startup" — the owner's call; see §6.)
 - **Publishing a self-updating signed model catalogue.** FreeLLMAPI does this
   well because it has contributors. Rejected: *"freellmapi has contributors.
   this project has me who updated this project every time i need to use it."*
@@ -431,8 +432,15 @@ When a request requires a capability, order candidates:
 
 ## 6. Catalogue refresh
 
-- Once per day per provider (configurable; `manual` permitted), **one** call to
-  the provider's model list. `probe.stale_models()` already does the diff.
+- **Once per service startup per provider** (configurable; `manual` permitted),
+  **one** call to the provider's model list. `probe.stale_models()` already
+  does the diff. Changed 2026-09-20 from "once a day" — the owner found a
+  calendar timer pointless when the service is something he starts and stops
+  himself rather than leaves running unattended. Accepted cost: a service left
+  running for many days in a row will not notice a model that appeared or
+  vanished during that stretch until it is next restarted. If that turns out
+  to matter in practice, the fix is a settings toggle for a day-count on top
+  of startup, not a return to a background timer as the default.
 - Result is written to `state/catalog_pending.json`, **not applied**:
 
 ```json
