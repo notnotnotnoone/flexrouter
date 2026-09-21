@@ -165,3 +165,25 @@ class ModelFactsStore:
         facts = replace(self.get(provider, model), **{capability: updated})
         self._facts[(provider, model)] = facts
         self._save()
+
+    def record_discovered(self, provider: str, model: str,
+                          context_window: Optional[int]) -> None:
+        """Called when a catalogue refresh finds a model never seen before.
+
+        Records only the one fact the spec calls "always" published — the
+        context window — and never touches an existing context fact:
+        the first value seen across restarts is kept, not churned on
+        every subsequent refresh that happens to see the same model again.
+        Everything else in a full ModelFacts entry (vision/tools/reasoning/
+        size_class/provisional_score) needs either real traffic evidence
+        (already wired, Stage 6) or a real Decider (still NullDecider,
+        resolves to nothing) — this method does not fabricate either.
+        """
+        if context_window is None:
+            return
+        facts = self._facts.get((provider, model), ModelFacts())
+        if facts.context is not None:
+            return
+        facts = replace(facts, context=SimpleFact(value=context_window, source="published"))
+        self._facts[(provider, model)] = facts
+        self._save()

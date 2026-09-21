@@ -112,3 +112,29 @@ def test_store_applies_staleness_on_read(tmp_path):
 def ModelFactsWithVision(vision_fact):
     from flexrouter.model_facts import ModelFacts
     return ModelFacts(vision=vision_fact)
+
+
+def test_record_discovered_sets_a_published_context_fact(tmp_path):
+    from flexrouter.model_facts import ModelFactsStore
+    store = ModelFactsStore(str(tmp_path))
+    store.record_discovered("openrouter", "new-model", context_window=131072)
+    facts = store.get("openrouter", "new-model")
+    assert facts.context.value == 131072
+    assert facts.context.source == "published"
+
+
+def test_record_discovered_with_no_context_window_does_nothing(tmp_path):
+    from flexrouter.model_facts import ModelFactsStore
+    store = ModelFactsStore(str(tmp_path))
+    store.record_discovered("openrouter", "new-model", context_window=None)
+    facts = store.get("openrouter", "new-model")
+    assert facts.context is None
+
+
+def test_record_discovered_never_overwrites_an_existing_context_fact(tmp_path):
+    from flexrouter.model_facts import ModelFactsStore
+    store = ModelFactsStore(str(tmp_path))
+    store.record_discovered("openrouter", "m", context_window=8192)
+    store.record_discovered("openrouter", "m", context_window=999999)  # a later, different refresh
+    facts = store.get("openrouter", "m")
+    assert facts.context.value == 8192  # first-seen value kept
