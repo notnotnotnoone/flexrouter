@@ -91,3 +91,15 @@ def test_a_provider_name_is_escaped_not_injected(client, config_file):
     with TestClient(create_app(str(config_file))) as c:
         body = c.get("/").text
     assert "<script>bad</script>" not in body
+
+
+def test_nothing_still_tells_the_owner_to_build_the_front_end():
+    from pathlib import Path
+    import flexrouter
+    root = Path(flexrouter.__file__).parent
+    offenders = [
+        path.name
+        for path in root.rglob("*.py")
+        if "npm run build" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
