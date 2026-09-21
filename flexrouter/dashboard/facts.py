@@ -1,0 +1,133 @@
+"""Read-only views of a running router, for the dashboard to render.
+
+Every fact here is computed from objects `LocalRouter` already builds. This
+module never writes, never calls a provider, and never teaches `engine.py`
+anything - the established pattern across ADRs 0009-0014.
+
+It returns plain data. Nothing here knows what HTML is.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass
+class ProviderSummary:
+    name: str
+    base_url: str
+    key_count: int
+    keys_live: int
+    keys_cooling: int
+    keys_parked: int
+    models_total: int
+    quarantined: bool
+    quarantine_reason: Optional[str]
+    state: str  # "ok" | "warn" | "bad"
+
+
+def _models_of(router, provider: str) -> list:
+    """Every configured model belonging to one provider, across all buckets."""
+    seen = []
+    for model_configs in router._cfg.tiers.values():
+        for mc in model_configs:
+            if mc.provider == provider and mc.model not in seen:
+                seen.append(mc.model)
+    return seen
+
+
+def provider_summaries(router, now: Optional[float] = None) -> list[ProviderSummary]:
+    penalties = router._engine._penalties
+    states = router._key_states
+    out = []
+    for name, pcfg in router._cfg.providers.items():
+        records = list(pcfg.keys or [])
+        if records:
+            live = cooling = parked = 0
+            for record in records:
+                status = states.get(name, record.id, now).status
+                if not record.enabled or status in ("benched", "disabled"):
+                    parked += 1
+                elif status == "cooling":
+                    cooling += 1
+                else:
+                    live += 1
+            key_count = len(records)
+        else:
+            # Credentials supplied inline or from the environment carry no
+            # id, so `KeyStateStore` has nothing recorded for them.
+            key_count = live = len(pcfg.api_keys or [])
+            cooling = parked = 0
+
+        quarantined = penalties.is_quarantined(name, "*")
+        reason = penalties.quarantine_reason(name, "*")
+        if quarantined:
+            state = "bad"
+        elif key_count and live == 0:
+            state = "bad"
+        elif cooling or parked:
+            state = "warn"
+        else:
+            state = "ok"
+
+        out.append(ProviderSummary(
+            name=name,
+            base_url=pcfg.base_url,
+            key_count=key_count,
+            keys_live=live,
+            keys_cooling=cooling,
+            keys_parked=parked,
+            models_total=len(_models_of(router, name)),
+            quarantined=quarantined,
+            quarantine_reason=reason,
+            state=state,
+        ))
+    return out
+
+
+def overview(router, now: Optional[float] = None) -> dict:
+    """Everything the front page shows."""
+    summaries = provider_summaries(router, now)
+    penalties = router._engine._penalties
+
+    models_total = 0
+    models_available = 0
+    for name in router._cfg.providers:
+        for model in _models_of(router, name):
+            models_total += 1
+            if not (penalties.is_quarantined(name, model)
+                    or penalties.is_quarantined(name, "*")
+                    or penalties.is_penalized(name, model)):
+                models_available += 1
+
+    entries = getattr(router._error_brain, "_entries", {}) or {}
+    awaiting = sum(1 for e in entries.values()
+                   if getattr(e, "flagged_for_review", False))
+
+    facts_store = getattr(router._model_facts, "_facts", {}) or {}
+
+    return {
+        "providers": {
+            "total": len(summaries),
+            "ok": sum(1 for s in summaries if s.state == "ok"),
+            "warn": sum(1 for s in summaries if s.state == "warn"),
+            "bad": sum(1 for s in summaries if s.state == "bad"),
+        },
+        "keys": {
+            "total": sum(s.key_count for s in summaries),
+            "live": sum(s.keys_live for s in summaries),
+            "cooling": sum(s.keys_cooling for s in summaries),
+            "parked": sum(s.keys_parked for s in summaries),
+        },
+        "models": {"total": models_total, "available": models_available},
+        "learned": {
+            "error_kinds": len(entries),
+            "awaiting_you": awaiting,
+            "models_with_facts": len(facts_store),
+        },
+        "service": {
+            "buckets": list(router._cfg.tiers),
+            "state_dir": router._cfg.state_dir,
+            "port": router._cfg.port or router._cfg.dashboard_port,
+        },
+    }
