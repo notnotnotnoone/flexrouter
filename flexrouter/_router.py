@@ -516,10 +516,12 @@ class LocalRouter:
                     status="empty_response",
                 )
                 self._history.record(self._engine.health_snapshot())
+                verdict = self._error_brain.classify("empty stream response", None)
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": None,
                                  "provider_message": "empty stream response",
                                  "key_id": key_id,
+                                 "verdict": verdict.verdict,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
@@ -549,9 +551,11 @@ class LocalRouter:
                     status="rate_limited",
                 )
                 self._history.record(self._engine.health_snapshot())
+                verdict = self._error_brain.classify(str(exc), 429)
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": 429,
                                  "provider_message": str(exc), "key_id": key_id,
+                                 "verdict": verdict.verdict,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
@@ -572,9 +576,11 @@ class LocalRouter:
                     status="auth_error",
                 )
                 self._history.record(self._engine.health_snapshot())
+                verdict = self._error_brain.classify(str(exc), 401)
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": None,
                                  "provider_message": str(exc), "key_id": key_id,
+                                 "verdict": verdict.verdict,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
@@ -594,9 +600,11 @@ class LocalRouter:
                     status="error",
                 )
                 self._history.record(self._engine.health_snapshot())
+                verdict = self._error_brain.classify(str(exc), exc.status_code)
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": exc.status_code,
                                  "provider_message": str(exc), "key_id": key_id,
+                                 "verdict": verdict.verdict,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
@@ -700,10 +708,12 @@ class LocalRouter:
                         any_yielded = True
                         yield ev
             except BaseException as exc:
+                verdict = self._error_brain.classify(str(exc), getattr(exc, "status_code", None))
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model,
                                  "status": getattr(exc, "status_code", None),
                                  "provider_message": str(exc), "key_id": key_id,
+                                 "verdict": verdict.verdict,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 _write_trace(
                     ok=False,
@@ -805,10 +815,13 @@ class LocalRouter:
                     latency_ms=latency_ms, status="empty_response",
                 )
                 self._history.record(self._engine.health_snapshot())
+                verdict = self._error_brain.classify(
+                    "empty response (no content, no tool calls)", None)
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": None,
                                  "provider_message": "empty response (no content, no tool calls)",
                                  "key_id": key_id,
+                                 "verdict": verdict.verdict,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
