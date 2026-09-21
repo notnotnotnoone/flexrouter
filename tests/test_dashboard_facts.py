@@ -60,15 +60,15 @@ def test_healthy_provider_reads_as_ok(router):
     assert facts.provider_summaries(router)[0].state == "ok"
 
 
-def test_a_key_marked_cooling_reports_as_cooling(router):
+def test_a_provider_whose_only_key_is_resting_reads_as_warn(router):
     pcfg = router._cfg.providers["groq"]
     key_id = pcfg.keys[0].id
     router._key_states.mark_cooling("groq", key_id, 30, "went too fast")
     summary = facts.provider_summaries(router)[0]
     assert summary.keys_cooling == 1
     assert summary.keys_live == 0
-    # When the only key is cooling, provider is bad (no live keys)
-    assert summary.state == "bad"
+    # A resting key comes back on its own, so this is amber, not red.
+    assert summary.state == "warn"
 
 
 def test_a_key_marked_benched_reports_as_parked(router):
@@ -78,6 +78,25 @@ def test_a_key_marked_benched_reports_as_parked(router):
     summary = facts.provider_summaries(router)[0]
     assert summary.keys_parked == 1
     assert summary.state == "bad"
+
+
+def test_a_provider_with_one_benched_and_one_cooling_key_reads_as_warn(router):
+    from flexrouter.keys import KeyRecord
+    pcfg = router._cfg.providers["groq"]
+    # Add a second key to the provider
+    second_key = KeyRecord(id="second-key", secret="secret", label="second", source="test")
+    pcfg.keys.append(second_key)
+
+    # Bench the first key, cool the second
+    router._key_states.mark_benched("groq", pcfg.keys[0].id, "bad key")
+    router._key_states.mark_cooling("groq", pcfg.keys[1].id, 30, "went too fast")
+
+    summary = facts.provider_summaries(router)[0]
+    assert summary.keys_parked == 1
+    assert summary.keys_cooling == 1
+    assert summary.keys_live == 0
+    # One key will recover (cooling), so this is warn, not bad
+    assert summary.state == "warn"
 
 
 def test_a_key_marked_cooling_reports_as_live_after_cooldown_expires(router):

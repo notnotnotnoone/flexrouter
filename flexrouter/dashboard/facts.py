@@ -61,11 +61,12 @@ def provider_summaries(router, now: Optional[float] = None) -> list[ProviderSumm
         reason = penalties.quarantine_reason(name, "*")
         if quarantined:
             state = "bad"
-        elif not key_count:
+        elif key_count == 0:
             state = "bad"
-        elif key_count and live == 0:
+        elif live == 0 and cooling == 0:
+            # Nothing usable and nothing due to recover on its own.
             state = "bad"
-        elif cooling or parked:
+        elif live == 0 or cooling or parked:
             state = "warn"
         else:
             state = "ok"
