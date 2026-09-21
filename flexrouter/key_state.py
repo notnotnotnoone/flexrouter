@@ -54,8 +54,18 @@ class KeyStateStore:
     def _key(self, provider: str, key_id: str) -> str:
         return f"{provider}:{key_id}"
 
-    def get(self, provider: str, key_id: str) -> KeyState:
-        return self._states.get(self._key(provider, key_id), KeyState())
+    def get(self, provider: str, key_id: str, now: Optional[float] = None) -> KeyState:
+        k = self._key(provider, key_id)
+        state = self._states.get(k)
+        if state is None:
+            # Read-only default for a never-seen key — nothing to reset,
+            # nothing to persist.
+            return KeyState()
+        now = now if now is not None else time.time()
+        self._maybe_reset_day(state, now)
+        self._states[k] = state
+        self._save()
+        return state
 
     def _maybe_reset_day(self, state: KeyState, now: float) -> None:
         today = _today(now)
@@ -90,7 +100,7 @@ class KeyStateStore:
         now = now if now is not None else time.time()
         if self.is_available(provider, key_id, now=now):
             return 0.0
-        state = self.get(provider, key_id)
+        state = self.get(provider, key_id, now=now)
         if state.status == "cooling" and state.until is not None:
             return max(0.0, state.until - now)
         return float("inf")
@@ -152,7 +162,8 @@ class KeyStateStore:
                                 now: Optional[float] = None) -> bool:
         if not key_ids:
             return False
-        return all(self.get(provider, kid).status in ("benched", "disabled")
+        now = now if now is not None else time.time()
+        return all(self.get(provider, kid, now=now).status in ("benched", "disabled")
                   for kid in key_ids)
 
     def min_seconds_until_available(self, provider: str, key_ids: list[str],

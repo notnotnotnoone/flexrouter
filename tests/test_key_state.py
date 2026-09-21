@@ -65,12 +65,26 @@ def test_daily_counters_reset_on_a_new_utc_day(tmp_path):
     store = KeyStateStore(str(tmp_path))
     yesterday = datetime.now(timezone.utc) - timedelta(days=1)
     store.mark_success("openrouter", "or-main", tokens=500, latency_ms=10, now=yesterday.timestamp())
-    s = store.get("openrouter", "or-main")
+    s = store.get("openrouter", "or-main", now=yesterday.timestamp())
     assert s.tokens_today == 500
 
     store.mark_success("openrouter", "or-main", tokens=7, latency_ms=10)  # today, real time
     s = store.get("openrouter", "or-main")
     assert s.tokens_today == 7  # not 507 — yesterday's count did not carry over
+
+
+def test_get_alone_also_rolls_over_stale_daily_counters(tmp_path):
+    store = KeyStateStore(str(tmp_path))
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    store.mark_benched("openrouter", "or-main", "bad_key", now=yesterday.timestamp())
+    s = store.get("openrouter", "or-main", now=yesterday.timestamp())
+    assert s.failures_24h == 1
+
+    # New UTC day, and only a read — no intervening mark_* call.
+    s = store.get("openrouter", "or-main")
+    assert s.requests_today == 0
+    assert s.tokens_today == 0
+    assert s.failures_24h == 0
 
 
 def test_all_unavailable_true_only_when_every_key_is_down(tmp_path):
