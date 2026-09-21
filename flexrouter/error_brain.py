@@ -41,6 +41,8 @@ def classify_by_rule(text: str, status: Optional[int]) -> Optional[ErrorVerdict]
         verdict = _STATUS_RULES.get(status)
         if verdict:
             return ErrorVerdict(verdict=verdict, source="rule", confidence=1.0)
+        if status == 400:
+            return ErrorVerdict(verdict="bad_request", source="rule", confidence=1.0)
         if status >= 500:
             return ErrorVerdict(verdict="their_end_temporary", source="rule", confidence=1.0)
 
@@ -87,6 +89,10 @@ class ErrorBrain:
         self._entries: dict[str, ErrorBrainEntry] = {
             k: ErrorBrainEntry(**v) for k, v in read_json(self._path, default={}).items()
         }
+
+    @property
+    def confidence_threshold(self) -> float:
+        return self._threshold
 
     def _save(self) -> None:
         write_json(self._path, {k: asdict(v) for k, v in self._entries.items()})
