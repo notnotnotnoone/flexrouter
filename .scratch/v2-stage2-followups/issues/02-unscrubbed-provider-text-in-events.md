@@ -36,3 +36,11 @@ file on the owner's own machine, readable by his own account, not a response lea
 
 Spec section 3 (the request trace) rewrites this recording path. If Stage 3 lands
 first, do it there and make the trace scrub by construction rather than at each site.
+
+## Resolved
+
+Fixed in v2 Stage 3 (`v2-stage3-request-trace`), commit "fix(events): scrub
+rate-limit details and open events.csv as utf-8". `EventLogger.record` now scrubs
+`detail` internally (so the guarantee holds regardless of caller, not just at the
+`_router.py` call sites), and both file opens in `flexrouter/events.py` use
+`encoding="utf-8"`.

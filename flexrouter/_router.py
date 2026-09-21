@@ -250,7 +250,7 @@ class LocalRouter:
                 self._engine.penalize(route.provider, route.model)
                 self._events.record(
                     route.provider, route.model, "rate_limited",
-                    detail=str(exc),
+                    detail=scrub(str(exc)),
                     penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
                 self._audit.log(
                     tier=tier, provider=route.provider, model=route.model,
@@ -392,7 +392,7 @@ class LocalRouter:
                 self._engine.penalize(route.provider, route.model)
                 self._events.record(
                     route.provider, route.model, "rate_limited",
-                    detail=str(exc),
+                    detail=scrub(str(exc)),
                     penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
                 self._audit.log(
                     tier=tier, provider=route.provider, model=route.model,

@@ -4,6 +4,8 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
+from flexrouter.redact import scrub
+
 _EVENT_TYPES = {"penalized", "recovered", "rate_limited", "timeout", "server_error",
                 "quarantined"}
 
@@ -17,7 +19,7 @@ class EventLogger:
         self._path = self._dir / "events.csv"
         self._recent: deque[dict] = deque(maxlen=500)
         if not self._path.exists():
-            with self._path.open("w", newline="") as f:
+            with self._path.open("w", newline="", encoding="utf-8") as f:
                 csv.DictWriter(f, fieldnames=self.HEADERS).writeheader()
 
     def record(self, provider: str, model: str, event_type: str,
@@ -29,10 +31,10 @@ class EventLogger:
             "provider": provider,
             "model": model,
             "event_type": event_type,
-            "detail": detail,
+            "detail": scrub(str(detail)),
             "penalty_seconds": penalty_seconds,
         }
-        with self._path.open("a", newline="") as f:
+        with self._path.open("a", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=self.HEADERS).writerow(row)
         self._recent.append(row)
 
