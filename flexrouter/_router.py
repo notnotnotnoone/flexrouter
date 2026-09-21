@@ -533,6 +533,10 @@ class LocalRouter:
                 )
                 self._history.record(self._engine.health_snapshot())
                 verdict = self._error_brain.classify("empty stream response", None)
+                if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                        verdict.confidence >= self._error_brain.confidence_threshold:
+                    self._model_facts.record_contradicting_failure(
+                        route.provider, route.model, "vision", trace_id)
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": None,
                                  "provider_message": "empty stream response",
@@ -568,6 +572,10 @@ class LocalRouter:
                 )
                 self._history.record(self._engine.health_snapshot())
                 verdict = self._error_brain.classify(str(exc), 429)
+                if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                        verdict.confidence >= self._error_brain.confidence_threshold:
+                    self._model_facts.record_contradicting_failure(
+                        route.provider, route.model, "vision", trace_id)
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": 429,
                                  "provider_message": str(exc), "key_id": key_id,
@@ -593,6 +601,10 @@ class LocalRouter:
                 )
                 self._history.record(self._engine.health_snapshot())
                 verdict = self._error_brain.classify(str(exc), 401)
+                if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                        verdict.confidence >= self._error_brain.confidence_threshold:
+                    self._model_facts.record_contradicting_failure(
+                        route.provider, route.model, "vision", trace_id)
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": None,
                                  "provider_message": str(exc), "key_id": key_id,
@@ -617,6 +629,10 @@ class LocalRouter:
                 )
                 self._history.record(self._engine.health_snapshot())
                 verdict = self._error_brain.classify(str(exc), exc.status_code)
+                if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                        verdict.confidence >= self._error_brain.confidence_threshold:
+                    self._model_facts.record_contradicting_failure(
+                        route.provider, route.model, "vision", trace_id)
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": exc.status_code,
                                  "provider_message": str(exc), "key_id": key_id,
@@ -725,6 +741,10 @@ class LocalRouter:
                         yield ev
             except BaseException as exc:
                 verdict = self._error_brain.classify(str(exc), getattr(exc, "status_code", None))
+                if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                        verdict.confidence >= self._error_brain.confidence_threshold:
+                    self._model_facts.record_contradicting_failure(
+                        route.provider, route.model, "vision", trace_id)
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model,
                                  "status": getattr(exc, "status_code", None),
@@ -833,6 +853,10 @@ class LocalRouter:
                 self._history.record(self._engine.health_snapshot())
                 verdict = self._error_brain.classify(
                     "empty response (no content, no tool calls)", None)
+                if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                        verdict.confidence >= self._error_brain.confidence_threshold:
+                    self._model_facts.record_contradicting_failure(
+                        route.provider, route.model, "vision", trace_id)
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": None,
                                  "provider_message": "empty response (no content, no tool calls)",
@@ -906,6 +930,8 @@ class LocalRouter:
                 status="ok",
             )
             self._history.record(self._engine.health_snapshot())
+            if vision:
+                self._model_facts.record_success(route.provider, route.model, "vision")
             _write_trace(
                 ok=True,
                 answered_by={"provider": route.provider, "model": route.model, "key_id": key_id},
