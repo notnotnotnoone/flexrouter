@@ -829,6 +829,7 @@ class LocalRouter:
             yield DoneEvent(result=result)
             return
 
+        _write_trace(ok=False)
         raise RouterBusy(f"All models in tier {tier!r} are unavailable after {retries} retries")
 
     def _build_pin_engine(self) -> RoutingEngine:
