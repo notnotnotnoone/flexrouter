@@ -1,3 +1,4 @@
+import copy
 import os
 
 import pytest
@@ -49,9 +50,19 @@ MINIMAL_CONFIG = {
 }
 
 @pytest.fixture
-def config_file(tmp_path):
-    cfg = dict(MINIMAL_CONFIG)
-    cfg["settings"] = dict(cfg["settings"])
+def minimal_config():
+    """A fresh deep copy of MINIMAL_CONFIG, safe for a test to mutate.
+
+    A shallow `dict(MINIMAL_CONFIG)` only copies the top level; writing
+    through to a nested dict (e.g. `cfg["providers"]["groq"]["api_keys"]`)
+    lands on the module-level constant itself and can leak between tests.
+    """
+    return copy.deepcopy(MINIMAL_CONFIG)
+
+
+@pytest.fixture
+def config_file(tmp_path, minimal_config):
+    cfg = minimal_config
     cfg["settings"]["state_dir"] = str(tmp_path / ".flexrouter")
     p = tmp_path / "flexrouter.yaml"
     p.write_text(yaml.dump(cfg))

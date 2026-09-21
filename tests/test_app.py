@@ -32,15 +32,26 @@ OK_RESULT = {
 class FakePenalties:
     def __init__(self):
         self._q: dict[str, dict] = {}
+        self._backoff: dict[str, float] = {}  # "provider/model" -> until epoch
 
     def is_quarantined(self, provider, model):
         return f"{provider}/{model}" in self._q
 
+    def penalize(self, provider, model, seconds=60):
+        """Test helper: put a model under a timed backoff, short of
+        quarantine - mirrors PenaltyBox.penalize()/penalize_short()."""
+        self._backoff[f"{provider}/{model}"] = time.time() + seconds
+
     def is_penalized(self, provider, model):
-        # No test here puts a model under a timed penalty short of
-        # quarantine, so quarantine is the only source of "penalized" this
-        # double needs to model.
-        return self.is_quarantined(provider, model)
+        # Models real PenaltyBox.is_penalized(): true for either a
+        # quarantine or an active backoff penalty, so a test could not
+        # delete this check from facts.py without a fake-backed test
+        # noticing - it used to just alias is_quarantined and so could
+        # never diverge from it.
+        if self.is_quarantined(provider, model):
+            return True
+        until = self._backoff.get(f"{provider}/{model}")
+        return until is not None and time.time() < until
 
     def quarantine_reason(self, provider, model):
         entry = self._q.get(f"{provider}/{model}")
@@ -68,7 +79,7 @@ class FakeKeyStates:
         return True
 
     def get(self, provider, key_id, now=None):
-        return SimpleNamespace(status="live")
+        return SimpleNamespace(status="live", until=None)
 
 
 class FakeErrorBrain:
@@ -98,7 +109,13 @@ class FakeRouter:
             providers={
                 "groq": SimpleNamespace(
                     base_url="https://api.groq.com/openai/v1",
-                    api_keys=["gsk_secret_tail1234"], keys=[]),
+                    api_keys=["gsk_secret_tail1234"],
+                    # Shaped like what config.resolve_keys() actually
+                    # produces for an env-sourced credential (see
+                    # flexrouter/keys.py's KeyRecord) - api_keys and keys
+                    # come from the same records, so non-empty api_keys with
+                    # an empty keys list can't happen for real.
+                    keys=[SimpleNamespace(id="env:GROQ_API_KEY", enabled=True)]),
                 "ollama": SimpleNamespace(
                     base_url="http://localhost:11434/v1", api_keys=[], keys=[]),
             },

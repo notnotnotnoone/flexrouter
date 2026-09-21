@@ -4,7 +4,6 @@ import yaml
 
 from flexrouter._router import LocalRouter
 from flexrouter.dashboard import facts
-from tests.conftest import MINIMAL_CONFIG
 
 
 @pytest.fixture
@@ -15,10 +14,9 @@ def router(config_file):
 
 
 @pytest.fixture
-def router_no_credentials(tmp_path):
+def router_no_credentials(tmp_path, minimal_config):
     """Router with a provider that has no credentials."""
-    cfg = dict(MINIMAL_CONFIG)
-    cfg["settings"] = dict(cfg["settings"])
+    cfg = minimal_config
     cfg["settings"]["state_dir"] = str(tmp_path / ".flexrouter")
     cfg["providers"]["groq"]["api_keys"] = []  # No credentials
     p = tmp_path / "flexrouter.yaml"
@@ -113,6 +111,28 @@ def test_a_key_marked_cooling_reports_as_live_after_cooldown_expires(router):
     assert summary.state == "ok"
 
 
+def test_provider_summaries_does_not_write_when_a_cooldown_has_expired(router):
+    """Rendering the Overview must never write to disk.
+
+    is_available() would flip an expired cooling key back to "live" and
+    persist that, which means a plain GET rewrites key_state.json (and, on
+    Windows, shells out to icacls via harden()) on every render. Reading
+    the expiry directly instead must leave the file untouched.
+    """
+    import time
+    pcfg = router._cfg.providers["groq"]
+    key_id = pcfg.keys[0].id
+    now = time.time()
+    router._key_states.mark_cooling("groq", key_id, 1, "went too fast", now=now)
+
+    path = router._key_states._path
+    before = path.read_text(encoding="utf-8")
+
+    facts.provider_summaries(router, now=now + 31)
+
+    assert path.read_text(encoding="utf-8") == before
+
+
 def test_provider_with_no_credentials_reads_as_bad(router_no_credentials):
     summary = facts.provider_summaries(router_no_credentials)[0]
     assert summary.key_count == 0
@@ -156,6 +176,22 @@ def test_overview_reports_what_has_been_learned(router):
     assert out["learned"]["error_kinds"] == 0
     assert out["learned"]["awaiting_you"] == 0
     assert out["learned"]["models_with_facts"] == 0
+
+
+def test_overview_reports_what_has_been_learned_once_something_has(router):
+    # Real recording paths, not hand-built store entries: classify() is how
+    # ErrorBrain learns a new error kind, and with the router's NullDecider
+    # any genuinely unrecognized text comes back at confidence 0.0, which is
+    # below the review threshold, so it also counts as "awaiting you".
+    router._error_brain.classify("a completely unrecognized provider message", None)
+    # record_discovered() is the genuine way a catalogue refresh teaches the
+    # store a fact about a model (here: its context window).
+    router._model_facts.record_discovered("groq", "llama-3.1-8b-instant", 131072)
+
+    out = facts.overview(router)
+    assert out["learned"]["error_kinds"] == 1
+    assert out["learned"]["awaiting_you"] == 1
+    assert out["learned"]["models_with_facts"] == 1
 
 
 def test_overview_names_the_buckets_and_the_state_directory(router):

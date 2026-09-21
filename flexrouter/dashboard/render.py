@@ -1,13 +1,18 @@
-"""HTML building blocks for the dashboard.
+"""HTML building blocks for the dashboard, plus the site's own menu.
 
 Deliberately not a template engine. The dashboard is a wireframe the owner
 intends to restyle himself, so the markup stays semantic and the whole of
-its appearance lives in one stylesheet. Nothing here knows anything about
-flexrouter - it takes strings and returns strings.
+its appearance lives in one stylesheet. Most of this module - `esc`,
+`attrs`, `tag` - takes strings and returns strings, knowing nothing about
+flexrouter. `AREAS` and `_nav` are the exception: they carry flexrouter's
+own menu labels and know that the overview lives at `/`, because the menu
+has to live somewhere and every page needs the same one.
 
 Escaping rule: `esc` is applied to every value that came from outside this
 module. `tag` does NOT escape its body, because a body is already-rendered
-HTML; whoever builds that body escapes the text going into it.
+HTML; whoever builds that body escapes the text going into it. Use `text`
+for that when you are not already assembling escaped pieces by hand - it
+is the same rule with no way to forget the escaping.
 """
 from __future__ import annotations
 
@@ -33,6 +38,11 @@ def esc(value: object) -> str:
     if value is None:
         return ""
     return escape(str(value), quote=True)
+
+
+def text(*parts: object) -> str:
+    """Escape each part and join them. Use this for anything from outside."""
+    return "".join(esc(p) for p in parts)
 
 
 def attrs(mapping: dict) -> str:

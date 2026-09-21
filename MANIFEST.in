@@ -1,1 +1,2 @@
 recursive-include flexrouter/dashboard/static *
+include flexrouter/dashboard/*.css

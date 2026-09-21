@@ -93,6 +93,31 @@ def test_a_provider_name_is_escaped_not_injected(client, config_file):
     assert "<script>bad</script>" not in body
 
 
+def test_a_provider_base_url_is_escaped_not_injected(client, config_file):
+    # A provider's base address is externally sourced (the owner types it,
+    # or it comes from a saved config) the same way its name is - same
+    # pattern, same guard.
+    import yaml
+    raw = yaml.safe_load(config_file.read_text())
+    raw["providers"]["groq"]["base_url"] = "https://x/<script>bad</script>"
+    config_file.write_text(yaml.dump(raw))
+    with TestClient(create_app(str(config_file))) as c:
+        body = c.get("/").text
+    assert "<script>bad</script>" not in body
+    assert "&lt;script&gt;bad&lt;/script&gt;" in body
+
+
+def test_a_quarantine_reason_is_escaped_not_injected(client):
+    # The reason text originates from a provider's own error response, so it
+    # is exactly as untrusted as a provider's name or address.
+    router = app_module.get_router()
+    router._engine._penalties.quarantine_provider(
+        "groq", "<script>bad</script> said the provider")
+    body = client.get("/").text
+    assert "<script>bad</script>" not in body
+    assert "&lt;script&gt;bad&lt;/script&gt;" in body
+
+
 def test_nothing_still_tells_the_owner_to_build_the_front_end():
     from pathlib import Path
     import flexrouter

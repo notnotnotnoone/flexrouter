@@ -32,6 +32,17 @@ def test_tag_does_not_escape_its_body():
     assert render.tag("div", "<b>x</b>") == "<div><b>x</b></div>"
 
 
+def test_text_escapes_and_joins_its_parts():
+    assert render.text("<b>", "x", "</b>") == "&lt;b&gt;x&lt;/b&gt;"
+
+
+def test_text_escapes_every_part_not_only_the_first():
+    # A prior bug class this guards: escaping only parts[0] would let markup
+    # in a later argument through untouched.
+    assert render.text("safe", "<script>bad</script>") == \
+        "safe&lt;script&gt;bad&lt;/script&gt;"
+
+
 def test_areas_lists_all_nine_in_menu_order():
     slugs = [slug for slug, _, _ in render.AREAS]
     assert slugs == [

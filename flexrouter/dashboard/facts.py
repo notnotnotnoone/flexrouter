@@ -8,6 +8,7 @@ It returns plain data. Nothing here knows what HTML is.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -39,6 +40,7 @@ def _models_of(router, provider: str) -> list:
 def provider_summaries(router, now: Optional[float] = None) -> list[ProviderSummary]:
     penalties = router._engine._penalties
     states = router._key_states
+    resolved_now = now if now is not None else time.time()
     out = []
     for name, pcfg in router._cfg.providers.items():
         records = list(pcfg.keys or [])
@@ -46,15 +48,23 @@ def provider_summaries(router, now: Optional[float] = None) -> list[ProviderSumm
         for record in records:
             if not record.enabled:
                 parked += 1
-            elif states.is_available(name, record.id, now):
+                continue
+            # A read, not a call to is_available(): that method mutates and
+            # persists a cooling key whose cooldown has elapsed (it flips the
+            # stored status to "live"). Rendering a page must never write to
+            # disk, so the same expiry check is done here without saving it.
+            state = states.get(name, record.id, now)
+            expired_cooldown = (
+                state.status == "cooling"
+                and state.until is not None
+                and resolved_now >= state.until
+            )
+            if state.status == "live" or expired_cooldown:
                 live += 1
+            elif state.status == "cooling":
+                cooling += 1
             else:
-                # Key is not available and status is cooling
-                status = states.get(name, record.id, now).status
-                if status == "cooling":
-                    cooling += 1
-                else:
-                    parked += 1
+                parked += 1
         key_count = len(records)
 
         quarantined = penalties.is_quarantined(name, "*")
@@ -86,9 +96,19 @@ def provider_summaries(router, now: Optional[float] = None) -> list[ProviderSumm
     return out
 
 
-def overview(router, now: Optional[float] = None) -> dict:
-    """Everything the front page shows."""
-    summaries = provider_summaries(router, now)
+def overview(router, now: Optional[float] = None,
+             summaries: Optional[list[ProviderSummary]] = None) -> dict:
+    """Everything the front page shows.
+
+    Pass `summaries` when the caller already has a `provider_summaries()`
+    result (e.g. because it also renders a table from it) so the page
+    doesn't compute the same thing twice against two different clocks,
+    which can make a summary tile and a table row disagree about a key
+    whose cooldown elapsed in between. `provider_summaries` stays callable
+    on its own for callers that only need it.
+    """
+    if summaries is None:
+        summaries = provider_summaries(router, now)
     penalties = router._engine._penalties
 
     models_total = 0
@@ -102,8 +122,7 @@ def overview(router, now: Optional[float] = None) -> dict:
                 models_available += 1
 
     entries = router._error_brain._entries
-    awaiting = sum(1 for e in entries.values()
-                   if getattr(e, "flagged_for_review", False))
+    awaiting = sum(1 for e in entries.values() if e.flagged_for_review)
 
     facts_store = router._model_facts._facts
 

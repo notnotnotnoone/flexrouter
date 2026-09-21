@@ -43,7 +43,8 @@ def _tile(label: str, value: object, note: str = "") -> str:
 
 
 def _overview_body(router) -> str:
-    data = facts.overview(router)
+    summaries = facts.provider_summaries(router)
+    data = facts.overview(router, summaries=summaries)
     p, k, m, learned = data["providers"], data["keys"], data["models"], data["learned"]
 
     tiles = tag("div", "".join([
@@ -61,7 +62,7 @@ def _overview_body(router) -> str:
         tag("th", "Provider"), tag("th", "State"), tag("th", "Address"),
         tag("th", "Keys"), tag("th", "Models"), tag("th", "Why"),
     ]))]
-    for s in facts.provider_summaries(router):
+    for s in summaries:
         rows.append(tag("tr", "".join([
             tag("td", esc(s.name)),
             tag("td", esc(s.state), cls=f"state-{s.state}"),
@@ -89,7 +90,7 @@ def _overview_body(router) -> str:
 
 
 def _stub_body(slug: str, label: str) -> str:
-    where = _PLANNED.get(slug, "a later sub-plan")
+    where = _PLANNED[slug]
     return (
         tag("h1", esc(label))
         + tag("div",
@@ -122,6 +123,11 @@ def _register_stub(slug: str, label: str) -> None:
         return HTMLResponse(page(label, slug, _stub_body(slug, label)))
 
 
-for _slug, _label, _ in AREAS:
-    if _slug != "overview":
-        _register_stub(_slug, _label)
+_LABELS = {slug: label for slug, label, _ in AREAS}
+
+# Driven by _PLANNED's keys, not by excluding "overview" from AREAS: a slug
+# added to _PLANNED without a real route here gets a stub, and a slug with
+# a real route removed from _PLANNED (as each sub-plan lands) stops getting
+# one automatically. One dict is the only switch between "stub" and "real".
+for _slug in _PLANNED:
+    _register_stub(_slug, _LABELS[_slug])
