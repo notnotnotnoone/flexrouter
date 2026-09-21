@@ -458,6 +458,9 @@ class LocalRouter:
 
         for attempt in range(retries + 1):
             route = self._engine_for(tier).select(tier, estimated_tokens, vision, session_id)
+            key_id: Optional[str] = None
+            if route is not None:
+                route, key_id = self._pick_key(route)
 
             if route is None:
                 # Unlike the sync path this loop has no wait=False escape, so
@@ -485,6 +488,8 @@ class LocalRouter:
             # RateLimitError/ProviderError/RouterError before its first
             # yield. Once we're past this point without an exception, no
             # further failure may trigger a retry (no retry after commit).
+            if key_id is not None:
+                self._key_states.begin_request(route.provider, key_id)
             try:
                 first_chunk = await stream.__anext__()
             except StopAsyncIteration:
@@ -505,7 +510,7 @@ class LocalRouter:
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": None,
                                  "provider_message": "empty stream response",
-                                 "key_id": None,
+                                 "key_id": key_id,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
@@ -519,6 +524,11 @@ class LocalRouter:
                 continue
             except RateLimitError as exc:
                 self._engine.penalize(route.provider, route.model)
+                if key_id is not None:
+                    self._key_states.mark_cooling(
+                        route.provider, key_id,
+                        self._penalties.penalty_seconds(route.provider, route.model),
+                        "too_fast")
                 self._events.record(
                     route.provider, route.model, "rate_limited",
                     detail=scrub(str(exc)),
@@ -532,7 +542,7 @@ class LocalRouter:
                 self._history.record(self._engine.health_snapshot())
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": 429,
-                                 "provider_message": str(exc), "key_id": None,
+                                 "provider_message": str(exc), "key_id": key_id,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
@@ -545,7 +555,7 @@ class LocalRouter:
                 await asyncio.sleep(backoff)
                 continue
             except RouterError as exc:
-                self._handle_auth_failure(route, exc)
+                self._handle_auth_failure(route, exc, key_id)
                 self._audit.log(
                     tier=tier, provider=route.provider, model=route.model,
                     prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
@@ -555,7 +565,7 @@ class LocalRouter:
                 self._history.record(self._engine.health_snapshot())
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": None,
-                                 "provider_message": str(exc), "key_id": None,
+                                 "provider_message": str(exc), "key_id": key_id,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
@@ -577,7 +587,7 @@ class LocalRouter:
                 self._history.record(self._engine.health_snapshot())
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model, "status": exc.status_code,
-                                 "provider_message": str(exc), "key_id": None,
+                                 "provider_message": str(exc), "key_id": key_id,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 yield AttemptFailedEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
@@ -589,6 +599,9 @@ class LocalRouter:
                     raise RouterBusy(f"All retries exhausted for tier {tier!r}")
                 await asyncio.sleep(backoff)
                 continue
+            finally:
+                if key_id is not None:
+                    self._key_states.end_request(route.provider, key_id)
 
             # Committed: a delta (or a clean empty stream) arrived with no
             # error. From here on, any failure propagates as a plain
@@ -681,7 +694,7 @@ class LocalRouter:
                 attempts.append({"n": attempt + 1, "provider": route.provider,
                                  "model": route.model,
                                  "status": getattr(exc, "status_code", None),
-                                 "provider_message": str(exc), "key_id": None,
+                                 "provider_message": str(exc), "key_id": key_id,
                                  "ms": int((time.monotonic() - start) * 1000)})
                 _write_trace(
                     ok=False,
@@ -842,6 +855,8 @@ class LocalRouter:
 
             self._engine.record_request(route.provider, route.model, total_tokens)
             self._quota_tracker.record(route.provider, route.model)
+            if key_id is not None:
+                self._key_states.mark_success(route.provider, key_id, total_tokens, latency_ms)
             self._audit.log(
                 tier=tier,
                 provider=route.provider,
@@ -855,7 +870,7 @@ class LocalRouter:
             self._history.record(self._engine.health_snapshot())
             _write_trace(
                 ok=True,
-                answered_by={"provider": route.provider, "model": route.model, "key_id": None},
+                answered_by={"provider": route.provider, "model": route.model, "key_id": key_id},
                 tokens={"in": prompt_tokens, "out": completion_tokens},
                 ms_to_first_token=(
                     int((first_token_at - start) * 1000) if first_token_at else None),
