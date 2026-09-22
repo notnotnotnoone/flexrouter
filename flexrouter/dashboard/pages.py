@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -20,7 +21,8 @@ from flexrouter import keys as keystore
 from flexrouter import overrides as ov
 from flexrouter import score_facts
 from flexrouter import service_keys
-from flexrouter.dashboard import facts, keytest, pending_actions, ranking, settings_write
+from flexrouter.dashboard import (charts, facts, keytest, pending_actions,
+                                  ranking, settings_write, stats)
 from flexrouter.dashboard.render import attrs, esc, page, tag
 
 pages = APIRouter()
@@ -65,65 +67,394 @@ def _redirect_with_message(path: str, ok: bool, message: str) -> RedirectRespons
     return RedirectResponse(url=f"{path}?{qs}", status_code=303)
 
 
-def _tile(label: str, value: object, note: str = "") -> str:
+def _panel(title: str, body: str, *, sub: str = "", action: str = "") -> str:
+    """A titled block on the Overview. `body` is already-rendered HTML."""
+    head = tag("h2", esc(title))
+    if sub:
+        head += tag("span", esc(sub), cls="sub")
+    if action:
+        head += tag("span", "", cls="spacer") + action
+    return tag("section", tag("div", head, cls="ph") + body, cls="panel")
+
+
+def _num(value: object) -> str:
+    """A whole number with thousands separators, escaped."""
+    try:
+        return esc(f"{int(value):,}")
+    except (TypeError, ValueError):
+        return esc(value)
+
+
+def _clock(iso: str) -> str:
+    """A stored UTC timestamp as a local wall clock.
+
+    Traces are written in UTC and the Overview's chart buckets by local
+    hour (`stats.recent_window`). Printing the raw UTC time next to that
+    chart would put two different clocks on one screen, and the reader has
+    no way to tell which one a row belongs to.
+    """
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
+    except (ValueError, AttributeError):
+        return iso or ""
+    return dt.strftime("%H:%M:%S")
+
+
+def _pct(fraction) -> str:
+    if fraction is None:
+        return "-"
+    return f"{fraction * 100:.1f}%".replace(".0%", "%")
+
+
+def _chart_series(window: dict) -> list[dict]:
+    """The providers the chart draws, folded to the number of colours.
+
+    A seventh provider would reuse a colour and quietly lie about who
+    answered, so everything past the sixth busiest becomes one "other"
+    band. The table underneath still lists every provider by name.
+    """
+    provs = window["providers"]
+    if len(provs) <= charts.MAX_SERIES:
+        return provs
+    head = provs[:charts.MAX_SERIES - 1]
+    tail = provs[charts.MAX_SERIES - 1:]
+    hours = window["hours"]
+    return head + [{
+        "name": f"{len(tail)} others",
+        "values": [sum(p["values"][i] for p in tail) for i in range(hours)],
+        "requests": sum(p["requests"] for p in tail),
+    }]
+
+
+def _series_colors(series: list[dict]) -> dict:
+    return {s["name"]: charts.color_for(i) for i, s in enumerate(series)}
+
+
+def _swatch(color: str) -> str:
+    return tag("span", "", cls="swatch", style=f"background:{color}")
+
+
+def _overview_verdict(data: dict, summaries: list, window: dict) -> str:
+    p = data["providers"]
+    needs_you = data["needs_you"]
+
+    if needs_you:
+        thing = "thing" if needs_you == 1 else "things"
+        headline = f"{needs_you} {thing} need{'s' if needs_you == 1 else ''} you."
+    elif p["bad"]:
+        headline = "Serving, with a provider down."
+    else:
+        headline = "Serving normally."
+
+    # The headline already says how much needs the owner, so the tags only
+    # carry what it doesn't: how the providers themselves are doing.
+    tags = [tag("span", esc(f"{p['ok']} of {p['total']} providers fine"),
+                cls="tag state-ok")]
+    if p["warn"]:
+        tags.append(tag("span", esc(f"{p['warn']} unsettled"), cls="tag state-warn"))
+    if p["bad"]:
+        tags.append(tag("span", esc(f"{p['bad']} down"), cls="tag state-bad"))
+
+    if window["requests"] == 0:
+        story = ("Nothing has come through in the last 24 hours. Point an app at "
+                 "this address and the rest of this page fills in.")
+    else:
+        busiest = window["providers"][0]
+        share = busiest["requests"] / window["requests"]
+        story = (f"{window['requests']:,} requests in the last 24 hours, "
+                 f"{_pct(window['answered_rate'])} answered. "
+                 f"{busiest['name']} carried {_pct(share)} of them.")
+
+    minis = [
+        ("Median reply", f"{window['latency']['p50']} ms"
+         if window["latency"]["p50"] is not None else "-"),
+        ("Slowest 5%", f"{window['latency']['p95']} ms"
+         if window["latency"]["p95"] is not None else "-"),
+        ("Busiest hour", f"{window['peak_hour']:,} req"),
+    ]
+    mini_html = "".join(
+        tag("div", tag("span", esc(label)) + tag("b", esc(value)), cls="mini")
+        for label, value in minis
+    )
+
     return tag(
         "div",
-        tag("span", esc(label)) + tag("b", esc(value)) + tag("small", esc(note)),
-        cls="tile",
+        tag("div", tag("strong", esc(headline)) + "".join(tags), cls="verdict-line")
+        + tag("p", esc(story))
+        + tag("div", mini_html, cls="minis"),
+        cls="panel verdict",
     )
+
+
+def _overview_tally(data: dict, window: dict) -> str:
+    m, k = data["models"], data["keys"]
+    splits = [
+        (f"{m['available']}", f" / {m['total']}", "Models up"),
+        (f"{k['live']}", f" / {k['total']}", "Keys live"),
+        (_pct(window["answered_rate"]), "", "Answered"),
+    ]
+    split_html = "".join(
+        tag("div",
+            tag("b", esc(big) + tag("i", esc(rest)))
+            + tag("span", esc(label)),
+            )
+        for big, rest, label in splits
+    )
+    return tag(
+        "div",
+        tag("span", _num(window["requests"]), cls="tally-big")
+        + tag("span", "requests in the last 24 hours", cls="tally-sub")
+        + tag("div", split_html, cls="tally-split"),
+        cls="panel tally",
+    )
+
+
+def _chart_table(window: dict, series: list[dict]) -> str:
+    """The same numbers as the chart, as a table.
+
+    A chart is a picture; this is what a screen reader, a copy-paste and a
+    "what exactly was that spike" all need.
+    """
+    header = tag("tr", "".join(
+        [tag("th", "Hour")]
+        + [tag("th", esc(s["name"])) for s in series]
+        + [tag("th", "Total"), tag("th", "Failed")]
+    ))
+    rows = [header]
+    for i, label in enumerate(window["labels"]):
+        rows.append(tag("tr", "".join(
+            [tag("td", esc(label))]
+            + [tag("td", esc(s["values"][i])) for s in series]
+            + [tag("td", esc(window["totals_by_hour"][i])),
+               tag("td", esc(window["fails_by_hour"][i]))]
+        )))
+    return tag(
+        "details",
+        tag("summary", "View as a table")
+        + tag("div", tag("table", "".join(rows)), cls="scroll"),
+        cls="table-view",
+    )
+
+
+def _overview_chart(window: dict) -> str:
+    if window["requests"] == 0:
+        return _panel(
+            "Who answered, hour by hour",
+            tag("div", tag("p", "No traffic yet in this window.", cls="note"), cls="pb"),
+        )
+
+    series = _chart_series(window)
+    colors = _series_colors(series)
+    legend = "".join(
+        tag("span",
+            _swatch(colors[s["name"]])
+            + tag("span", esc(s["name"]))
+            + tag("span", _num(s["requests"]), cls="n"),
+            cls="legend-item")
+        for s in series
+    )
+    svg = charts.stacked_hours(series, window["labels"], window["fails_by_hour"])
+    return _panel(
+        "Who answered, hour by hour",
+        tag("div", tag("div", svg, cls="plot") + _chart_table(window, series), cls="pb"),
+        action=tag("div", legend, cls="legend"),
+    )
+
+
+def _overview_providers(summaries: list, window: dict) -> str:
+    by_name = {p["name"]: p for p in window["providers"]}
+    series = _chart_series(window)
+    colors = _series_colors(series)
+    hours = window["hours"]
+
+    header = tag("tr", "".join(tag("th", h) for h in [
+        "Provider", "State", "Keys", "Requests", "Answered",
+        "Last 24 hours", "Why",
+    ]))
+    rows = [header]
+    for s in summaries:
+        seen = by_name.get(s.name)
+        color = colors.get(s.name, charts.IDLE_COLOR)
+        values = seen["values"] if seen else [0] * hours
+        states = seen["states"] if seen else ["none"] * hours
+        reqs = seen["requests"] if seen else 0
+        failed = seen["failed"] if seen else 0
+        answered = _pct((reqs - failed) / reqs) if reqs else "-"
+
+        strip = tag("span", "".join(
+            tag("span", "", cls=f"seg seg-{st}") for st in states), cls="strip")
+        shape = tag("div", charts.sparkline(values, color) + strip, cls="shape")
+
+        rows.append(tag("tr", "".join([
+            tag("td",
+                tag("span", _swatch(color) + esc(s.name), cls="prov-name")
+                + tag("span", esc(s.base_url), cls="prov-url")),
+            tag("td", tag("span", esc(s.state), cls=f"state-{s.state}")),
+            tag("td", esc(f"{s.keys_live} of {s.key_count} in use"), cls="dim"),
+            tag("td", _num(reqs), cls="num"),
+            tag("td", esc(answered), cls="num"),
+            tag("td", shape),
+            tag("td", esc(s.quarantine_reason or ""), cls="dim"),
+        ])))
+
+    return _panel(
+        "Providers",
+        tag("div", tag("table", "".join(rows), cls="matrix"), cls="scroll"),
+        sub="each block is one hour; grey means no traffic",
+        action=tag("a", "Manage keys", href="/providers", cls="button-link"),
+    )
+
+
+def _overview_needs_you(broken_data: dict) -> str:
+    items = broken_data["needs_you"]
+    if not items:
+        return _panel(
+            "Needs you",
+            tag("div", tag("p", "Nothing needs you right now.", cls="note"), cls="pb"),
+        )
+
+    body = ""
+    for item in items:
+        where = item.provider
+        if item.detail:
+            where = f"{where} - {item.detail}" if where else item.detail
+        what = tag("b", esc(_KIND_LABELS.get(item.kind, item.kind)))
+        if where:
+            what += tag("span", esc(where))
+        body += tag(
+            "div",
+            tag("span", "", cls="todo-mark")
+            + tag("span", what, cls="todo-where")
+            + tag("span", esc(item.reason), cls="todo-why"),
+            cls="todo-item",
+        )
+    return _panel(
+        "Needs you",
+        body,
+        action=tag("a", "What's broken", href="/broken", cls="button-link"),
+    )
+
+
+def _overview_buckets(router, window: dict) -> str:
+    counts = {b["bucket"]: b["requests"] for b in window["buckets"]}
+    names = list(router._cfg.tiers)
+    for name in counts:
+        if name not in names:
+            names.append(name)
+    if not names:
+        return _panel("Buckets your apps can ask for",
+                      tag("div", tag("p", "No buckets set up.", cls="note"), cls="pb"))
+
+    peak = max([counts.get(n, 0) for n in names] or [0])
+    ordered = sorted(names, key=lambda n: (-counts.get(n, 0), n))
+    rows = ""
+    for name in ordered:
+        n = counts.get(name, 0)
+        width = (n / peak * 100) if peak else 0
+        rows += tag(
+            "div",
+            tag("span", esc(name), cls="bucket-name")
+            + tag("span", tag("span", "", cls="bucket-fill",
+                              style=f"width:{width:.1f}%"), cls="bucket-track")
+            + tag("span", _num(n), cls="bucket-n"),
+            cls="bucket-row",
+        )
+    return _panel("Buckets your apps can ask for",
+                  tag("div", rows, cls="pb"),
+                  sub="requests in the last 24 hours")
+
+
+def _overview_latency(window: dict) -> str:
+    models = window["latency"]["per_model"]
+    if not models:
+        return _panel("How fast each model replied",
+                      tag("div", tag("p", "No answered requests yet.", cls="note"), cls="pb"))
+
+    top = max(m["p95"] for m in models) or 1
+    rows = ""
+    for m in models:
+        rows += tag(
+            "div",
+            tag("div",
+                tag("div", esc(m["model"]), cls="lat-name")
+                + tag("div",
+                      tag("span", "", cls="lat-track")
+                      + tag("span", "", cls="lat-p95",
+                            style=f"width:{m['p95'] / top * 100:.1f}%")
+                      + tag("span", "", cls="lat-p50",
+                            style=f"width:{m['p50'] / top * 100:.1f}%"),
+                      cls="lat-bar"))
+            + tag("div", esc(f"{m['p50']:,}") + tag("span", esc(f" / {m['p95']:,}"), cls="dim"),
+                  cls="lat-figs"),
+            cls="lat-row",
+        )
+    return _panel("How fast each model replied",
+                  tag("div", rows, cls="pb"),
+                  sub="median / slowest 5%, in ms")
+
+
+def _overview_feed(router) -> str:
+    rows_data = facts.recent_requests(router, limit=8)
+    if not rows_data:
+        return _panel("Last requests",
+                      tag("div", tag("p", "Nothing has come through yet.", cls="note"), cls="pb"))
+
+    rows = ""
+    for r in rows_data:
+        answered = (f"{r.answered_by['provider']}/{r.answered_by['model']}"
+                    if r.answered_by else "nothing answered")
+        hops = ""
+        if r.skipped_count:
+            plural = "" if r.skipped_count == 1 else "s"
+            hops = tag("span", esc(f" · {r.skipped_count} hop{plural}"), cls="hop")
+        rows += tag(
+            "div",
+            tag("span", esc(_clock(r.at)), cls="feed-time")
+            + tag("span", esc(r.bucket), cls="feed-bucket")
+            + tag("span", esc(answered) + hops, cls="feed-model")
+            + tag("span", esc(f"{r.ms_total:,} ms"),
+                  cls="feed-ms state-ok" if r.ok else "feed-ms state-bad"),
+            cls="feed-row",
+        )
+    return _panel("Last requests",
+                  tag("div", rows, cls="pb"),
+                  sub="newest first",
+                  action=tag("a", "Open Requests", href="/requests", cls="button-link"))
 
 
 def _overview_body(router) -> str:
     summaries = facts.provider_summaries(router)
-    data = facts.overview(router, summaries=summaries)
-    p, k, m, learned = data["providers"], data["keys"], data["models"], data["learned"]
+    broken_data = facts.broken(router)
+    data = facts.overview(router, summaries=summaries, broken_data=broken_data)
+    window = stats.recent_window(router._cfg.state_dir)
 
-    tiles = tag("div", "".join([
-        _tile("Providers", p["total"],
-              f"{p['ok']} fine, {p['warn']} unsettled, {p['bad']} down"),
-        _tile("Keys held", k["total"],
-              f"{k['live']} in use, {k['cooling']} resting, {k['parked']} parked"),
-        _tile("Models", f"{m['available']} of {m['total']}", "reachable right now"),
-        _tile("Failures understood", learned["error_kinds"],
-              f"{learned['awaiting_you']} waiting for you"),
-        _tile("Models it has learned about", learned["models_with_facts"], ""),
-    ]), cls="tiles")
-
-    rows = [tag("tr", "".join([
-        tag("th", "Provider"), tag("th", "State"), tag("th", "Address"),
-        tag("th", "Keys"), tag("th", "Models"), tag("th", "Why"),
-    ]))]
-    for s in summaries:
-        rows.append(tag("tr", "".join([
-            tag("td", esc(s.name)),
-            tag("td", esc(s.state), cls=f"state-{s.state}"),
-            tag("td", esc(s.base_url)),
-            tag("td", esc(f"{s.keys_live} of {s.key_count} in use")),
-            tag("td", esc(s.models_total)),
-            tag("td", esc(s.quarantine_reason or "")),
-        ])))
-
-    buckets = ", ".join(data["service"]["buckets"]) or "none set up"
-
-    needs_you = data["needs_you"]
-    if needs_you:
-        plural = "" if needs_you == 1 else "s"
-        message = f"{needs_you} thing{plural} need{'s' if needs_you == 1 else ''} you - see What's broken."
-        tail = tag("p", tag("a", esc(message), href="/broken"), cls="note")
-    else:
-        tail = tag("p", "Nothing needs you right now.", cls="note")
-
-    return (
+    header = tag(
+        "div",
         tag("h1", "Overview")
-        + tag("p", "Everything at a glance. Apps point here instead of at "
-                   "OpenAI, and this is what the router can reach for them.",
-              cls="lede")
-        + tiles
-        + tag("h3", "Every provider")
-        + tag("table", "".join(rows))
-        + tag("h3", "Buckets your apps can ask for")
-        + tag("p", esc(buckets))
-        + tail
+        + tag("span", "last 24 hours", cls="where"),
+        cls="page-head",
+    )
+
+    banner = tag("div",
+                 _overview_verdict(data, summaries, window)
+                 + _overview_tally(data, window),
+                 cls="ov-banner")
+
+    row2 = tag("div",
+               _overview_chart(window)
+               + tag("div",
+                     _overview_needs_you(broken_data) + _overview_buckets(router, window),
+                     cls="ov-stack"),
+               cls="ov-row")
+
+    row4 = tag("div",
+               _overview_latency(window) + _overview_feed(router),
+               cls="ov-duo")
+
+    return header + tag(
+        "div",
+        banner + row2 + _overview_providers(summaries, window) + row4,
+        cls="ov",
     )
 
 

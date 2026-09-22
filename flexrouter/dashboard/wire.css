@@ -1,65 +1,637 @@
-/* A wireframe, on purpose. The owner restyles this himself later; the job
-   here is legible structure, not appearance. System fonts only - no network
-   request, nothing to fail. */
+/* The dashboard's whole appearance, in one file.
+   No build step, no framework: the markup in render.py and pages.py stays
+   semantic and every rule below hangs off an element or one of the handful
+   of class names those modules emit. Adding a page needs no CSS.
+
+   Palette: a neutral light grey field, panels a shade lighter, one orange
+   accent. Orange means "this wants you" - it is the brand colour, the
+   interactive colour and the attention colour at once, which in a monitoring
+   screen are the same idea. Green means fine, red means down. Nothing else
+   is coloured, so colour always carries meaning.
+
+   System fonts only - no network request, nothing to fail. */
+
+:root {
+  --ground:    #ebebec;   /* the page's field                       */
+  --panel:     #f7f7f8;   /* anything sitting on the field          */
+  --inset:     #fdfdfd;   /* inputs, and panels on top of panels    */
+  --wash:      #e3e3e5;   /* filled tracks, hovered rows            */
+  --rule:      #dcdcde;
+  --rule-2:    #c2c2c6;
+  --ink:       #17171a;
+  --ink-2:     #55555c;
+  --ink-3:     #8a8a91;
+  --accent:    #e0570b;
+  --accent-ink:#b8450a;
+  --accent-wash:#fbe8da;
+  --ok:        #167a48;
+  --ok-wash:   #e0eee6;
+  --bad:       #c32e24;
+  --bad-wash:  #f8e2e0;
+
+  /* Chart series, assigned by position and never cycled. Checked for
+     colour-blind separation against both surfaces; the sixth slot is the
+     last one - a seventh series folds into "others" instead. */
+  --s1: #e8590c;  --s2: #2a78d6;  --s3: #1baf7a;
+  --s4: #b08307;  --s5: #4a3aa7;  --s6: #e87ba4;
+  --s0: #9c9792;  /* no traffic */
+
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground:    #121213;
+    --panel:     #1a1a1c;
+    --inset:     #202023;
+    --wash:      #28282b;
+    --rule:      #2e2e32;
+    --rule-2:    #454549;
+    --ink:       #f2f2f4;
+    --ink-2:     #a8a8b0;
+    --ink-3:     #76767e;
+    --accent:    #f4762a;
+    --accent-ink:#f9a36b;
+    --accent-wash:#2d1a0e;
+    --ok:        #2fa468;
+    --ok-wash:   #13251b;
+    --bad:       #e0625a;
+    --bad-wash:  #2b1513;
+
+    --s1: #e2622a;  --s2: #3987e5;  --s3: #199e70;
+    --s4: #c98500;  --s5: #9085e9;  --s6: #d55181;
+    --s0: #6b6760;
+  }
+}
 
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
-  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
-  color: #111;
-  background: #fff;
+  background: var(--ground);
+  color: var(--ink);
+  font: 13px/1.45 var(--sans);
+  -webkit-font-smoothing: antialiased;
 }
 
-.shell { display: flex; align-items: flex-start; }
+/* ── shell ─────────────────────────────────────────────── */
+
+.shell { display: flex; align-items: flex-start; min-height: 100vh; }
 
 .nav {
-  width: 190px;
+  width: 198px;
   flex: none;
-  padding: 16px 10px;
-  border-right: 1px solid #ccc;
-  min-height: 100vh;
+  padding: 16px 10px 24px;
+  position: sticky;
+  top: 0;
+  max-height: 100vh;
+  overflow-y: auto;
 }
 .nav h2 {
-  font-size: 11px;
+  font-size: 9.5px;
+  font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: .08em;
-  color: #666;
-  margin: 14px 0 4px;
+  letter-spacing: .11em;
+  color: var(--ink-3);
+  margin: 16px 0 5px;
+  padding: 0 8px;
 }
 .nav h2:first-child { margin-top: 0; }
 .nav a {
+  position: relative;
   display: block;
-  padding: 4px 6px;
-  color: #06c;
+  padding: 4px 8px;
+  margin-bottom: 1px;
+  border-radius: 3px;
+  font-size: 12.5px;
+  color: var(--ink-2);
   text-decoration: none;
+  transition: color 170ms ease, background-color 170ms ease;
 }
-.nav a:hover { text-decoration: underline; }
-.nav a[aria-current] { font-weight: 700; color: #111; background: #eee; }
+.nav a:hover { color: var(--ink); background: var(--wash); }
+.nav a[aria-current] {
+  color: var(--ink);
+  font-weight: 500;
+  background: var(--panel);
+}
+.nav a[aria-current]::before {
+  content: "";
+  position: absolute;
+  left: -10px; top: 4px; bottom: 4px;
+  width: 2px;
+  background: var(--accent);
+}
+.nav a:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
 
-.main { flex: 1; min-width: 0; padding: 16px 20px 60px; }
-.main h1 { font-size: 20px; margin: 0 0 4px; }
-.main h3 { font-size: 14px; margin: 22px 0 6px; }
-.lede { color: #444; margin: 0 0 18px; max-width: 70ch; }
+.main {
+  flex: 1;
+  min-width: 0;
+  padding: 18px 16px 56px 0;
+}
 
-table { border-collapse: collapse; margin: 8px 0; }
-th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: left; font-size: 13px; }
-th { background: #eee; font-weight: 600; }
+/* ── headings and prose ────────────────────────────────── */
 
-.tiles { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
-.tile { border: 1px solid #ccc; padding: 8px 10px; min-width: 130px; }
-.tile b { display: block; font-size: 18px; }
-.tile span { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #666; }
+.main h1 {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -.015em;
+  margin: 0 0 3px;
+}
+.main h3 {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: -.005em;
+  margin: 26px 0 8px;
+}
+.lede {
+  color: var(--ink-2);
+  font-size: 12.5px;
+  margin: 0 0 16px;
+  max-width: 68ch;
+}
+.note {
+  color: var(--ink-3);
+  font-size: 11.5px;
+  max-width: 68ch;
+  margin: 10px 0 0;
+}
+.note a { color: var(--accent-ink); text-decoration: none; border-bottom: 1px solid var(--accent-wash); }
+.note a:hover { border-bottom-color: var(--accent); }
 
-.state-ok::before    { content: "[ok] "; }
-.state-warn::before  { content: "[!] "; }
-.state-bad::before   { content: "[X] "; }
+.stub {
+  background: var(--panel);
+  border: 1px dashed var(--rule-2);
+  border-radius: 5px;
+  padding: 14px 16px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  max-width: 68ch;
+}
 
-.stub { border: 1px dashed #999; padding: 14px; color: #444; max-width: 70ch; }
-.note { color: #666; font-size: 12px; max-width: 70ch; }
+/* Links inside a page. The menu has its own rules above; these are the
+   ones that appear in a sentence or a table cell, and a default browser
+   blue would be the only colour on the screen that means nothing. */
+
+.main a {
+  color: var(--accent-ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--accent-wash);
+}
+.main a:hover { border-bottom-color: var(--accent); }
+.main a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.main h4 { font-size: 11.5px; font-weight: 600; margin: 18px 0 6px; }
+.main ul { margin: 6px 0; padding-left: 17px; }
+.main li { margin: 3px 0; }
+
+/* ── tiles ─────────────────────────────────────────────── */
+
+.tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  overflow: hidden;
+  margin: 12px 0 4px;
+}
+.tile {
+  background: var(--panel);
+  flex: 1 1 152px;
+  min-width: 0;
+  padding: 10px 14px 11px;
+}
+.tile span {
+  display: block;
+  font-size: 9.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: .11em;
+  color: var(--ink-3);
+  margin-bottom: 5px;
+}
+.tile b {
+  display: block;
+  font: 600 20px/1.1 var(--mono);
+  letter-spacing: -.025em;
+  font-variant-numeric: tabular-nums;
+}
+.tile small {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.tile small:empty { display: none; }
+
+/* ── tables ────────────────────────────────────────────── */
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  margin: 8px 0 4px;
+}
+th, td {
+  text-align: left;
+  padding: 5px 11px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 12px;
+  vertical-align: middle;
+}
+th {
+  font-size: 9.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+tr:last-child td { border-bottom: 0; }
+tbody tr:hover td, table tr:hover td { background: var(--inset); }
+table tr:first-child:hover th { background: none; }
+
+/* Numbers, identifiers and anything the router echoes back verbatim read
+   as data, not prose. */
+td { font-variant-numeric: tabular-nums; }
+
+/* ── state ─────────────────────────────────────────────── */
+
+/* Used both on a table cell and on the redirect banner at the top of a
+   page, so it has to work inline and as a block. A dot carries the state
+   as shape, not colour alone. */
+.state-ok, .state-warn, .state-bad { white-space: nowrap; }
+.state-ok::before, .state-warn::before, .state-bad::before {
+  content: "";
+  display: inline-block;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+.state-ok   { color: var(--ok);          } .state-ok::before   { background: var(--ok); }
+.state-warn { color: var(--accent-ink);  } .state-warn::before { background: var(--accent); }
+.state-bad  { color: var(--bad);         } .state-bad::before  { background: var(--bad); }
+
+/* As a banner it is a paragraph of its own, so give it a body. */
+p.state-ok, p.state-bad, p.state-warn {
+  padding: 7px 11px;
+  border-radius: 4px;
+  font-size: 12.5px;
+  margin: 0 0 14px;
+  max-width: 68ch;
+}
+p.state-ok   { background: var(--ok-wash);     }
+p.state-warn { background: var(--accent-wash); }
+p.state-bad  { background: var(--bad-wash);    }
+
+/* ── where a capability figure came from ───────────────── */
 
 .cap-published { font-weight: 600; }
-.cap-observed  { color: #070; }
-.cap-guessed   { color: #666; font-style: italic; }
-.cap-manual    { text-decoration: underline; }
-.cap-unknown   { color: #999; }
+.cap-observed  { color: var(--ok); }
+.cap-guessed   { color: var(--ink-3); font-style: italic; }
+.cap-manual    { text-decoration: underline; text-underline-offset: 2px; }
+.cap-unknown   { color: var(--ink-3); }
+
+/* ── forms ─────────────────────────────────────────────── */
+
+/* Every control on every page is a real form control, so these rules do
+   the work of a component library. */
+form { display: inline; }
+td form { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+
+input, select, textarea {
+  font: 400 12px var(--sans);
+  color: var(--ink);
+  background: var(--inset);
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  padding: 4px 7px;
+  min-width: 0;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+input[type="text"], input[type="password"], input[type="number"] { max-width: 15rem; }
+textarea { font-family: var(--mono); font-size: 11.5px; line-height: 1.5; width: 100%; max-width: 68ch; }
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-wash);
+}
+input::placeholder { color: var(--ink-3); }
+
+button {
+  font: 500 11.5px var(--sans);
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  padding: 4px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 140ms cubic-bezier(.22, 1, .36, 1),
+              background-color 160ms ease, border-color 160ms ease;
+}
+button:hover { background: var(--wash); border-color: var(--ink-3); }
+button:active { transform: scale(.97); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* The form that adds a thing is a block, not a row of loose controls. */
+main > form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  padding: 11px 13px;
+  margin: 8px 0 4px;
+}
+
+/* ── the Overview ──────────────────────────────────────── */
+
+/* The one screen that is a composition rather than a list. Everything
+   below is scoped under `.ov` so it cannot leak onto the other eight
+   pages, which stay plain documents on purpose.
+
+   Blocks are deliberately different shapes and densities: the verdict is
+   loose prose, the bucket list is the tightest thing on the page, the
+   provider table sits between them. A page where every block has the same
+   rhythm reads as a form, not an instrument. */
+
+.page-head {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin-bottom: 12px;
+}
+.page-head .where { font-size: 11px; color: var(--ink-3); }
+
+.ov { display: flex; flex-direction: column; gap: 10px; }
+.ov-banner { display: grid; grid-template-columns: minmax(0, 1fr) 286px; gap: 10px; }
+.ov-row    { display: grid; grid-template-columns: minmax(0, 1fr) 306px; gap: 10px; align-items: start; }
+.ov-duo    { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 10px; align-items: start; }
+.ov-stack  { display: flex; flex-direction: column; gap: 10px; }
+
+.ov .panel {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  min-width: 0;
+}
+.ov .ph {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 13px;
+  border-bottom: 1px solid var(--rule);
+}
+.ov .ph h2 { font-size: 12.5px; font-weight: 600; margin: 0; }
+.ov .ph .sub { font-size: 11px; color: var(--ink-3); }
+.ov .ph .spacer { margin-left: auto; }
+.ov .pb { padding: 10px 13px; }
+.ov .note { margin: 0; }
+.ov .scroll { overflow-x: auto; }
+.ov .dim { color: var(--ink-3); }
+.ov .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* A link that acts like a button. Real navigation, so it stays an <a>. */
+.button-link {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink);
+  text-decoration: none;
+  background: var(--inset);
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  padding: 3px 8px;
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+.ov a.button-link, a.button-link { border-bottom: 0; color: var(--ink); }
+.button-link:hover { background: var(--wash); border-color: var(--ink-3); }
+.button-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* verdict — the loosest block */
+.ov .verdict { display: flex; flex-direction: column; }
+.verdict-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 14px 15px 0;
+}
+.verdict-line strong { font-size: 19px; font-weight: 600; letter-spacing: -.022em; }
+.ov .verdict > p {
+  margin: 7px 0 14px;
+  padding: 0 15px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  max-width: 72ch;
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 3px 7px;
+  border-radius: 2px;
+  background: var(--wash);
+  white-space: nowrap;
+}
+.tag.state-ok   { background: var(--ok-wash); }
+.tag.state-warn { background: var(--accent-wash); }
+.tag.state-bad  { background: var(--bad-wash); }
+.tag.state-ok::before, .tag.state-warn::before, .tag.state-bad::before { margin-right: 5px; }
+
+.minis {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  margin-top: auto;
+  background: var(--rule);
+  border-top: 1px solid var(--rule);
+}
+.mini { background: var(--panel); padding: 8px 15px 9px; min-width: 0; }
+.mini span {
+  display: block;
+  font-size: 9.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--ink-3);
+  margin-bottom: 3px;
+}
+.mini b { font: 600 15px/1.1 var(--mono); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+
+/* tally — one big number */
+.ov .tally { display: flex; flex-direction: column; justify-content: center; padding: 14px 15px; }
+.tally-big { font: 600 36px/1 var(--mono); letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+.tally-sub { font-size: 11.5px; color: var(--ink-3); margin-top: 3px; }
+.tally-split {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--rule);
+}
+.tally-split > div { flex: 1; min-width: 0; }
+.tally-split b { display: block; font: 600 14px var(--mono); font-variant-numeric: tabular-nums; }
+.tally-split b i { font-style: normal; font-size: 11px; font-weight: 400; color: var(--ink-3); }
+.tally-split span {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  color: var(--ink-3);
+}
+
+/* chart */
+.legend { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--ink-2); }
+.legend-item .n { font: 400 10px var(--mono); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; flex: none; }
+
+.plot {
+  background: var(--inset);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 6px 5px 0;
+}
+.chart { display: block; width: 100%; height: auto; }
+.chart-tick { font: 400 9.5px var(--mono); fill: var(--ink-3); }
+.chart-axis { stroke: var(--rule-2); stroke-width: 1; }
+.chart-grid { stroke: var(--rule); stroke-width: 1; }
+.chart-sep  { fill: none; stroke: var(--inset); stroke-width: 2; }
+
+.table-view { margin-top: 9px; }
+.table-view summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--ink-3);
+  width: fit-content;
+  padding: 2px 0;
+}
+.table-view summary:hover { color: var(--ink); }
+.table-view summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.table-view table { margin-top: 7px; }
+.table-view td, .table-view th { padding: 3px 9px; font-size: 11px; text-align: right; }
+.table-view td:first-child, .table-view th:first-child { text-align: left; }
+
+/* provider matrix — the dense block */
+table.matrix { margin: 0; border: 0; border-radius: 0; }
+table.matrix td { padding: 5px 13px; }
+table.matrix th { padding: 6px 13px; }
+.prov-name { display: flex; align-items: center; gap: 7px; font-weight: 500; font-size: 12.5px; }
+.prov-url {
+  display: block;
+  font: 400 10px var(--mono);
+  color: var(--ink-3);
+  margin-top: 1px;
+  max-width: 26ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shape { width: 104px; }
+.spark { display: block; width: 104px; height: 22px; }
+.strip { display: flex; gap: 1px; height: 5px; width: 104px; margin-top: 2px; }
+.seg { flex: 1; border-radius: .5px; }
+.seg-ok   { background: var(--ok); }
+.seg-part { background: var(--accent); }
+.seg-bad  { background: var(--bad); }
+.seg-none { background: var(--wash); }
+
+/* needs you */
+.todo-item {
+  display: grid;
+  grid-template-columns: 3px minmax(0, 1fr);
+  gap: 0 9px;
+  padding: 9px 13px;
+  border-bottom: 1px solid var(--rule);
+}
+.todo-item:last-child { border-bottom: 0; }
+.todo-mark { grid-row: span 2; background: var(--accent); border-radius: 2px; }
+.todo-where { font-size: 12.5px; }
+.todo-where b { font-weight: 500; }
+.todo-where span { color: var(--ink-3); font-family: var(--mono); font-size: 11px; margin-left: 6px; }
+.todo-why { font-size: 11.5px; color: var(--ink-3); }
+
+/* buckets — the tightest block */
+.bucket-row {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr) 42px;
+  gap: 8px;
+  align-items: center;
+  padding: 2px 0;
+}
+.bucket-name { font: 500 11px var(--mono); overflow: hidden; text-overflow: ellipsis; }
+.bucket-track { display: block; height: 6px; background: var(--wash); border-radius: 1px; overflow: hidden; }
+.bucket-fill { display: block; height: 100%; background: var(--ink-2); }
+/* Magnitude, not identity: one measure along one axis is a length,
+   so it wears ink. Orange is kept for the things that want you. */
+.bucket-n { font: 400 10.5px var(--mono); color: var(--ink-3); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* latency */
+.lat-row { display: grid; grid-template-columns: minmax(0, 1fr) 96px; gap: 10px; align-items: center; padding: 4px 0; }
+.lat-name { font: 400 11px var(--mono); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lat-bar { position: relative; height: 12px; margin-top: 2px; }
+/* Three steps of one ramp: the empty axis, the tail out to p95, and the
+   median sitting on top of it. Same reason as the bucket bars - this is
+   one measure, so it is a length in ink rather than a colour. */
+.lat-track { position: absolute; left: 0; right: 0; top: 5px; height: 2px; background: var(--wash); border-radius: 1px; }
+.lat-p95 { position: absolute; left: 0; top: 4px; height: 4px; background: var(--rule-2); border-radius: 2px; }
+.lat-p50 { position: absolute; left: 0; top: 2px; height: 8px; background: var(--ink-2); border-radius: 2px; }
+.lat-figs { font: 400 11px var(--mono); color: var(--ink-2); text-align: right; font-variant-numeric: tabular-nums; }
+.lat-figs .dim { color: var(--ink-3); }
+
+/* feed */
+.feed-row {
+  display: grid;
+  grid-template-columns: 58px 62px minmax(0, 1fr) 72px;
+  gap: 9px;
+  align-items: center;
+  padding: 3px 0;
+  font-size: 11.5px;
+}
+.feed-row + .feed-row { border-top: 1px solid var(--rule); }
+.feed-time { font: 400 10.5px var(--mono); color: var(--ink-3); }
+.feed-bucket { font: 500 11px var(--mono); overflow: hidden; text-overflow: ellipsis; }
+.feed-model { font: 400 11px var(--mono); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed-ms { font: 400 11px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.hop { color: var(--accent-ink); }
+
+@media (max-width: 1160px) {
+  .ov-banner, .ov-row, .ov-duo { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: .001ms !important; }
+}
+
+@media (max-width: 760px) {
+  .shell { display: block; }
+  .nav {
+    width: auto;
+    position: static;
+    max-height: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    align-items: center;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .nav h2 { display: none; }
+  .nav a { margin: 0; white-space: nowrap; }
+  .nav a[aria-current]::before { display: none; }
+  .main { padding: 16px 14px 40px; }
+  table { display: block; overflow-x: auto; }
+}
