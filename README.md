@@ -6,9 +6,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 
-**One shared address for every LLM you use.** Point any OpenAI-compatible app at flexrouter instead of a single provider, and it picks the best available model, fails over automatically, and tracks spend — all from one live dashboard.
+**Run entirely on free tiers.** Groq, Cerebras, Google AI Studio, OpenRouter's free models, and others each give you a real (if small) free allowance. flexrouter pools them into one address, and when one model's free quota runs dry for the minute, it fails over to the next one instead of stopping or billing you — so your app keeps answering, and you keep paying $0.
 
-[Quickstart](#quickstart) · [How routing works](#how-routing-works) · [CLI](#cli) · [Dashboard](#dashboard) · [Contributing](#contributing)
+[Quickstart](#quickstart) · [Free tier stacking](#free-tier-stacking) · [How routing works](#how-routing-works) · [Dashboard](#dashboard) · [Contributing](#contributing)
 
 </div>
 
@@ -36,18 +36,60 @@ If you're writing Python and would rather call it directly without going through
 
 | | |
 |---|---|
+| 🆓 **Stack free tiers** | Groq, Cerebras, Google AI Studio, OpenRouter's free models, and more — pool their free rate limits into one bucket instead of hand-rolling your own fallback chain. |
+| 🔁 **Automatic failover** | A model that's slow, rate-limited, or down is skipped and retried on the next best one — mid-outage, not after your app crashes. |
+| 🔑 **Multi-key rotation** | Add several keys per provider (e.g. two free Groq accounts); a rejected key is skipped for the next one automatically. |
 | 🔌 **Drop-in** | Same API shape as OpenAI. Point existing tools at it — no SDK, no code changes. |
-| 🔁 **Automatic failover** | Slow, rate-limited, or down models are skipped and retried on the next best one. |
 | 🧭 **Named buckets, not model names** | Your app asks for `low` or `high`; flexrouter decides which model actually serves it. |
-| 💸 **Spend aware** | Per-provider daily budget caps, enforced before a request goes out. |
-| 🔑 **Multi-key rotation** | Add several keys per provider; a rejected key is skipped for the next one automatically. |
+| 💸 **Spend aware** | Per-provider daily budget caps, enforced before a request goes out — cap a paid fallback at $0 and it's never actually billed. |
 | 📊 **Live dashboard** | Telemetry, chat, request logs, account status, and settings in one page. |
+
+### Free tier stacking
+
+Most providers' free tiers are narrow on their own — a few dozen requests a minute, sometimes less. flexrouter's routing was built around this: put several free-tier models from different providers in one bucket, and when one hits its per-minute limit, [the next one takes over automatically](#how-routing-works), not after an error bubbles up to your app.
+
+```yaml
+providers:
+  groq:
+    base_url: https://api.groq.com/openai/v1
+  cerebras:
+    base_url: https://api.cerebras.ai/v1
+  googleai:
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+
+buckets:
+  free:
+    - provider: groq
+      model: llama-3.1-8b-instant
+      score: 90
+      rpm: 30
+      tpm: 6000
+      context_window: 131072
+    - provider: cerebras
+      model: gpt-oss-120b
+      score: 85
+      rpm: 30
+      tpm: 60000
+      context_window: 131072
+    - provider: googleai
+      model: models/gemini-2.0-flash-lite-001
+      score: 80
+      rpm: 15
+      tpm: 1000000
+      context_window: 1048576
+```
+
+Two ways to stretch it further:
+
+- **[Multiple keys per provider](#multiple-keys-per-provider)** — add a second free account for a provider and flexrouter rotates to it once the first is rate-limited, instead of waiting it out.
+- **Zero-out anything you don't want to pay for** — set `provider_budget: { openai: 0 }` and flexrouter never sends a request to it, even if it's sitting in the same bucket as a fallback.
 
 ## Contents
 
 - [Install](#install)
 - [Where your settings live](#where-your-settings-live)
 - [Quickstart](#quickstart)
+- [Free tier stacking](#free-tier-stacking)
 - [How routing works](#how-routing-works)
 - [Config reference](#config-reference)
 - [Using it directly from Python](#using-it-directly-from-python)
