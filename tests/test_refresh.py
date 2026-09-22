@@ -43,7 +43,7 @@ def _stub_discovery(monkeypatch, discovered):
     async def fake_discover(provider, api_key):
         return discovered.get(provider.name, [])
 
-    async def fake_score(models, aa_key):
+    async def fake_score(models, aa_key, **kw):
         return [{**m, "score": 50} for m in models]
 
     monkeypatch.setattr(refresh, "discover_models", fake_discover)
@@ -103,7 +103,7 @@ def test_a_saved_key_wins_over_one_typed_into_the_settings_file(tmp_path, monkey
         seen[provider.name] = api_key
         return []
 
-    async def fake_score(models, aa_key):
+    async def fake_score(models, aa_key, **kw):
         return models
 
     monkeypatch.setattr(refresh, "discover_models", fake_discover)

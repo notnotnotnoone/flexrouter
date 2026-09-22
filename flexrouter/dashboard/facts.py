@@ -461,6 +461,22 @@ _SETTINGS_ATTR = {
     "key_concurrency_cap": "key_concurrency_cap",
     "provider_budget": "provider_budget",
     "hooks": "hooks",
+    "quarantine_seconds": "quarantine_seconds",
+    "probe_timeout_seconds": "probe_timeout_seconds",
+    "error_max_length": "error_max_length",
+    "unscored_fallback_score": "unscored_fallback_score",
+}
+
+# Nested under cfg.decider rather than sitting flat on FlexConfig, so these
+# cannot go through _SETTINGS_ATTR's plain getattr.
+_DECIDER_ATTR = {
+    "decider_base_url": "base_url",
+    "decider_model": "model",
+    "decider_timeout_seconds": "timeout_seconds",
+    "decider_confidence_threshold": "confidence_threshold",
+    "decider_rule_prior_confidence": "rule_prior_confidence",
+    "decider_confidence_ceiling": "confidence_ceiling",
+    "decider_contested_statuses": "contested_statuses",
 }
 
 
@@ -488,6 +504,8 @@ def settings_fields(router) -> list[SettingsField]:
             value = router._cfg.retry.retries
         elif name == "backoff_seconds":
             value = router._cfg.retry.backoff_seconds
+        elif name in _DECIDER_ATTR:
+            value = getattr(router._cfg.decider, _DECIDER_ATTR[name])
         elif name in _SETTINGS_ATTR:
             value = getattr(router._cfg, _SETTINGS_ATTR[name])
         else:

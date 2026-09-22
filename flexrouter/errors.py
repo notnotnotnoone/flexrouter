@@ -20,6 +20,20 @@ import json
 from typing import Any
 
 MAX_LENGTH = 300
+"""Longest provider error text kept before clipping.
+
+Module-level and mutated once at startup by set_max_length(), rather than
+threaded through as an argument: _clip is a pure helper called deep inside
+extraction, and passing config down to it would mean giving half this module
+a config parameter it has no other use for. That is a real compromise -- this
+is process-wide state, so two routers in one process share one value.
+"""
+
+
+def set_max_length(value: int) -> None:
+    """Point MAX_LENGTH at a configured value. Called from router startup."""
+    global MAX_LENGTH
+    MAX_LENGTH = int(value)
 
 # Keys that carry a human-readable sentence, in order of preference.
 _MESSAGE_KEYS = ("message", "error_message", "detail", "description", "error")

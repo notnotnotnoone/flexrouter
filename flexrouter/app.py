@@ -651,7 +651,8 @@ async def api_test_key(request: Request):
     if not base_url:
         return JSONResponse({"error": "base_url is required"}, status_code=400)
 
-    result = await probe_key(base_url, body.get("api_key"))
+    result = await probe_key(base_url, body.get("api_key"),
+                             timeout=get_router()._cfg.probe_timeout_seconds)
     payload = result.as_dict()
 
     # If this names a provider we already route to, say which of its
@@ -674,7 +675,8 @@ async def api_retest_provider(provider: str):
                             status_code=404)
 
     keys = list(pcfg.api_keys or [])
-    result = await probe_key(pcfg.base_url, keys[0] if keys else None)
+    result = await probe_key(pcfg.base_url, keys[0] if keys else None,
+                             timeout=router._cfg.probe_timeout_seconds)
     payload = result.as_dict()
     payload["provider"] = provider
 

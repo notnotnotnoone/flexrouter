@@ -7,7 +7,7 @@ daily refresh reads, so its tests move here rather than disappearing.
 import pytest
 import respx
 import httpx
-from flexrouter.catalogue import PROVIDERS, ProviderDef
+from flexrouter.catalogue import PROVIDERS, AA_MODELS_URL, ProviderDef
 
 
 def test_provider_count():
@@ -166,6 +166,15 @@ AA_RESPONSE = {
             "slug": "gemini-2-5-flash",
             "evaluations": {"artificial_analysis_intelligence_index": 81.0},
         },
+        {
+            # AA really does serve the key with an explicit null for some
+            # models. This entry is the regression: it used to raise inside
+            # int(None) and take every other score down with it.
+            "id": "unrated-model",
+            "name": "Unrated Model",
+            "slug": "unrated-model",
+            "evaluations": {"artificial_analysis_intelligence_index": None},
+        },
     ]
 }
 
@@ -174,7 +183,7 @@ AA_RESPONSE = {
 @respx.mock
 async def test_score_with_aa_matches_known_model():
     from flexrouter.catalogue import score_with_aa
-    respx.get("https://artificialanalysis.ai/data/llms/models").mock(
+    respx.get(AA_MODELS_URL).mock(
         return_value=httpx.Response(200, json=AA_RESPONSE)
     )
     models = [
@@ -186,26 +195,63 @@ async def test_score_with_aa_matches_known_model():
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_score_with_aa_unknown_model_gets_50():
+async def test_score_with_aa_unknown_model_gets_median_of_live_set():
+    """An unmatched model sits mid-pack, not top.
+
+    This asserted 50 when AA's index ran 0-100. It now runs 3-53, so a flat 50
+    ranked anything unmatched above ~99% of the catalogue. The fallback is the
+    median of whatever AA actually returned: 72 and 81 here, median_low -> 72.
+    """
     from flexrouter.catalogue import score_with_aa
-    respx.get("https://artificialanalysis.ai/data/llms/models").mock(
+    respx.get(AA_MODELS_URL).mock(
         return_value=httpx.Response(200, json=AA_RESPONSE)
     )
     models = [{"id": "unknown/totally-new-model", "context_window": 32768}]
     scored = await score_with_aa(models, aa_key="test-aa-key")
-    assert scored[0]["score"] == 50
+    assert scored[0]["score"] == 72
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_null_intelligence_index_does_not_sink_the_other_scores():
+    """A null score is skipped, not fatal.
+
+    The fixture carries one entry whose index is an explicit null. `.get(k, 50)`
+    does not defend against that -- the default only fires when the key is
+    absent -- so this used to raise and the bare except returned 50 for
+    everything, silently.
+    """
+    from flexrouter.catalogue import score_with_aa
+    respx.get(AA_MODELS_URL).mock(
+        return_value=httpx.Response(200, json=AA_RESPONSE)
+    )
+    models = [{"id": "meta-llama/llama-3.3-70b-instruct:free", "context_window": 131072}]
+    scored = await score_with_aa(models, aa_key="test-aa-key")
+    assert scored[0]["score"] == 72
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_score_with_aa_api_failure_gives_50():
     from flexrouter.catalogue import score_with_aa
-    respx.get("https://artificialanalysis.ai/data/llms/models").mock(
+    respx.get(AA_MODELS_URL).mock(
         return_value=httpx.Response(500, text="error")
     )
     models = [{"id": "groq/llama-8b", "context_window": 131072}]
     scored = await score_with_aa(models, aa_key="test-aa-key")
     assert scored[0]["score"] == 50
+
+
+def test_aa_models_url_is_the_versioned_endpoint():
+    """Pin the AA URL literally.
+
+    The mocks above resolve AA_MODELS_URL, so they pass no matter what it
+    points at — they cannot catch the URL going stale. This assertion is the
+    only thing in the suite that fails if someone edits the constant, which
+    is what the v2-path outage went undetected behind.
+    """
+    from flexrouter.catalogue import AA_MODELS_URL
+    assert AA_MODELS_URL == "https://artificialanalysis.ai/api/v2/data/llms/models"
 
 
 @pytest.mark.asyncio

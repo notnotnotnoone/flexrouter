@@ -10,14 +10,33 @@ helper. Nothing in this module writes anything.
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
+import logging
 import re
+import statistics
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 STANDARD_RL_HEADERS = {
     "rpm": "x-ratelimit-limit-requests",
     "tpm": "x-ratelimit-limit-tokens",
 }
+
+# Artificial Analysis retired the unversioned /data/llms/models path; it now
+# 404s for keyed and unkeyed callers alike. Because score_with_aa treats any
+# >=400 as "fall back to 50", that failure was silent — every model scored 50
+# and the tests kept passing because all three mocked the dead URL. Keep this
+# as one named constant so the URL can only be changed deliberately.
+AA_MODELS_URL = "https://artificialanalysis.ai/api/v2/data/llms/models"
+
+# What an unmatched model scores when there is no AA data at all (no key, or
+# the call failed). In that case EVERY model gets this number, so the value
+# itself cannot skew ranking — they are all equal and it is just a placeholder.
+# The dangerous case is the mixed one, where some models are scored and some
+# are not; that is handled separately in score_with_aa, which uses the median
+# of the live set rather than this constant.
+UNSCORED_FALLBACK = 50
 
 
 @dataclass(frozen=True)
@@ -174,37 +193,56 @@ def _normalize(s: str) -> str:
     return s
 
 
-def _best_score(model_id: str, aa_lookup: list[tuple[str, int]]) -> int:
+def _best_score(model_id: str, aa_lookup: list[tuple[str, int]], fallback: int = UNSCORED_FALLBACK) -> int:
     needle = _normalize(model_id)
     for norm_name, score in aa_lookup:
         if needle in norm_name or norm_name in needle:
             return score
-    return 50
+    return fallback
 
 
-async def score_with_aa(models: list[dict], aa_key: str | None) -> list[dict]:
+async def score_with_aa(models: list[dict], aa_key: str | None,
+                        unscored_fallback: int = UNSCORED_FALLBACK) -> list[dict]:
     """Assign AA intelligence scores to models. Unmatched → score=50."""
     if not aa_key:
-        return [{**m, "score": 50} for m in models]
+        return [{**m, "score": unscored_fallback} for m in models]
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
-                "https://artificialanalysis.ai/data/llms/models",
+                AA_MODELS_URL,
                 headers={"x-api-key": aa_key},
             )
             if resp.status_code >= 400:
-                return [{**m, "score": 50} for m in models]
+                return [{**m, "score": unscored_fallback} for m in models]
             data = resp.json()
         aa_models = data.get("data", [])
-        aa_lookup = [
-            (
-                _normalize(entry.get("name", "")),
-                int((entry.get("evaluations") or {}).get("artificial_analysis_intelligence_index", 50)),
-            )
-            for entry in aa_models
-        ]
+        # A handful of AA entries carry the key with an explicit null (9 of 656
+        # at time of writing, all clustered at the tail). `.get(key, 50)` does
+        # NOT save you there — the default only applies when the key is absent,
+        # so a null sailed through into int(None) and blew up the whole
+        # comprehension, discarding every score that had already been built.
+        # Skipping them is the honest reading: AA has no opinion on that model,
+        # and _best_score already answers 50 for anything it cannot match.
+        aa_lookup = []
+        for entry in aa_models:
+            raw = (entry.get("evaluations") or {}).get("artificial_analysis_intelligence_index")
+            if not isinstance(raw, (int, float)):
+                continue
+            aa_lookup.append((_normalize(entry.get("name", "")), int(raw)))
     except Exception:
-        return [{**m, "score": 50} for m in models]
+        # Falling back to 50 keeps a flaky AA from breaking routing, which is
+        # deliberate — but doing it silently is what let a dead URL and the
+        # null-score crash above hide for months behind a green suite.
+        logger.warning("AA scoring failed; every model falls back to %s",
+                       unscored_fallback, exc_info=True)
+        return [{**m, "score": unscored_fallback} for m in models]
 
-    return [{**m, "score": _best_score(m.get("id", ""), aa_lookup)} for m in models]
+    # AA rescaled their index: as of this writing the 647 scored models run
+    # 3..53 with a median of 11, so the old hardcoded 50 for an unmatched model
+    # put it above 98.9% of everything AA has ever rated — an unknown model
+    # outranking GPT-4o. Anchoring the fallback to the median of whatever came
+    # back keeps unmatched models mid-pack and survives the next rescale
+    # without anyone having to notice it happened.
+    fallback = statistics.median_low([s for _, s in aa_lookup]) if aa_lookup else unscored_fallback
+    return [{**m, "score": _best_score(m.get("id", ""), aa_lookup, fallback)} for m in models]

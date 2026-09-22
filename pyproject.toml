@@ -17,6 +17,12 @@ dependencies = [
     "watchdog>=4.0",
     "tiktoken>=0.7",
     "click>=8.1",
+    # The dashboard reads HTML form posts via `await request.form()` in 11
+    # places; Starlette refuses to parse a form without this. It was never
+    # declared, so a clean install had a dashboard whose every write button
+    # returned a 500 -- it only worked where the package happened to be
+    # present transitively.
+    "python-multipart>=0.0.9",
 ]
 
 [project.scripts]

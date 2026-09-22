@@ -21,9 +21,11 @@ class PenaltyBox:
 
     def __init__(self, base_seconds: int, max_seconds: int,
                  state_dir: Optional[str] = None,
-                 on_event: Optional[Callable[[str, str, str, int], None]] = None) -> None:
+                 on_event: Optional[Callable[[str, str, str, int], None]] = None,
+                 quarantine_seconds: int = QUARANTINE_SECONDS) -> None:
         self.base_seconds = base_seconds
         self.max_seconds = max_seconds
+        self.quarantine_seconds = quarantine_seconds
         self._on_event = on_event
         self._path = Path(state_dir) / "penalties.json" if state_dir else None
         self._quarantine_path = Path(state_dir) / "quarantine.json" if state_dir else None
@@ -102,7 +104,7 @@ class PenaltyBox:
         self._emit(provider, model, "penalized", int(seconds))
 
     def quarantine(self, provider: str, model: str, reason: str,
-                   seconds: int = QUARANTINE_SECONDS) -> None:
+                   seconds: Optional[int] = None) -> None:
         """Sideline a route that answered with a permanent failure.
 
         Distinct from penalize() so the dashboard can say "the provider says
@@ -110,13 +112,17 @@ class PenaltyBox:
         never lead anywhere. Still time-boxed rather than forever, so a
         provider that 404s by mistake heals itself without manual cleanup.
         """
+        # None means "this box's configured length" -- an explicit number
+        # still wins, so callers that pass one are unaffected.
+        if seconds is None:
+            seconds = self.quarantine_seconds
         k = self._key(provider, model)
         self._quarantine[k] = {"until": time.time() + seconds, "reason": reason}
         self._save_quarantine()
         self._emit(provider, model, "quarantined", int(seconds))
 
     def quarantine_provider(self, provider: str, reason: str,
-                            seconds: int = QUARANTINE_SECONDS) -> None:
+                            seconds: Optional[int] = None) -> None:
         """Sideline every model on a provider at once.
 
         A rejected API key is a fact about the provider, not about one model —

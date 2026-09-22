@@ -67,7 +67,7 @@ def test_the_settings_file_is_byte_identical_after_a_full_run(shared_home, monke
     async def fake_discover(provider, api_key):
         return [{"id": "a-model-that-was-not-there-before", "context_length": 8192}]
 
-    async def fake_score(models, aa_key):
+    async def fake_score(models, aa_key, **kw):
         return [{**m, "score": 50} for m in models]
 
     monkeypatch.setattr(refresh, "discover_models", fake_discover)

@@ -12,7 +12,8 @@ from typing import AsyncIterator, Literal, Optional
 from flexrouter.audit import AuditLogger
 from flexrouter.client import AsyncClient, RateLimitError, ProviderError
 from flexrouter.config import FlexConfig, load_config
-from flexrouter.decider import NullDecider
+from flexrouter import errors
+from flexrouter.decider import NullDecider, build_decider
 from flexrouter.engine import RoutingEngine, RouteResult
 from flexrouter.error_brain import ErrorBrain
 from flexrouter.events import EventLogger
@@ -93,11 +94,13 @@ class LocalRouter:
         self._config_path = path
         self._cfg: FlexConfig = load_config(path if config_path else None)
         self._rate_limit_store = RateLimitStore(self._cfg.state_dir)
+        errors.set_max_length(self._cfg.error_max_length)
         self._quota_tracker = QuotaTracker(self._cfg.state_dir)
         self._events = EventLogger(self._cfg.state_dir)
         self._penalties = PenaltyBox(
             self._cfg.penalty_base_seconds, self._cfg.penalty_max_seconds,
             state_dir=self._cfg.state_dir, on_event=self._events.record,
+            quarantine_seconds=self._cfg.quarantine_seconds,
         )
         self._engine = RoutingEngine(
             self._cfg, rate_limit_store=self._rate_limit_store, penalties=self._penalties,
@@ -108,7 +111,11 @@ class LocalRouter:
         self._traces = TraceWriter(self._cfg.state_dir)
         self._key_states = KeyStateStore(self._cfg.state_dir)
         self._round_robin = RoundRobinCounters()
-        self._error_brain = ErrorBrain(self._cfg.state_dir, NullDecider())
+        self._error_brain = ErrorBrain(
+            self._cfg.state_dir, self._build_decider(),
+            confidence_threshold=self._cfg.decider.confidence_threshold,
+            contested_statuses=self._cfg.decider.contested_statuses,
+            rule_prior_confidence=self._cfg.decider.rule_prior_confidence)
         self._model_facts = ModelFactsStore(self._cfg.state_dir)
         self._run_startup_catalogue_refresh()
         self._sampler = PassiveSampler(
@@ -331,7 +338,7 @@ class LocalRouter:
                     status="rate_limited",
                 )
                 self._history.record(self._engine.health_snapshot())
-                verdict = self._error_brain.classify(str(exc), 429)
+                verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), 429)
                 if vision and verdict.verdict in ("bad_request", "model_gone") and \
                         verdict.confidence >= self._error_brain.confidence_threshold:
                     self._model_facts.record_contradicting_failure(
@@ -356,7 +363,7 @@ class LocalRouter:
                     status="auth_error",
                 )
                 self._history.record(self._engine.health_snapshot())
-                verdict = self._error_brain.classify(str(exc), 401)
+                verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), 401)
                 if vision and verdict.verdict in ("bad_request", "model_gone") and \
                         verdict.confidence >= self._error_brain.confidence_threshold:
                     self._model_facts.record_contradicting_failure(
@@ -380,7 +387,7 @@ class LocalRouter:
                     status="error",
                 )
                 self._history.record(self._engine.health_snapshot())
-                verdict = self._error_brain.classify(str(exc), exc.status_code)
+                verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), exc.status_code)
                 if vision and verdict.verdict in ("bad_request", "model_gone") and \
                         verdict.confidence >= self._error_brain.confidence_threshold:
                     self._model_facts.record_contradicting_failure(
@@ -534,7 +541,7 @@ class LocalRouter:
                     status="empty_response",
                 )
                 self._history.record(self._engine.health_snapshot())
-                verdict = self._error_brain.classify("empty stream response", None)
+                verdict = await asyncio.to_thread(self._error_brain.classify, "empty stream response", None)
                 if vision and verdict.verdict in ("bad_request", "model_gone") and \
                         verdict.confidence >= self._error_brain.confidence_threshold:
                     self._model_facts.record_contradicting_failure(
@@ -573,7 +580,7 @@ class LocalRouter:
                     status="rate_limited",
                 )
                 self._history.record(self._engine.health_snapshot())
-                verdict = self._error_brain.classify(str(exc), 429)
+                verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), 429)
                 if vision and verdict.verdict in ("bad_request", "model_gone") and \
                         verdict.confidence >= self._error_brain.confidence_threshold:
                     self._model_facts.record_contradicting_failure(
@@ -602,7 +609,7 @@ class LocalRouter:
                     status="auth_error",
                 )
                 self._history.record(self._engine.health_snapshot())
-                verdict = self._error_brain.classify(str(exc), 401)
+                verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), 401)
                 if vision and verdict.verdict in ("bad_request", "model_gone") and \
                         verdict.confidence >= self._error_brain.confidence_threshold:
                     self._model_facts.record_contradicting_failure(
@@ -630,7 +637,7 @@ class LocalRouter:
                     status="error",
                 )
                 self._history.record(self._engine.health_snapshot())
-                verdict = self._error_brain.classify(str(exc), exc.status_code)
+                verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), exc.status_code)
                 if vision and verdict.verdict in ("bad_request", "model_gone") and \
                         verdict.confidence >= self._error_brain.confidence_threshold:
                     self._model_facts.record_contradicting_failure(
@@ -742,7 +749,7 @@ class LocalRouter:
                         any_yielded = True
                         yield ev
             except BaseException as exc:
-                verdict = self._error_brain.classify(str(exc), getattr(exc, "status_code", None))
+                verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), getattr(exc, "status_code", None))
                 if vision and verdict.verdict in ("bad_request", "model_gone") and \
                         verdict.confidence >= self._error_brain.confidence_threshold:
                     self._model_facts.record_contradicting_failure(
@@ -853,7 +860,7 @@ class LocalRouter:
                     latency_ms=latency_ms, status="empty_response",
                 )
                 self._history.record(self._engine.health_snapshot())
-                verdict = self._error_brain.classify(
+                verdict = await asyncio.to_thread(self._error_brain.classify, 
                     "empty response (no content, no tool calls)", None)
                 if vision and verdict.verdict in ("bad_request", "model_gone") and \
                         verdict.confidence >= self._error_brain.confidence_threshold:
@@ -1032,8 +1039,19 @@ class LocalRouter:
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
         self._traces = TraceWriter(self._cfg.state_dir)
         self._key_states = KeyStateStore(self._cfg.state_dir)
-        self._error_brain = ErrorBrain(self._cfg.state_dir, NullDecider())
+        self._error_brain = ErrorBrain(
+            self._cfg.state_dir, self._build_decider(),
+            confidence_threshold=self._cfg.decider.confidence_threshold,
+            contested_statuses=self._cfg.decider.contested_statuses,
+            rule_prior_confidence=self._cfg.decider.rule_prior_confidence)
         self._model_facts = ModelFactsStore(self._cfg.state_dir)
+
+    def _build_decider(self):
+        """Spec 4's classifier, or nothing. The key comes from service_keys
+        (masked keys.json, env fallback) rather than from settings -- same
+        reason auth_token is kept out of ALLOWED_FIELDS."""
+        from flexrouter import service_keys
+        return build_decider(self._cfg.decider, service_keys.resolve("decider"))
 
     def remaining_capacity(self, tier: str) -> dict[str, dict]:
         """For every model in `tier` currently in the running for selection, return
