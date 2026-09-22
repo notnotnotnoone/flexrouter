@@ -1,5 +1,8 @@
 # flexrouter
 
+[![Tests](https://github.com/notnotnotnoone/flexrouter/actions/workflows/test.yml/badge.svg)](https://github.com/notnotnotnoone/flexrouter/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 flexrouter is a small program that runs in the background on your computer. Every app you have — scripts, other tools, whatever — sends its AI requests to it at one shared address, instead of each app juggling its own list of models and keys. flexrouter picks the best available model out of a list you set up, automatically switches to another one if a model is slow, out of quota, or down, tracks how much you're spending, and shows you all of this in a live dashboard.
 
 It speaks the same language as OpenAI's API, so anything that already knows how to talk to OpenAI can point at flexrouter instead, with no special code:
