@@ -1,7 +1,18 @@
-# flexrouter
+<div align="center">
+
+<img src="docs/assets/banner.svg" alt="flexrouter — one address for every LLM you use, with automatic failover" width="100%">
 
 [![Tests](https://github.com/notnotnotnoone/flexrouter/actions/workflows/test.yml/badge.svg)](https://github.com/notnotnotnoone/flexrouter/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+
+**One shared address for every LLM you use.** Point any OpenAI-compatible app at flexrouter instead of a single provider, and it picks the best available model, fails over automatically, and tracks spend — all from one live dashboard.
+
+[Quickstart](#quickstart) · [How routing works](#how-routing-works) · [CLI](#cli) · [Dashboard](#dashboard) · [Contributing](#contributing)
+
+</div>
+
+---
 
 flexrouter is a small program that runs in the background on your computer. Every app you have — scripts, other tools, whatever — sends its AI requests to it at one shared address, instead of each app juggling its own list of models and keys. flexrouter picks the best available model out of a list you set up, automatically switches to another one if a model is slow, out of quota, or down, tracks how much you're spending, and shows you all of this in a live dashboard.
 
@@ -20,6 +31,17 @@ curl http://localhost:4891/v1/chat/completions \
 (`model` here is one of your buckets, like `low` or `high` — see [How routing works](#how-routing-works).)
 
 If you're writing Python and would rather call it directly without going through the web address, see [Using it directly from Python](#using-it-directly-from-python) below.
+
+### Why flexrouter
+
+| | |
+|---|---|
+| 🔌 **Drop-in** | Same API shape as OpenAI. Point existing tools at it — no SDK, no code changes. |
+| 🔁 **Automatic failover** | Slow, rate-limited, or down models are skipped and retried on the next best one. |
+| 🧭 **Named buckets, not model names** | Your app asks for `low` or `high`; flexrouter decides which model actually serves it. |
+| 💸 **Spend aware** | Per-provider daily budget caps, enforced before a request goes out. |
+| 🔑 **Multi-key rotation** | Add several keys per provider; a rejected key is skipped for the next one automatically. |
+| 📊 **Live dashboard** | Telemetry, chat, request logs, account status, and settings in one page. |
 
 ## Contents
 
@@ -42,8 +64,10 @@ If you're writing Python and would rather call it directly without going through
 
 ## Install
 
+Not on PyPI yet — install from GitHub for now:
+
 ```bash
-pip install flexrouter
+pip install git+https://github.com/notnotnotnoone/flexrouter.git
 ```
 
 Requires Python 3.11+.
@@ -314,19 +338,19 @@ A key that gets rejected (rate-limited) is skipped immediately in favor of the n
 
 ## CLI
 
-```bash
-flexrouter serve            # start the server (API + dashboard) without opening a browser
-flexrouter dashboard        # start the server and open the dashboard in your browser
-flexrouter status           # print current spending/health to the terminal
-flexrouter doctor           # show where your settings, keys, and data live
-flexrouter keys add <name>  # save a key for a provider
-flexrouter keys list        # show your saved keys (masked)
-flexrouter keys rm <name> <id>  # remove a saved key
-flexrouter refresh          # check available models and rate limits (see below); changes nothing
-flexrouter config reset     # undo changes made from the dashboard
-flexrouter config export    # print a shareable copy of your settings (keys hidden)
-flexrouter config import <token>
-```
+| Command | Does |
+|---|---|
+| `flexrouter serve` | Start the server (API + dashboard) without opening a browser |
+| `flexrouter dashboard` | Start the server and open the dashboard in your browser |
+| `flexrouter status` | Print current spending/health to the terminal |
+| `flexrouter doctor` | Show where your settings, keys, and data live |
+| `flexrouter keys add <name>` | Save a key for a provider |
+| `flexrouter keys list` | Show your saved keys (masked) |
+| `flexrouter keys rm <name> <id>` | Remove a saved key |
+| `flexrouter refresh` | Check available models and rate limits ([see below](#rebuilding-your-model-list)); changes nothing |
+| `flexrouter config reset` | Undo changes made from the dashboard |
+| `flexrouter config export` | Print a shareable copy of your settings (keys hidden) |
+| `flexrouter config import <token>` | Apply a config exported elsewhere |
 
 ## Dashboard
 
@@ -335,9 +359,16 @@ flexrouter dashboard
 # → http://localhost:4891
 ```
 
-Six tabs: **Live Telemetry** (request/token rates, countdowns for anything cooling down, search/filter), **Chat** (try any bucket live), **Request Logs** (your last 50 requests), **Account Status** (spending per provider), **Settings** (view/edit config), **Setup** (getting-started guide). Dark/light theme toggle.
+| Tab | Shows |
+|---|---|
+| **Live Telemetry** | Request/token rates, countdowns for anything cooling down, search/filter |
+| **Chat** | Try any bucket live |
+| **Request Logs** | Your last 50 requests |
+| **Account Status** | Spending per provider |
+| **Settings** | View/edit config |
+| **Setup** | Getting-started guide |
 
-The API, the dashboard, and the dashboard's own data all run on this one port (`4891` unless you set a different one under `settings: port:`).
+Dark/light theme toggle included. The API, the dashboard, and the dashboard's own data all run on this one port (`4891` unless you set a different one under `settings: port:`).
 
 ## Request log
 
@@ -385,3 +416,11 @@ Bug reports, feature requests, and pull requests are welcome — see [CONTRIBUTI
 ## Credits
 
 Inspired by [modelrelay](https://github.com/ellipticmarketing/modelrelay).
+
+---
+
+<div align="center">
+
+[MIT License](LICENSE) · [Report a bug](https://github.com/notnotnotnoone/flexrouter/issues/new?template=bug_report.md) · [Request a feature](https://github.com/notnotnotnoone/flexrouter/issues/new?template=feature_request.md)
+
+</div>
