@@ -336,6 +336,7 @@ class LocalRouter:
                     prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
                     latency_ms=int((time.monotonic() - start) * 1000),
                     status="rate_limited",
+                    request_id=trace_id,
                 )
                 self._history.record(self._engine.health_snapshot())
                 verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), 429)
@@ -361,6 +362,7 @@ class LocalRouter:
                     prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
                     latency_ms=int((time.monotonic() - start) * 1000),
                     status="auth_error",
+                    request_id=trace_id,
                 )
                 self._history.record(self._engine.health_snapshot())
                 verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), 401)
@@ -385,6 +387,7 @@ class LocalRouter:
                     prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
                     latency_ms=int((time.monotonic() - start) * 1000),
                     status="error",
+                    request_id=trace_id,
                 )
                 self._history.record(self._engine.health_snapshot())
                 verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), exc.status_code)
@@ -425,6 +428,7 @@ class LocalRouter:
                 cost_usd=0.0,
                 latency_ms=latency_ms,
                 status="ok",
+                request_id=trace_id,
             )
             self._history.record(self._engine.health_snapshot())
             if vision:
@@ -539,6 +543,7 @@ class LocalRouter:
                     prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
                     latency_ms=int((time.monotonic() - start) * 1000),
                     status="empty_response",
+                    request_id=trace_id,
                 )
                 self._history.record(self._engine.health_snapshot())
                 verdict = await asyncio.to_thread(self._error_brain.classify, "empty stream response", None)
@@ -578,6 +583,7 @@ class LocalRouter:
                     prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
                     latency_ms=int((time.monotonic() - start) * 1000),
                     status="rate_limited",
+                    request_id=trace_id,
                 )
                 self._history.record(self._engine.health_snapshot())
                 verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), 429)
@@ -607,6 +613,7 @@ class LocalRouter:
                     prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
                     latency_ms=int((time.monotonic() - start) * 1000),
                     status="auth_error",
+                    request_id=trace_id,
                 )
                 self._history.record(self._engine.health_snapshot())
                 verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), 401)
@@ -635,6 +642,7 @@ class LocalRouter:
                     prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
                     latency_ms=int((time.monotonic() - start) * 1000),
                     status="error",
+                    request_id=trace_id,
                 )
                 self._history.record(self._engine.health_snapshot())
                 verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), exc.status_code)
@@ -825,6 +833,7 @@ class LocalRouter:
                         tier=tier, provider=route.provider, model=route.model,
                         prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
                         latency_ms=latency_ms, status="empty_response",
+                        request_id=trace_id,
                     )
                     self._history.record(self._engine.health_snapshot())
                     # No except clause below catches this — it propagates
@@ -858,6 +867,7 @@ class LocalRouter:
                     tier=tier, provider=route.provider, model=route.model,
                     prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
                     latency_ms=latency_ms, status="empty_response",
+                    request_id=trace_id,
                 )
                 self._history.record(self._engine.health_snapshot())
                 verdict = await asyncio.to_thread(self._error_brain.classify, 
@@ -937,6 +947,7 @@ class LocalRouter:
                 cost_usd=0.0,
                 latency_ms=latency_ms,
                 status="ok",
+                request_id=trace_id,
             )
             self._history.record(self._engine.health_snapshot())
             if vision:

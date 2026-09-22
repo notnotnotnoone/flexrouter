@@ -137,6 +137,20 @@ def _local_hour(ts: str) -> datetime:
     return dt.replace(minute=0, second=0, microsecond=0)
 
 
+def _int(value) -> int:
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _float(value) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _audit_rows(state_dir: str) -> list[dict]:
     path = Path(state_dir) / "audit.csv"
     if not path.exists():
@@ -173,6 +187,15 @@ def recent_window(state_dir: str, hours: int = 24,
     by_bucket: Counter = Counter()
     all_latencies: list[float] = []
     total = ok_total = 0
+    # request id -> [attempts, succeeded]. A request that took more than one
+    # attempt and still got an answer is a failover: the router moved on and
+    # the app never knew. Rows written before `request_id` existed have an
+    # empty id and are left out of this count rather than being lumped
+    # together as one enormous request.
+    attempts: dict[str, list[int]] = {}
+    tokens_in = tokens_out = 0
+    spend = 0.0
+    priced_rows = 0
 
     for r in _audit_rows(state_dir):
         try:
@@ -196,6 +219,19 @@ def recent_window(state_dir: str, hours: int = 24,
         model = f"{provider}/{r.get('model', '')}"
         req_by_model[model] += 1
         by_bucket[r.get("tier") or "unknown"] += 1
+
+        rid = (r.get("request_id") or "").strip()
+        if rid:
+            seen = attempts.setdefault(rid, [0, 0])
+            seen[0] += 1
+            seen[1] += 1 if good else 0
+
+        tokens_in += _int(r.get("prompt_tokens"))
+        tokens_out += _int(r.get("completion_tokens"))
+        cost = _float(r.get("cost_usd"))
+        spend += cost
+        if cost > 0:
+            priced_rows += 1
 
         if good:
             ok_total += 1
@@ -229,9 +265,28 @@ def recent_window(state_dir: str, hours: int = 24,
         "failed": sum(c[1] for c in health[name]),
     } for name in order]
 
+    # A failover is a request that needed more than one attempt and still
+    # got an answer. One that needed more than one and never got one is a
+    # request that genuinely failed, which is a different thing and counted
+    # separately - conflating them would make the router look good at
+    # recovering on exactly the occasions it did not recover.
+    failovers = sum(1 for a, ok in attempts.values() if a > 1 and ok)
+    gave_up = sum(1 for a, ok in attempts.values() if a > 1 and not ok)
+
     return {
         "hours": hours,
         "labels": [s.strftime("%H:%M") for s in starts],
+        "requests_traced": len(attempts),
+        "failovers": failovers,
+        "gave_up": gave_up,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        # `spend` is only as true as the prices set on the models. When no
+        # row carried a price, the honest answer is "not priced", not "$0" -
+        # the page must not imply free when it means unknown.
+        "spend_usd": round(spend, 6),
+        "priced_rows": priced_rows,
+        "any_priced": priced_rows > 0,
         "starts": [s.isoformat(timespec="seconds") for s in starts],
         "providers": providers,
         "fails_by_hour": fails_by_hour,

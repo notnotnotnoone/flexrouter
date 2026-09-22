@@ -2,12 +2,15 @@
 """`recent_window` is what the Overview reads. `compute_stats` next to it
 answers over all of history; these guard the difference."""
 import csv
+
+import pytest
 from datetime import datetime, timedelta, timezone
 
 from flexrouter.dashboard.stats import recent_window
 
 HEADERS = ["timestamp", "tier", "provider", "model", "prompt_tokens",
-           "completion_tokens", "cost_usd", "latency_ms", "status"]
+           "completion_tokens", "cost_usd", "latency_ms", "status",
+           "request_id"]
 
 
 def _write(tmp_path, rows):
@@ -19,12 +22,12 @@ def _write(tmp_path, rows):
 
 
 def _row(when, provider="groq", model="llama", status="ok",
-         latency=200, tier="default"):
+         latency=200, tier="default", request_id="", cost=0.0):
     return {
         "timestamp": when.astimezone(timezone.utc).isoformat(timespec="seconds"),
         "tier": tier, "provider": provider, "model": model,
-        "prompt_tokens": 10, "completion_tokens": 5, "cost_usd": 0.0,
-        "latency_ms": latency, "status": status,
+        "prompt_tokens": 10, "completion_tokens": 5, "cost_usd": cost,
+        "latency_ms": latency, "status": status, "request_id": request_id,
     }
 
 
@@ -122,3 +125,77 @@ def test_a_malformed_row_is_skipped_not_fatal(tmp_path):
     worse = dict(good, latency_ms="")
     w = recent_window(_write(tmp_path, [good, bad, worse]), now=now)
     assert w["requests"] == 2
+
+
+# ── failovers, which need the request id ───────────────────────────────
+
+def test_two_attempts_ending_in_an_answer_is_one_failover(tmp_path):
+    now = datetime.now().astimezone().replace(minute=30)
+    rows = [
+        _row(now, provider="groq", status="rate_limited", request_id="r1"),
+        _row(now, provider="cerebras", status="ok", request_id="r1"),
+    ]
+    w = recent_window(_write(tmp_path, rows), now=now)
+    assert w["failovers"] == 1
+    assert w["gave_up"] == 0
+    assert w["requests_traced"] == 1
+    # Still two attempts against the providers - the failover count is a
+    # different question from the traffic count.
+    assert w["requests"] == 2
+
+
+def test_a_request_that_never_recovered_is_not_a_failover(tmp_path):
+    # Conflating the two would make the router look best at recovering on
+    # exactly the occasions it failed to recover.
+    now = datetime.now().astimezone().replace(minute=30)
+    rows = [
+        _row(now, status="rate_limited", request_id="r1"),
+        _row(now, status="server_error", request_id="r1"),
+    ]
+    w = recent_window(_write(tmp_path, rows), now=now)
+    assert w["failovers"] == 0
+    assert w["gave_up"] == 1
+
+
+def test_a_request_answered_first_time_is_not_a_failover(tmp_path):
+    now = datetime.now().astimezone().replace(minute=30)
+    w = recent_window(_write(tmp_path, [_row(now, request_id="r1")]), now=now)
+    assert w["failovers"] == 0 and w["gave_up"] == 0
+
+
+def test_rows_from_before_request_ids_are_left_out_of_the_count(tmp_path):
+    # Every legacy row has an empty id. Grouping them would read as one
+    # gigantic request that failed over hundreds of times.
+    now = datetime.now().astimezone().replace(minute=30)
+    rows = [_row(now, status="rate_limited") for _ in range(5)] + [_row(now)]
+    w = recent_window(_write(tmp_path, rows), now=now)
+    assert w["requests_traced"] == 0
+    assert w["failovers"] == 0
+    assert w["requests"] == 6
+
+
+# ── spend ──────────────────────────────────────────────────────────────
+
+def test_spend_is_summed_from_what_the_rows_carry(tmp_path):
+    now = datetime.now().astimezone().replace(minute=30)
+    rows = [_row(now, cost=0.0012, request_id="a"),
+            _row(now, cost=0.0008, request_id="b")]
+    w = recent_window(_write(tmp_path, rows), now=now)
+    assert w["spend_usd"] == pytest.approx(0.002)
+    assert w["any_priced"] is True
+
+
+def test_unpriced_traffic_is_reported_as_unpriced_not_as_free(tmp_path):
+    # "$0.00" would claim the traffic was free. It might have cost money
+    # nobody has told the router about yet.
+    now = datetime.now().astimezone().replace(minute=30)
+    w = recent_window(_write(tmp_path, [_row(now, request_id="a")]), now=now)
+    assert w["any_priced"] is False
+    assert w["priced_rows"] == 0
+
+
+def test_tokens_are_totalled_across_the_window(tmp_path):
+    now = datetime.now().astimezone().replace(minute=30)
+    rows = [_row(now, request_id="a"), _row(now, request_id="b")]
+    w = recent_window(_write(tmp_path, rows), now=now)
+    assert w["tokens_in"] == 20 and w["tokens_out"] == 10
