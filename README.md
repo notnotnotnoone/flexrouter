@@ -21,6 +21,25 @@ curl http://localhost:4891/v1/chat/completions \
 
 If you're writing Python and would rather call it directly without going through the web address, see [Using it directly from Python](#using-it-directly-from-python) below.
 
+## Contents
+
+- [Install](#install)
+- [Where your settings live](#where-your-settings-live)
+- [Quickstart](#quickstart)
+- [How routing works](#how-routing-works)
+- [Config reference](#config-reference)
+- [Using it directly from Python](#using-it-directly-from-python)
+- [Session stickiness](#session-stickiness)
+- [Multiple keys per provider](#multiple-keys-per-provider)
+- [CLI](#cli)
+- [Dashboard](#dashboard)
+- [Request log](#request-log)
+- [Picking up changes while it's running](#picking-up-changes-while-its-running)
+- [Rebuilding your model list](#rebuilding-your-model-list)
+- [Moving from an older setup](#moving-from-an-older-setup)
+- [Contributing](#contributing)
+- [Credits](#credits)
+
 ## Install
 
 ```bash
@@ -359,16 +378,9 @@ flexrouter keys import path/to/old-flexrouter.yaml
 
 This copies any keys that were typed directly into that old file into your new, shared key store. It leaves the old file exactly as it was, and any keys that were already environment-variable references are left alone too, since those already work without any changes.
 
-## PyPI publish
+## Contributing
 
-Tag a release to publish:
-
-```bash
-git tag v0.1.0
-git push origin main --tags
-```
-
-Requires a [PyPI trusted publisher](https://docs.pypi.org/trusted-publishers/) configured for this repo with environment `pypi`.
+Bug reports, feature requests, and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup and how to submit changes. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Credits
 

@@ -16,3 +16,13 @@ flexrouter.yaml
 
 # Someone else's project (own git history), kept locally for reference only.
 Refrence_projects/
+
+# AI-agent working files: local issue tracker, internal plans/specs/ADRs
+# process docs, and agent tool config. Useful locally, not for the public
+# repo — keep them out of what visitors see.
+.scratch/
+docs/superpowers/
+docs/agents/
+CONTEXT.md
+CLAUDE.md
+.claude/
