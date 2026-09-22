@@ -15,3 +15,7 @@ Default five-role vocabulary (needs-triage, needs-info, ready-for-agent, ready-f
 ### Domain docs
 
 Single-context repo — one `CONTEXT.md` at root, ADRs in `docs/adr/`. See `docs/agents/domain.md`.
+
+### Plan file lifecycle
+
+Root-level plan files (`PLAN.md`, `PLAN-V2.md`, etc.) move to `docs/archive/` once finished. See `docs/agents/plan-lifecycle.md`.

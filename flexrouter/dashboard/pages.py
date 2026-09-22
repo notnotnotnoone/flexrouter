@@ -8,6 +8,7 @@ areas are built as of sub-plan 7.
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -15,8 +16,11 @@ from urllib.parse import quote
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from flexrouter import keys as keystore
 from flexrouter import overrides as ov
-from flexrouter.dashboard import facts, keytest, pending_actions, settings_write
+from flexrouter import score_facts
+from flexrouter import service_keys
+from flexrouter.dashboard import facts, keytest, pending_actions, ranking, settings_write
 from flexrouter.dashboard.render import attrs, esc, page, tag
 
 pages = APIRouter()
@@ -30,6 +34,12 @@ def _input(**kw) -> str:
     nearly every form control here - can never be passed to it as a kwarg
     without colliding with that parameter."""
     return f"<input{attrs(kw)}>"
+
+
+def _textarea(body: str, **kw) -> str:
+    """A `<textarea>` element. Not `tag("textarea", body, **kw)`: same
+    collision as `_input` above - `tag`'s first parameter is `name`."""
+    return f"<textarea{attrs(kw)}>{body}</textarea>"
 
 
 def _live_router():
@@ -169,6 +179,10 @@ def _add_provider_form() -> str:
               placeholder="header parser (optional)") + " "
         + _input(type="text", name="key_strategy",
               placeholder="key strategy (optional)") + " "
+        + _input(type="text", name="key_secret",
+              placeholder="key (optional)") + " "
+        + _input(type="text", name="key_label",
+              placeholder="key label (optional)") + " "
         + tag("button", "Add provider", type="submit"),
         method="post", action="/providers",
     )
@@ -198,8 +212,10 @@ def _providers_body(router, banner: str = "") -> str:
                    "holds. Click a provider for its keys.", cls="lede")
         + tag("table", "".join(rows))
         + tag("h3", "Add a provider")
-        + tag("p", "A provider you add here still needs a key added the "
-                   "usual way: flexrouter keys add <name>.", cls="note")
+        + tag("p", "A key can be added right here, or later from the "
+                   "provider's own page - models are always added from "
+                   "there, one at a time, once the provider exists.",
+              cls="note")
         + _add_provider_form()
     )
 
@@ -210,7 +226,7 @@ def _key_rows(detail) -> str:
 
     header = tag("tr", "".join([
         tag("th", h) for h in [
-            "Key", "Status", "Why", "Weight", "Allowed models", "Enabled",
+            "Key", "Value", "Status", "Why", "Weight", "Allowed models", "Enabled",
             "Requests today", "Tokens today", "Failures (24h)",
             "Consecutive failures", "Active now", "Typical latency",
             "Last used", "Source", "Test",
@@ -233,6 +249,7 @@ def _key_rows(detail) -> str:
         )
         rows.append(tag("tr", "".join([
             tag("td", esc(k.label or k.id)),
+            tag("td", esc(k.masked)),
             tag("td", esc(status), cls=f"state-{'ok' if k.status == 'live' else 'warn' if k.status == 'cooling' else 'bad'}"),
             tag("td", esc(k.reason)),
             tag("td", esc(k.weight)),
@@ -270,7 +287,27 @@ def _provider_edit_form(detail, editable: dict) -> str:
     return tag("h3", "Change it") + edit + clear
 
 
-def _provider_detail_body(detail, editable: dict, banner: str = "") -> str:
+def _provider_add_model_form(provider: str, bucket_names: list) -> str:
+    bucket_options = "".join(
+        tag("option", esc(b), value=esc(b)) for b in bucket_names
+    )
+    return tag(
+        "form",
+        f"<select{attrs({'name': 'bucket'})}>{bucket_options}</select> "
+        + _input(type="text", name="model", placeholder="model") + " "
+        + _input(type="number", name="score", placeholder="score") + " "
+        + _input(type="number", name="rpm", placeholder="rpm") + " "
+        + _input(type="number", name="tpm", placeholder="tpm") + " "
+        + _input(type="number", name="context_window",
+              placeholder="context window (optional)") + " "
+        + tag("label", _input(type="checkbox", name="vision") + "vision") + " "
+        + tag("button", "Add model", type="submit"),
+        method="post", action=f"/providers/{quote(provider, safe=':')}/models",
+    )
+
+
+def _provider_detail_body(detail, editable: dict, bucket_names: list,
+                          banner: str = "") -> str:
     models = (
         tag("p", esc(f"Alive: {', '.join(detail.models_alive) or 'none'}"))
         + tag("p", esc(f"Gone: {', '.join(detail.models_gone) or 'none'}"))
@@ -286,6 +323,10 @@ def _provider_detail_body(detail, editable: dict, banner: str = "") -> str:
         + quarantine_note
         + tag("h3", "Models")
         + models
+        + tag("h3", "Add a model")
+        + tag("p", "One model per submission, into the bucket you choose. "
+                   "Submit again for the next one.", cls="note")
+        + _provider_add_model_form(detail.name, bucket_names)
         + tag("h3", "Keys")
         + tag("p", "Test sends one real chat request through this key - not "
                    "just a model list lookup, which can look fine while "
@@ -431,6 +472,7 @@ def _models_body(router, banner: str = "") -> str:
                    "guessed (nobody's said either way yet), or manual "
                    "(you set it and nothing overrides it).", cls="lede")
         + tag("table", "".join(rows))
+        + tag("p", tag("a", "Rank models with an AI", href="/models/rank"))
         + tag("h3", "Disabled models")
         + disabled_section
         + tag("h3", "Pending catalogue changes")
@@ -440,6 +482,84 @@ def _models_body(router, banner: str = "") -> str:
                    "changed field applies the provider's new value.",
               cls="note")
         + _pending_body(pending, bucket_names)
+    )
+
+
+def _rank_body(prompt: str, notes: str) -> str:
+    notes_form = tag(
+        "form",
+        _textarea(esc(notes), name="notes", rows="6",
+                 placeholder="benchmark material or notes (optional)")
+        + " " + tag("button", "Build prompt", type="submit"),
+        method="get", action="/models/rank",
+    )
+    paste_form = tag(
+        "form",
+        _textarea("", name="answer", rows="10",
+                  placeholder="paste the AI's reply here, one line per "
+                              "model: provider | model | score")
+        + " " + tag("button", "Show proposed changes", type="submit"),
+        method="post", action="/models/rank/proposal",
+    )
+    return (
+        tag("h1", "Rank models with an AI")
+        + tag("p", "Builds a ready-made prompt from the current model "
+                   "list plus whatever benchmark material you supply. "
+                   "Send it yourself, or copy it into whatever chat "
+                   "you're already in and paste the answer back below. "
+                   "Nothing is applied until you say so on the next page, "
+                   "and a score you've set by hand here is never "
+                   "proposed a new value.", cls="lede")
+        + tag("h3", "1. Add benchmark material (optional)")
+        + notes_form
+        + tag("h3", "2. The prompt - copy this")
+        + _textarea(esc(prompt), rows="16", readonly=True)
+        + tag("h3", "3. Paste the answer back")
+        + paste_form
+    )
+
+
+def _rank_proposal_body(changes: list, skipped_manual: list) -> str:
+    if not changes:
+        body = tag("p", "Nothing to propose - either nothing changed, or "
+                        "every changed score is pinned by hand.", cls="note")
+    else:
+        rows_html = [tag("tr", "".join(tag("th", h) for h in [
+            "Apply", "Provider", "Model", "Current", "Proposed",
+        ]))]
+        for row, proposed in changes:
+            ident = f"{row.provider}/{row.model}"
+            cell = (
+                _input(type="checkbox", name=f"apply:{ident}", checked=True)
+                + _input(type="hidden", name=f"score:{ident}", value=str(proposed))
+            )
+            rows_html.append(tag("tr", "".join([
+                tag("td", cell),
+                tag("td", esc(row.provider)),
+                tag("td", esc(row.model)),
+                tag("td", esc(row.score)),
+                tag("td", esc(proposed)),
+            ])))
+        body = tag(
+            "form", tag("table", "".join(rows_html))
+            + tag("button", "Apply checked scores", type="submit"),
+            method="post", action="/models/rank/apply",
+        )
+
+    skipped_note = (
+        tag("p", esc(f"{len(skipped_manual)} model(s) skipped - their score "
+                     f"is pinned by hand: {', '.join(skipped_manual)}"),
+            cls="note")
+        if skipped_manual else ""
+    )
+
+    return (
+        tag("h1", "Proposed scores")
+        + tag("p", "Nothing here is applied until you press the button "
+                   "below. Uncheck any row you don't want changed.",
+              cls="lede")
+        + skipped_note
+        + body
     )
 
 
@@ -674,6 +794,55 @@ def _settings_field_row(f) -> str:
     ]))
 
 
+def _service_key_row(name: str, label: str, env_var: str) -> str:
+    current = service_keys.current_record(name)
+    if current:
+        value = tag("td", esc(keystore.mask(current.secret)), cls="state-ok")
+    elif os.environ.get(env_var):
+        value = tag("td", esc(f"set via ${env_var} (environment)"))
+    else:
+        value = tag("td", "not set", cls="state-bad")
+
+    save_form = tag(
+        "form",
+        _input(type="text", name="secret", placeholder="paste key") + " "
+        + tag("button", "Save", type="submit"),
+        method="post", action=f"/settings/keys/{quote(name, safe=':')}",
+    )
+    remove_form = (
+        tag("form", tag("button", "Remove", type="submit"),
+            method="post", action=f"/settings/keys/{quote(name, safe=':')}/remove")
+        if current else ""
+    )
+    return tag("tr", "".join([
+        tag("td", esc(label)),
+        value,
+        tag("td", save_form),
+        tag("td", remove_form),
+    ]))
+
+
+def _service_keys_section() -> str:
+    header = tag("tr", "".join(tag("th", h) for h in [
+        "Service", "Current key", "Set it", "",
+    ]))
+    rows = [header] + [
+        _service_key_row(name, label, env_var)
+        for name, (label, env_var) in service_keys.SERVICES.items()
+    ]
+    return (
+        tag("h3", "Service keys")
+        + tag("p", "Not a chat provider - these are keys the service uses "
+                   "for its own calls: scoring a newly discovered model, "
+                   "or (once it's built) classifying an error. Typed here "
+                   "first, its environment variable second - same order "
+                   "as every other key in this app. Stored the same way a "
+                   "provider's key is: masked everywhere, never shown in "
+                   "full again.", cls="note")
+        + tag("table", "".join(rows))
+    )
+
+
 def _settings_body(router, banner: str = "") -> str:
     header = tag("tr", "".join(tag("th", h) for h in [
         "Setting", "Change it", "Where it's from", "",
@@ -690,6 +859,7 @@ def _settings_body(router, banner: str = "") -> str:
                    "adding a provider, a bucket, or a model, live on "
                    "their own pages.", cls="lede")
         + tag("table", "".join(rows))
+        + _service_keys_section()
     )
 
 
@@ -762,6 +932,64 @@ async def model_pending_action(provider: str, kind: str, model: str,
     return _redirect_with_message("/models", ok=True, message=f"{provider}/{model} {action}ed")
 
 
+@pages.get("/models/rank", response_class=HTMLResponse, include_in_schema=False)
+def models_rank_page(notes: str = "") -> HTMLResponse:
+    rows = facts.models(_live_router())
+    prompt = ranking.build_prompt(rows, notes)
+    return HTMLResponse(page("Rank models", "models", _rank_body(prompt, notes)))
+
+
+@pages.post("/models/rank/proposal", response_class=HTMLResponse, include_in_schema=False)
+async def models_rank_proposal(request: Request) -> HTMLResponse:
+    form = await request.form()
+    answer = form.get("answer") or ""
+    router = _live_router()
+    rows = facts.models(router)
+    by_ident = {f"{r.provider}/{r.model}": r for r in rows}
+    parsed = ranking.parse_answer(answer, set(by_ident))
+
+    state_dir = router._cfg.state_dir
+    skipped_manual = []
+    changes = []
+    for ident, proposed_score in parsed.items():
+        provider, _, model = ident.partition("/")
+        if score_facts.is_manual(state_dir, provider, model):
+            skipped_manual.append(ident)
+            continue
+        row = by_ident[ident]
+        if proposed_score == row.score:
+            continue
+        changes.append((row, proposed_score))
+
+    return HTMLResponse(
+        page("Rank models", "models", _rank_proposal_body(changes, skipped_manual)))
+
+
+@pages.post("/models/rank/apply", include_in_schema=False)
+async def models_rank_apply(request: Request) -> RedirectResponse:
+    form = await request.form()
+    router = _live_router()
+    state_dir = router._cfg.state_dir
+    applied = []
+    for key in form.keys():
+        if not key.startswith("apply:"):
+            continue
+        ident = key[len("apply:"):]
+        score_raw = form.get(f"score:{ident}")
+        if score_raw is None:
+            continue
+        provider, _, model = ident.partition("/")
+        try:
+            settings_write.set_model_fields(provider, model, {"score": int(score_raw)})
+        except ValueError:
+            continue
+        score_facts.record(state_dir, provider, model, "ai-ranked")
+        applied.append(ident)
+
+    message = f"{len(applied)} score(s) applied" if applied else "nothing was checked"
+    return _redirect_with_message("/models", ok=bool(applied), message=message)
+
+
 @pages.post("/models/{ident:path}", include_in_schema=False)
 async def model_write(ident: str, request: Request) -> RedirectResponse:
     provider, _, model = ident.partition("/")
@@ -780,6 +1008,8 @@ async def model_write(ident: str, request: Request) -> RedirectResponse:
                     fields[name] = int(raw_value)
             fields["vision"] = "vision" in form
             settings_write.set_model_fields(provider, model, fields)
+            if "score" in fields:
+                score_facts.record(_live_router()._cfg.state_dir, provider, model, "manual")
         else:
             raise ValueError(f"unknown action {action!r}")
     except ValueError as e:
@@ -864,7 +1094,50 @@ async def providers_add(request: Request) -> RedirectResponse:
         ov.add_provider(name, fields)
     except ValueError as e:
         return _redirect_with_message("/providers", ok=False, message=str(e))
-    return _redirect_with_message("/providers", ok=True, message=f"provider {name!r} added")
+
+    # The provider write above already landed - a failure past this point
+    # (e.g. the key file can't be written) must not look like the whole
+    # submission failed, since the provider it named now genuinely exists.
+    dest = f"/providers/{quote(name, safe=':')}"
+    secret = (form.get("key_secret") or "").strip()
+    if not secret:
+        return _redirect_with_message(dest, ok=True, message=f"provider {name!r} added")
+    try:
+        keystore.add_key(name, secret, (form.get("key_label") or "").strip())
+    except (ValueError, OSError) as e:
+        return _redirect_with_message(
+            dest, ok=False, message=f"provider {name!r} added, but its key failed: {e}")
+    return _redirect_with_message(
+        dest, ok=True, message=f"provider {name!r} and its key added")
+
+
+@pages.post("/providers/{provider}/models", include_in_schema=False)
+async def provider_add_model(provider: str, request: Request) -> RedirectResponse:
+    form = await request.form()
+    dest = f"/providers/{quote(provider, safe=':')}"
+    bucket = (form.get("bucket") or "").strip()
+    model = (form.get("model") or "").strip()
+    try:
+        if not bucket:
+            raise ValueError("choose a bucket")
+        fields = {
+            "provider": provider,
+            "model": model,
+            "score": int(form.get("score")),
+            "rpm": int(form.get("rpm")),
+            "tpm": int(form.get("tpm")),
+        }
+        context_window = form.get("context_window")
+        if context_window:
+            fields["context_window"] = int(context_window)
+        if "vision" in form:
+            fields["vision"] = True
+        ov.add_model(bucket, fields)
+    except (ValueError, TypeError) as e:
+        return _redirect_with_message(
+            dest, ok=False, message=f"{provider}/{model or '?'}: {e}")
+    return _redirect_with_message(
+        dest, ok=True, message=f"{provider}/{model} added to {bucket}")
 
 
 @pages.get("/providers/{provider}", response_class=HTMLResponse, include_in_schema=False)
@@ -887,9 +1160,10 @@ def provider_detail_page(provider: str, tested: str = "", ok: str = "",
         banner = _message_banner(ok, message)
 
     editable = facts.provider_editable_fields(router, provider)
+    bucket_names = list(router._cfg.tiers)
     return HTMLResponse(
         page(f"{provider} - Providers & keys", "providers",
-             _provider_detail_body(detail, editable, banner))
+             _provider_detail_body(detail, editable, bucket_names, banner))
     )
 
 
@@ -950,5 +1224,25 @@ async def settings_set(field: str, request: Request) -> RedirectResponse:
     except ValueError as e:
         return _redirect_with_message("/settings", ok=False, message=str(e))
     return _redirect_with_message("/settings", ok=True, message=f"{field} saved")
+
+
+@pages.post("/settings/keys/{name}", include_in_schema=False)
+async def settings_key_set(name: str, request: Request) -> RedirectResponse:
+    if name not in service_keys.SERVICES:
+        return _redirect_with_message("/settings", ok=False, message=f"unknown service {name!r}")
+    form = await request.form()
+    secret = (form.get("secret") or "").strip()
+    if not secret:
+        return _redirect_with_message("/settings", ok=False, message="paste a key first")
+    service_keys.set_key(name, secret)
+    return _redirect_with_message("/settings", ok=True, message=f"{name} key saved")
+
+
+@pages.post("/settings/keys/{name}/remove", include_in_schema=False)
+async def settings_key_remove(name: str) -> RedirectResponse:
+    if name not in service_keys.SERVICES:
+        return _redirect_with_message("/settings", ok=False, message=f"unknown service {name!r}")
+    service_keys.clear_key(name)
+    return _redirect_with_message("/settings", ok=True, message=f"{name} key removed")
 
 

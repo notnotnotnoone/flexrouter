@@ -351,6 +351,47 @@ def test_settings_rejects_a_non_numeric_value_for_a_numeric_field(client):
     assert "state-bad" in body
 
 
+def test_service_key_starts_out_not_set(client):
+    body = client.get("/settings").text
+    assert "not set" in body.lower()
+    assert "artificial analysis" in body.lower()
+
+
+def test_service_key_can_be_saved_and_is_masked(client):
+    client.post("/settings/keys/aa", data={"secret": "aa-secretvalue1234"})
+    body = client.get("/settings").text
+    assert "aa-secretvalue1234" not in body
+    assert "…1234" in body
+
+
+def test_service_key_can_be_removed(client):
+    client.post("/settings/keys/aa", data={"secret": "aa-secretvalue1234"})
+    client.post("/settings/keys/aa/remove")
+    body = client.get("/settings").text
+    assert "…1234" not in body
+
+
+def test_service_key_rejects_an_unknown_service(client):
+    r = client.post("/settings/keys/nosuchservice", data={"secret": "x"},
+                    follow_redirects=False)
+    body = client.get(r.headers["location"]).text
+    assert "unknown service" in body.lower()
+
+
+def test_service_key_rejects_an_empty_secret(client):
+    r = client.post("/settings/keys/aa", data={"secret": ""}, follow_redirects=False)
+    body = client.get(r.headers["location"]).text
+    assert "state-bad" in body
+
+
+def test_saving_a_service_key_replaces_the_old_one_not_appends(client):
+    client.post("/settings/keys/aa", data={"secret": "first-keyaaaa"})
+    client.post("/settings/keys/aa", data={"secret": "second-keybbbb"})
+    body = client.get("/settings").text
+    assert "…aaaa" not in body
+    assert "…bbbb" in body
+
+
 def test_add_a_provider(client):
     client.post("/providers", data={"name": "newprov", "base_url": "https://x/v1"})
     body = client.get("/providers").text
@@ -361,6 +402,57 @@ def test_add_a_provider_without_a_base_url_fails_cleanly(client):
     r = client.post("/providers", data={"name": "newprov"}, follow_redirects=False)
     body = client.get(r.headers["location"]).text
     assert "state-bad" in body
+
+
+def test_onboarding_a_provider_key_and_model_together(client):
+    r = client.post("/providers", data={
+        "name": "onboardprov", "base_url": "https://onboard/v1",
+        "key_secret": "sk-abcd1234", "key_label": "main",
+    }, follow_redirects=False)
+    assert r.headers["location"].startswith("/providers/onboardprov?")
+
+    detail_body = client.get(r.headers["location"]).text
+    assert "and its key added" in detail_body
+    assert "sk-abcd1234" not in detail_body
+    assert "…1234" in detail_body
+
+    client.post("/providers/onboardprov/models", data={
+        "bucket": "low", "model": "onboard-model", "score": "80",
+        "rpm": "10", "tpm": "1000",
+    })
+    models_body = client.get("/models").text
+    assert "onboard-model" in models_body
+    buckets_body = client.get("/buckets").text
+    assert "onboard-model" in buckets_body
+
+
+def test_onboarding_a_provider_with_no_key_and_no_models_still_creates_it(client):
+    client.post("/providers", data={
+        "name": "bareprov", "base_url": "https://bare/v1",
+    })
+    body = client.get("/providers").text
+    assert "bareprov" in body
+    detail_body = client.get("/providers/bareprov").text
+    assert "No keys configured" in detail_body
+
+
+def test_onboarding_a_malformed_model_row_does_not_discard_the_provider_or_key(client):
+    client.post("/providers", data={
+        "name": "partialprov", "base_url": "https://partial/v1",
+        "key_secret": "sk-keepme0",
+    })
+    r = client.post("/providers/partialprov/models", data={
+        "bucket": "low", "model": "half-baked", "score": "80", "rpm": "10",
+        # tpm deliberately missing
+    }, follow_redirects=False)
+    body = client.get(r.headers["location"]).text
+    assert "state-bad" in body
+    assert "partialprov/half-baked" in body
+    # the provider and its key both survived the failed model row
+    assert "sk-keepme0" not in body
+    assert "…pme0" in body
+    models_body = client.get("/models").text
+    assert "half-baked" not in models_body
 
 
 def test_edit_a_provider_and_see_the_new_value(client):
@@ -411,6 +503,58 @@ def test_edit_a_model_and_see_the_new_score(client):
     })
     body = client.get("/models").text
     assert ">42<" in body
+
+
+def test_rank_page_lists_current_models_in_the_prompt(client):
+    body = client.get("/models/rank").text
+    assert "groq" in body
+    assert "llama-3.1-8b-instant" in body
+    assert "current score 85" in body
+    assert "provider | model | proposed_score" in body
+
+
+def test_rank_proposal_shows_current_vs_proposed(client):
+    body = client.post("/models/rank/proposal", data={
+        "answer": "groq | llama-3.1-8b-instant | 99",
+    }).text
+    assert ">85<" in body
+    assert ">99<" in body
+
+
+def test_rank_apply_updates_the_score(client):
+    client.post("/models/rank/apply", data={
+        "apply:groq/llama-3.1-8b-instant": "on",
+        "score:groq/llama-3.1-8b-instant": "99",
+    })
+    body = client.get("/models").text
+    assert ">99<" in body
+
+
+def test_rank_apply_with_nothing_checked_changes_nothing(client):
+    r = client.post("/models/rank/apply", data={}, follow_redirects=False)
+    body = client.get(r.headers["location"]).text
+    assert "nothing was checked" in body.lower()
+    assert ">85<" in client.get("/models").text
+
+
+def test_rank_skips_a_score_pinned_by_hand(client):
+    client.post("/models/groq/llama-3.1-8b-instant", data={
+        "action": "edit", "score": "42", "rpm": "60", "tpm": "60000",
+        "context_window": "131072",
+    })
+    body = client.post("/models/rank/proposal", data={
+        "answer": "groq | llama-3.1-8b-instant | 99",
+    }).text
+    assert "pinned by hand" in body.lower()
+    assert "groq/llama-3.1-8b-instant" in body
+    assert ">99<" not in body
+
+
+def test_rank_answer_for_an_unconfigured_model_is_ignored(client):
+    body = client.post("/models/rank/proposal", data={
+        "answer": "nosuchprovider | nosuchmodel | 50",
+    }).text
+    assert "nothing to propose" in body.lower()
 
 
 def test_disable_a_model_removes_it_from_the_live_table(client):

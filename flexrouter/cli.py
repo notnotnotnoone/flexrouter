@@ -7,6 +7,7 @@ from pathlib import Path
 import click
 
 from flexrouter import home
+from flexrouter import service_keys
 from flexrouter.config import load_config, redact_settings_text
 from flexrouter.exceptions import ConfigError, ConfigFieldError
 from flexrouter.refresh import refresh_config
@@ -95,7 +96,7 @@ def refresh():
     """Check your providers for model and limit changes. Nothing is changed."""
     path = home.config_path()
     cfg = load_config(path)
-    aa_key = os.environ.get("AA_API_KEY")
+    aa_key = service_keys.resolve("aa")
     result = refresh_config(str(path), cfg.state_dir, aa_key=aa_key)
     click.echo(
         f"Checked your providers: found {len(result.added)} new model(s), "

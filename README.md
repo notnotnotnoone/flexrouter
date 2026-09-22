@@ -1,17 +1,22 @@
 # flexrouter
 
-flexrouter sends your requests to the best available AI model, out of a list you set up, and automatically switches to another one if a model is slow, out of quota, or down. It also tracks how much you're spending and shows you all of this in a live dashboard.
+flexrouter is a small program that runs in the background on your computer. Every app you have — scripts, other tools, whatever — sends its AI requests to it at one shared address, instead of each app juggling its own list of models and keys. flexrouter picks the best available model out of a list you set up, automatically switches to another one if a model is slow, out of quota, or down, tracks how much you're spending, and shows you all of this in a live dashboard.
 
-```python
-from flexrouter import FlexRouter
+It speaks the same language as OpenAI's API, so anything that already knows how to talk to OpenAI can point at flexrouter instead, with no special code:
 
-router = FlexRouter()
-response = router.generate(
-    messages=[{"role": "user", "content": "classify this text..."}],
-    tier="low",
-)
-print(response["choices"][0]["message"]["content"])
+```bash
+flexrouter dashboard
 ```
+
+```bash
+curl http://localhost:4891/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "low", "messages": [{"role": "user", "content": "classify this text..."}]}'
+```
+
+(`model` here is one of your buckets, like `low` or `high` — see [How routing works](#how-routing-works).)
+
+If you're writing Python and would rather call it directly without going through the web address, see [Using it directly from Python](#using-it-directly-from-python) below.
 
 ## Install
 
@@ -95,19 +100,15 @@ flexrouter keys add openai
 
 Each command asks you to paste the key in without showing it on screen, and saves it to your own user account on this machine — never into the settings file above. (You can still fall back to an environment variable, or type a key straight into the settings file, but the second one is discouraged and flexrouter will warn you if you do it.)
 
-**3. Route:**
+**3. Start it, then point your apps at it:**
 
-```python
-from flexrouter import FlexRouter
-
-router = FlexRouter()
-
-# Sync
-response = router.generate(messages=[...], tier="low")
-
-# Async
-response = await router.agenerate(messages=[...], tier="high")
+```bash
+flexrouter serve
 ```
+
+Anything that can talk to OpenAI's API can now talk to flexrouter — just change its base address to `http://localhost:4891/v1` and use a bucket name (like `low` or `high`) wherever it asks for a model. No flexrouter-specific code needed.
+
+If you're writing Python, you can also skip the web address entirely and call it directly — see [Using it directly from Python](#using-it-directly-from-python).
 
 ## How routing works
 
@@ -182,7 +183,16 @@ settings:
 | `balanced` | 3 | 2s |
 | `aggressive` | 5 | 1s |
 
-## API
+## Using it directly from Python
+
+You don't need this if you're already sending requests to `http://localhost:4891/v1` — this is only for Python code that wants to skip the web address and call flexrouter in-process instead.
+
+```python
+from flexrouter import FlexRouter
+
+router = FlexRouter()
+response = router.generate(messages=[...], tier="low")
+```
 
 ### `FlexRouter(config_path=None)`
 
@@ -356,3 +366,7 @@ git push origin main --tags
 ```
 
 Requires a [PyPI trusted publisher](https://docs.pypi.org/trusted-publishers/) configured for this repo with environment `pypi`.
+
+## Credits
+
+Inspired by [modelrelay](https://github.com/ellipticmarketing/modelrelay).

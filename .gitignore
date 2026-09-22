@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+build/
 dist/
 *.egg-info/
 .env
@@ -12,3 +13,6 @@ dashboard/frontend/dist/
 # this makes that explicit instead of relying on every contributor
 # remembering not to `git add` it by hand.
 flexrouter.yaml
+
+# Someone else's project (own git history), kept locally for reference only.
+Refrence_projects/

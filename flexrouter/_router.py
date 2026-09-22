@@ -1147,13 +1147,14 @@ class LocalRouter:
         freely regardless of what the calling thread is doing.
         """
         import concurrent.futures
-        import os
+
+        from flexrouter import service_keys
 
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 result = executor.submit(
                     refresh_config, str(self._config_path), self._cfg.state_dir,
-                    os.environ.get("AA_API_KEY"),
+                    service_keys.resolve("aa"),
                 ).result()
 
             from flexrouter.store import read_json
