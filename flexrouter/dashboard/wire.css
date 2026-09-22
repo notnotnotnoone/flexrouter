@@ -369,11 +369,54 @@ main > form {
 
 .page-head {
   display: flex;
-  align-items: baseline;
-  gap: 9px;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
   margin-bottom: 12px;
 }
 .page-head .where { font-size: 11px; color: var(--ink-3); }
+.page-head .spacer { margin-left: auto; }
+
+/* The time range. Real links, so the range is in the URL and survives a
+   reload - the switch itself needs no JavaScript. */
+.ranges {
+  display: flex;
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.ranges a {
+  padding: 3px 9px;
+  font-size: 11px;
+  color: var(--ink-3);
+  text-decoration: none;
+  border: 0;
+  border-right: 1px solid var(--rule-2);
+  transition: color 160ms ease, background-color 160ms ease;
+}
+.ranges a:last-child { border-right: 0; }
+.main .ranges a { border-bottom: 0; }
+.ranges a:hover { color: var(--ink); background: var(--wash); }
+.ranges a[aria-current] { color: var(--ink); background: var(--wash); font-weight: 500; }
+
+/* Live state. The lamp is the only thing on the page that claims the
+   figures are current, so it has to stop claiming it when they aren't. */
+.live-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.live-note .lamp {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+#ov[data-stale] { opacity: .72; }
+.ov-stale-note { display: none; }
 
 .ov { display: flex; flex-direction: column; gap: 10px; }
 .ov-banner { display: grid; grid-template-columns: minmax(0, 1fr) 286px; gap: 10px; }
@@ -454,7 +497,7 @@ main > form {
 
 .minis {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
   gap: 1px;
   margin-top: auto;
   background: var(--rule);
@@ -471,6 +514,12 @@ main > form {
   margin-bottom: 3px;
 }
 .mini b { font: 600 15px/1.1 var(--mono); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.mini small {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--ink-3);
+}
 
 /* tally — one big number */
 .ov .tally { display: flex; flex-direction: column; justify-content: center; padding: 14px 15px; }

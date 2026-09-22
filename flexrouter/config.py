@@ -5,6 +5,7 @@ import os
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
@@ -29,6 +30,11 @@ class ModelConfig:
     context_window: int = 200000
     vision: bool = False
     quotas: dict[str, int] = field(default_factory=dict)
+    # USD per million tokens. `None` means nobody has priced this model -
+    # which is not the same as free, and the dashboard says so. Most models
+    # here are on a free tier; some, like the decider, are not.
+    price_in: Optional[float] = None
+    price_out: Optional[float] = None
 
 @dataclass
 class ProviderConfig:
@@ -42,6 +48,22 @@ class ProviderConfig:
 class RetryConfig:
     retries: int = 3
     backoff_seconds: float = 2.0
+
+def _price(raw) -> Optional[float]:
+    """A price per million tokens, or `None` for "not priced".
+
+    An empty string is how the dashboard's form says "clear this", and a
+    negative price is a typo rather than a discount; both become `None`
+    so a bad edit costs the owner a figure, not a crash on every request.
+    """
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
 
 def _statuses(raw, default: tuple[int, ...]) -> tuple[int, ...]:
     """Accept either a YAML list or a comma-separated string.
@@ -442,6 +464,8 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
                 context_window=m.get("context_window", 200000),
                 vision=m.get("vision", False),
                 quotas=m.get("quotas", {}),
+                price_in=_price(m.get("price_in")),
+                price_out=_price(m.get("price_out")),
             ))
         tiers[bucket_name] = parsed_models
 

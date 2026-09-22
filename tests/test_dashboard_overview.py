@@ -17,7 +17,8 @@ from flexrouter.app import create_app
 from flexrouter.dashboard.pages import _chart_series
 
 HEADERS = ["timestamp", "tier", "provider", "model", "prompt_tokens",
-           "completion_tokens", "cost_usd", "latency_ms", "status"]
+           "completion_tokens", "cost_usd", "latency_ms", "status",
+           "request_id"]
 
 
 def _seed(state_dir, rows):
@@ -35,7 +36,7 @@ def _row(minutes_ago, status="ok", latency=200, tier="low", provider="groq"):
         "timestamp": when.astimezone(timezone.utc).isoformat(timespec="seconds"),
         "tier": tier, "provider": provider, "model": "llama-3.1-8b-instant",
         "prompt_tokens": 10, "completion_tokens": 5, "cost_usd": 0.0,
-        "latency_ms": latency, "status": status,
+        "latency_ms": latency, "status": status, "request_id": "",
     }
 
 
@@ -168,3 +169,102 @@ def test_the_fold_keeps_every_request(tmp_path):
     before = sum(p["requests"] for p in window["providers"])
     after = sum(s["requests"] for s in _chart_series(window))
     assert before == after
+
+
+# ── time ranges ────────────────────────────────────────────────────────
+
+def test_every_range_renders(client, state_dir):
+    _seed(state_dir, [_row(m) for m in (5, 600, 5000, 40000)])
+    for key in ("24h", "7d", "30d", "all"):
+        r = client.get(f"/?range={key}")
+        assert r.status_code == 200, key
+        assert 'class="ov"' in r.text, key
+
+
+def test_the_range_is_in_the_url_so_it_survives_a_reload(client):
+    body = client.get("/?range=7d").text
+    assert 'href="/?range=7d"' in body
+    assert 'aria-current="true"' in body
+
+
+def test_an_unknown_range_falls_back_instead_of_raising(client):
+    r = client.get("/?range=nonsense")
+    assert r.status_code == 200
+    assert 'data-range="24h"' in r.text
+
+
+def test_a_longer_range_uses_coarser_buckets(client, state_dir):
+    # 720 points on an 880-wide chart is mush, so a month is bucketed by day.
+    _seed(state_dir, [_row(5)])
+    day = client.get("/?range=30d").text
+    assert "each block is one day" in day
+    hour = client.get("/?range=24h").text
+    assert "each block is one hour" in hour
+
+
+def test_a_wider_range_sees_older_traffic(client, state_dir):
+    _seed(state_dir, [_row(60 * 24 * 3)])      # three days ago
+    idle = "Nothing has come through in the last"   # the verdict's wording
+    assert idle in client.get("/?range=24h").text
+    assert idle not in client.get("/?range=7d").text
+
+
+# ── live update ────────────────────────────────────────────────────────
+
+def test_the_fragment_is_the_live_block_and_nothing_else(client, state_dir):
+    _seed(state_dir, [_row(5)])
+    frag = client.get("/?fragment=1").text
+    assert "<!doctype html>" not in frag.lower()
+    assert "<nav" not in frag          # no menu, no shell
+    assert 'class="ov-banner"' in frag
+
+
+def test_the_fragment_is_built_by_the_same_code_as_the_page(client, state_dir):
+    """No second rendering path: the live view cannot drift from the served
+    one, because it is literally the same HTML."""
+    _seed(state_dir, [_row(m) for m in range(1, 5)])
+    page_body = client.get("/").text
+    frag = client.get("/?fragment=1").text
+    assert frag in page_body
+
+
+def test_the_fragment_honours_the_range(client, state_dir):
+    _seed(state_dir, [_row(60 * 24 * 3)])
+    frag = client.get("/?range=7d&fragment=1").text
+    assert "Nothing has come through in the last" not in frag
+
+
+def test_the_page_tells_the_poller_what_to_ask_for(client):
+    body = client.get("/").text
+    assert 'id="ov"' in body
+    assert 'data-range="24h"' in body
+    assert 'data-poll=' in body
+
+
+def test_the_script_is_served_and_is_optional(client):
+    r = client.get("/wire.js")
+    assert r.status_code == 200
+    assert "javascript" in r.headers["content-type"]
+    # Deferred, so it can never block the first paint of a page that is
+    # already complete without it.
+    assert 'src="/wire.js" defer' in client.get("/").text
+
+
+# ── failovers and money on the page ────────────────────────────────────
+
+def test_a_failover_is_shown_now_that_it_can_be_counted(client, state_dir):
+    _seed(state_dir, [
+        dict(_row(3, status="rate_limited"), request_id="r1"),
+        dict(_row(2), request_id="r1"),
+    ])
+    body = client.get("/").text
+    assert "Failovers" in body
+    assert "changed model mid-flight" in body
+
+
+def test_unpriced_traffic_says_so_rather_than_claiming_it_was_free(client, state_dir):
+    # "$0.00" would be a claim about money nobody has entered yet.
+    _seed(state_dir, [_row(2)])
+    body = client.get("/").text
+    assert "not priced" in body
+    assert "$0.00" not in body

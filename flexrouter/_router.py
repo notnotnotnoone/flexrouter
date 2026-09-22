@@ -425,7 +425,8 @@ class LocalRouter:
                 model=route.model,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
-                cost_usd=0.0,
+                cost_usd=self._cost_of(route.provider, route.model,
+                                       prompt_tokens, completion_tokens),
                 latency_ms=latency_ms,
                 status="ok",
                 request_id=trace_id,
@@ -944,7 +945,8 @@ class LocalRouter:
                 model=route.model,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
-                cost_usd=0.0,
+                cost_usd=self._cost_of(route.provider, route.model,
+                                       prompt_tokens, completion_tokens),
                 latency_ms=latency_ms,
                 status="ok",
                 request_id=trace_id,
@@ -1125,6 +1127,34 @@ class LocalRouter:
                 self._known_mtimes[path] = mark
             fingerprint.append(mark)
         return tuple(fingerprint)
+
+    def _price_of(self, provider: str, model: str):
+        """The model's per-million-token prices, or `(None, None)`.
+
+        A model can sit in several buckets; the prices are a property of the
+        model at the provider, so the first match answers for all of them.
+        """
+        for models in self._cfg.tiers.values():
+            for m in models:
+                if m.provider == provider and m.model == model:
+                    return m.price_in, m.price_out
+        return None, None
+
+    def _cost_of(self, provider: str, model: str,
+                 prompt_tokens: int, completion_tokens: int) -> float:
+        """What this attempt cost, in USD, as far as anyone has said.
+
+        Zero when the model is unpriced - but the dashboard distinguishes
+        "no priced traffic at all" from "priced, and it came to nothing",
+        so a zero here never gets reported as "free".
+        """
+        price_in, price_out = self._price_of(provider, model)
+        if price_in is None and price_out is None:
+            return 0.0
+        return (
+            (prompt_tokens / 1_000_000) * (price_in or 0.0)
+            + (completion_tokens / 1_000_000) * (price_out or 0.0)
+        )
 
     def _maybe_hot_reload(self) -> None:
         """Pick up a configuration change, but never fail a request for it.

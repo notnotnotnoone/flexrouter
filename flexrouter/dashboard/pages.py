@@ -28,6 +28,7 @@ from flexrouter.dashboard.render import attrs, esc, page, tag
 pages = APIRouter()
 
 CSS_PATH = Path(__file__).parent / "wire.css"
+JS_PATH = Path(__file__).parent / "wire.js"
 
 
 def _input(**kw) -> str:
@@ -65,6 +66,44 @@ def _live_router():
 def _redirect_with_message(path: str, ok: bool, message: str) -> RedirectResponse:
     qs = f"ok={'1' if ok else '0'}&message={quote(message)}"
     return RedirectResponse(url=f"{path}?{qs}", status_code=303)
+
+
+# (key, label, hours, bucket hours, label format). `None` hours means "back
+# to the first thing ever logged". Buckets get coarser as the range grows:
+# a month at one point per hour is 720 points of mush on an 880-wide chart.
+RANGES: list[tuple[str, str, object, int, str]] = [
+    ("24h", "24 hours", 24, 1, "%H:%M"),
+    ("7d", "7 days", 24 * 7, 6, "%a %H:%M"),
+    ("30d", "30 days", 24 * 30, 24, "%d %b"),
+    ("all", "All", None, 24, "%d %b"),
+]
+_RANGE_BY_KEY = {r[0]: r for r in RANGES}
+DEFAULT_RANGE = "24h"
+
+
+def _range(key: str):
+    """The range `key` names, falling back to 24 hours.
+
+    A querystring is user input: an unknown value shows the default rather
+    than raising, the same way a bad page number shows page one.
+    """
+    return _RANGE_BY_KEY.get(key or "", _RANGE_BY_KEY[DEFAULT_RANGE])
+
+
+def _range_switcher(current: str) -> str:
+    """Real links, one per range. No JavaScript is involved in switching -
+    the range lives in the URL, so it survives a reload and can be
+    bookmarked."""
+    out = []
+    for key, label, _h, _b, _f in RANGES:
+        here = key == current
+        out.append(tag(
+            "a", esc(label),
+            href="/" if key == DEFAULT_RANGE else f"/?range={key}",
+            cls="range-link",
+            **{"aria-current": "true" if here else None},
+        ))
+    return tag("nav", "".join(out), cls="ranges", **{"aria-label": "Time range"})
 
 
 def _panel(title: str, body: str, *, sub: str = "", action: str = "") -> str:
@@ -106,6 +145,42 @@ def _pct(fraction) -> str:
     return f"{fraction * 100:.1f}%".replace(".0%", "%")
 
 
+def _spend(window: dict) -> tuple[str, str]:
+    """What the window cost, and the note that goes under it.
+
+    Three different answers, and they must not be confused:
+      - nothing ran                -> no figure at all
+      - it ran, nothing was priced -> "not priced", NOT "$0.00"
+      - it ran and was priced      -> the money
+
+    Most traffic here is on a free tier, but not all of it, so "$0.00" is a
+    claim the dashboard is only allowed to make when somebody has actually
+    told it what the models cost.
+    """
+    if window["requests"] == 0:
+        return "-", ""
+    if not window["any_priced"]:
+        return "not priced", "set prices on Models"
+    spent = window["spend_usd"]
+    figure = f"${spent:,.2f}" if spent >= 0.01 else f"${spent:,.4f}"
+    if window["priced_rows"] < window["requests"]:
+        return figure, f"{window['priced_rows']:,} of {window['requests']:,} priced"
+    return figure, "all traffic priced"
+
+
+def _bucket_word(window: dict) -> str:
+    """What one block on the chart covers, said in words.
+
+    The strips and the chart share a bucket size, and a strip that claims
+    to be hourly when each block is six hours is a quiet lie about when
+    something broke.
+    """
+    n = window["bucket_hours"]
+    if n >= 24:
+        return "day" if n == 24 else f"{n // 24} days"
+    return "hour" if n == 1 else f"{n} hours"
+
+
 def _chart_series(window: dict) -> list[dict]:
     """The providers the chart draws, folded to the number of colours.
 
@@ -134,7 +209,8 @@ def _swatch(color: str) -> str:
     return tag("span", "", cls="swatch", style=f"background:{color}")
 
 
-def _overview_verdict(data: dict, summaries: list, window: dict) -> str:
+def _overview_verdict(data: dict, summaries: list, window: dict,
+                      label: str) -> str:
     p = data["providers"]
     needs_you = data["needs_you"]
 
@@ -156,25 +232,40 @@ def _overview_verdict(data: dict, summaries: list, window: dict) -> str:
         tags.append(tag("span", esc(f"{p['bad']} down"), cls="tag state-bad"))
 
     if window["requests"] == 0:
-        story = ("Nothing has come through in the last 24 hours. Point an app at "
-                 "this address and the rest of this page fills in.")
+        story = (f"Nothing has come through in the last {label}. Point an app "
+                 "at this address and the rest of this page fills in.")
     else:
         busiest = window["providers"][0]
         share = busiest["requests"] / window["requests"]
-        story = (f"{window['requests']:,} requests in the last 24 hours, "
+        story = (f"{window['requests']:,} requests in the last {label}, "
                  f"{_pct(window['answered_rate'])} answered. "
                  f"{busiest['name']} carried {_pct(share)} of them.")
+        if window["failovers"]:
+            plural = "" if window["failovers"] == 1 else "s"
+            story += (f" {window['failovers']:,} request{plural} changed model "
+                      "mid-flight and still got an answer.")
 
+    spend_figure, spend_note = _spend(window)
     minis = [
-        ("Median reply", f"{window['latency']['p50']} ms"
-         if window["latency"]["p50"] is not None else "-"),
-        ("Slowest 5%", f"{window['latency']['p95']} ms"
-         if window["latency"]["p95"] is not None else "-"),
-        ("Busiest hour", f"{window['peak_hour']:,} req"),
+        ("Median reply",
+         f"{window['latency']['p50']} ms" if window["latency"]["p50"] is not None else "-",
+         ""),
+        ("Slowest 5%",
+         f"{window['latency']['p95']} ms" if window["latency"]["p95"] is not None else "-",
+         ""),
+        ("Failovers", f"{window['failovers']:,}",
+         f"{window['gave_up']:,} gave up" if window["gave_up"] else ""),
+        ("Busiest " + ("day" if window["bucket_hours"] >= 24 else "hour"
+                       if window["bucket_hours"] == 1 else "block"),
+         f"{window['peak_hour']:,} req", ""),
+        ("Spent", spend_figure, spend_note),
     ]
     mini_html = "".join(
-        tag("div", tag("span", esc(label)) + tag("b", esc(value)), cls="mini")
-        for label, value in minis
+        tag("div",
+            tag("span", esc(name)) + tag("b", esc(value))
+            + (tag("small", esc(note)) if note else ""),
+            cls="mini")
+        for name, value, note in minis
     )
 
     return tag(
@@ -186,7 +277,7 @@ def _overview_verdict(data: dict, summaries: list, window: dict) -> str:
     )
 
 
-def _overview_tally(data: dict, window: dict) -> str:
+def _overview_tally(data: dict, window: dict, label: str) -> str:
     m, k = data["models"], data["keys"]
     splits = [
         (f"{m['available']}", f" / {m['total']}", "Models up"),
@@ -203,7 +294,7 @@ def _overview_tally(data: dict, window: dict) -> str:
     return tag(
         "div",
         tag("span", _num(window["requests"]), cls="tally-big")
-        + tag("span", "requests in the last 24 hours", cls="tally-sub")
+        + tag("span", esc(f"requests in the last {label}"), cls="tally-sub")
         + tag("div", split_html, cls="tally-split"),
         cls="panel tally",
     )
@@ -261,7 +352,7 @@ def _overview_chart(window: dict) -> str:
     )
 
 
-def _overview_providers(summaries: list, window: dict) -> str:
+def _overview_providers(summaries: list, window: dict, label: str) -> str:
     by_name = {p["name"]: p for p in window["providers"]}
     series = _chart_series(window)
     colors = _series_colors(series)
@@ -269,7 +360,7 @@ def _overview_providers(summaries: list, window: dict) -> str:
 
     header = tag("tr", "".join(tag("th", h) for h in [
         "Provider", "State", "Keys", "Requests", "Answered",
-        "Last 24 hours", "Why",
+        f"Last {label}", "Why",
     ]))
     rows = [header]
     for s in summaries:
@@ -300,7 +391,7 @@ def _overview_providers(summaries: list, window: dict) -> str:
     return _panel(
         "Providers",
         tag("div", tag("table", "".join(rows), cls="matrix"), cls="scroll"),
-        sub="each block is one hour; grey means no traffic",
+        sub=f"each block is one {_bucket_word(window)}; grey means no traffic",
         action=tag("a", "Manage keys", href="/providers", cls="button-link"),
     )
 
@@ -335,7 +426,7 @@ def _overview_needs_you(broken_data: dict) -> str:
     )
 
 
-def _overview_buckets(router, window: dict) -> str:
+def _overview_buckets(router, window: dict, label: str) -> str:
     counts = {b["bucket"]: b["requests"] for b in window["buckets"]}
     names = list(router._cfg.tiers)
     for name in counts:
@@ -361,7 +452,7 @@ def _overview_buckets(router, window: dict) -> str:
         )
     return _panel("Buckets your apps can ask for",
                   tag("div", rows, cls="pb"),
-                  sub="requests in the last 24 hours")
+                  sub=f"requests in the last {label}")
 
 
 def _overview_latency(window: dict) -> str:
@@ -422,28 +513,31 @@ def _overview_feed(router) -> str:
                   action=tag("a", "Open Requests", href="/requests", cls="button-link"))
 
 
-def _overview_body(router) -> str:
+def _overview_inner(router, range_key: str) -> str:
+    """Everything inside `.ov` — the part that live-updating replaces.
+
+    Split out from `_overview_body` so the poll can ask for exactly this
+    and swap it in, rather than re-parsing a whole document to find the
+    piece that changed.
+    """
+    key, label, hours, bucket_hours, fmt = _range(range_key)
     summaries = facts.provider_summaries(router)
     broken_data = facts.broken(router)
     data = facts.overview(router, summaries=summaries, broken_data=broken_data)
-    window = stats.recent_window(router._cfg.state_dir)
-
-    header = tag(
-        "div",
-        tag("h1", "Overview")
-        + tag("span", "last 24 hours", cls="where"),
-        cls="page-head",
-    )
+    window = stats.recent_window(router._cfg.state_dir, hours=hours,
+                                 bucket_hours=bucket_hours, label_format=fmt)
+    said = label.lower()
 
     banner = tag("div",
-                 _overview_verdict(data, summaries, window)
-                 + _overview_tally(data, window),
+                 _overview_verdict(data, summaries, window, said)
+                 + _overview_tally(data, window, said),
                  cls="ov-banner")
 
     row2 = tag("div",
                _overview_chart(window)
                + tag("div",
-                     _overview_needs_you(broken_data) + _overview_buckets(router, window),
+                     _overview_needs_you(broken_data)
+                     + _overview_buckets(router, window, said),
                      cls="ov-stack"),
                cls="ov-row")
 
@@ -451,10 +545,23 @@ def _overview_body(router) -> str:
                _overview_latency(window) + _overview_feed(router),
                cls="ov-duo")
 
-    return header + tag(
+    return banner + row2 + _overview_providers(summaries, window, said) + row4
+
+
+def _overview_body(router, range_key: str = DEFAULT_RANGE) -> str:
+    key = _range(range_key)[0]
+    header = tag(
         "div",
-        banner + row2 + _overview_providers(summaries, window) + row4,
-        cls="ov",
+        tag("h1", "Overview")
+        + _range_switcher(key)
+        + tag("span", "", cls="spacer")
+        + tag("span", tag("span", "", cls="lamp") + "live", cls="live-note"),
+        cls="page-head",
+    )
+    # `data-range` is what the poller re-requests; `data-poll` how often.
+    return header + tag(
+        "div", _overview_inner(router, key),
+        cls="ov", id="ov", **{"data-range": key, "data-poll": "10"},
     )
 
 
@@ -1200,11 +1307,26 @@ def stylesheet() -> Response:
                     media_type="text/css; charset=utf-8")
 
 
+@pages.get("/wire.js", include_in_schema=False)
+def script() -> Response:
+    """The Overview's live update. Optional by construction - see wire.js."""
+    return Response(JS_PATH.read_text(encoding="utf-8"),
+                    media_type="text/javascript; charset=utf-8")
+
+
 @pages.get("/", response_class=HTMLResponse, include_in_schema=False)
-def overview_page() -> HTMLResponse:
-    return HTMLResponse(
-        page("Overview", "overview", _overview_body(_live_router()))
-    )
+def overview_page(range: str = DEFAULT_RANGE, fragment: str = "") -> HTMLResponse:
+    """The Overview, or - with `fragment=1` - only the part that changes.
+
+    The fragment is what the page polls for. It is the same HTML built by
+    the same code as the full page, so the two can never drift; there is no
+    second rendering path and no JSON shape to keep in step.
+    """
+    router = _live_router()
+    key = _range(range)[0]
+    if fragment:
+        return HTMLResponse(_overview_inner(router, key))
+    return HTMLResponse(page("Overview", "overview", _overview_body(router, key)))
 
 
 @pages.get("/broken", response_class=HTMLResponse, include_in_schema=False)

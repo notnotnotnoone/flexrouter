@@ -47,6 +47,10 @@ ALLOWED_FIELDS: dict[str, frozenset[str]] = {
     # there.
     "models": frozenset({
         "enabled", "score", "rpm", "tpm", "context_window", "vision", "quotas",
+        # Prices are settings, not credentials: the owner types what the
+        # provider charges so the dashboard can stop guessing that
+        # everything is free.
+        "price_in", "price_out",
     }),
 }
 

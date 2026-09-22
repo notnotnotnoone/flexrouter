@@ -96,6 +96,9 @@ def page(title: str, current: str, body: str) -> str:
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>{esc(title)} - flexrouter</title>"
         '<link rel="stylesheet" href="/wire.css">'
+        # Deferred, and a no-op on any page without a live block. Nothing
+        # on any page depends on it having run - see wire.js.
+        '<script src="/wire.js" defer></script>'
         "</head>"
         "<body>"
         + tag("div", _nav(current) + tag("main", body, cls="main"), cls="shell")

@@ -131,10 +131,32 @@ def compute_stats(state_dir: str) -> dict:
 # "14:00" off the chart.
 
 
+def _local(ts: str) -> datetime:
+    """A stored UTC timestamp, as local time."""
+    return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone()
+
+
+def _bucket_start(dt: datetime, bucket_hours: int) -> datetime:
+    """The start of the bucket `dt` falls in.
+
+    Buckets are anchored to the local clock, not to "now": a day bucket
+    starts at local midnight and a six-hour bucket at 00/06/12/18, so the
+    same request always lands in the same bucket no matter when the page
+    is loaded. Anchoring to now would make the chart's bars shuffle
+    sideways on every refresh - which, now that the page refreshes itself,
+    would be visible.
+    """
+    dt = dt.replace(minute=0, second=0, microsecond=0)
+    if bucket_hours >= 24:
+        return dt.replace(hour=0)
+    if bucket_hours > 1:
+        return dt.replace(hour=(dt.hour // bucket_hours) * bucket_hours)
+    return dt
+
+
 def _local_hour(ts: str) -> datetime:
     """The local-time hour a timestamp falls in."""
-    dt = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone()
-    return dt.replace(minute=0, second=0, microsecond=0)
+    return _bucket_start(_local(ts), 1)
 
 
 def _int(value) -> int:
@@ -159,7 +181,8 @@ def _audit_rows(state_dir: str) -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def recent_window(state_dir: str, hours: int = 24,
+def recent_window(state_dir: str, hours: Optional[int] = 24,
+                  bucket_hours: int = 1, label_format: str = "%H:%M",
                   now: Optional[datetime] = None) -> dict:
     """Everything the Overview draws, for the last `hours` hours.
 
@@ -172,14 +195,33 @@ def recent_window(state_dir: str, hours: int = 24,
     empty ones: a chart with a gap in it should show the gap, not close it.
     """
     now = (now or datetime.now()).astimezone()
-    end = now.replace(minute=0, second=0, microsecond=0)
-    starts = [end - timedelta(hours=hours - 1 - i) for i in range(hours)]
+    rows = _audit_rows(state_dir)
+    end = _bucket_start(now, bucket_hours)
+
+    if hours is None:
+        # "All" - back to the first thing ever logged. An empty log still
+        # gets a window, so the page has a shape to render.
+        earliest = None
+        for r in rows:
+            try:
+                at = _bucket_start(_local(r["timestamp"]), bucket_hours)
+            except (ValueError, KeyError, TypeError):
+                continue
+            if earliest is None or at < earliest:
+                earliest = at
+        span = end - (earliest or end)
+        hours = int(span.total_seconds() // 3600) + bucket_hours
+
+    points = max(1, -(-hours // bucket_hours))   # ceiling division
+    starts = [end - timedelta(hours=bucket_hours * (points - 1 - i))
+              for i in range(points)]
     slot = {s: i for i, s in enumerate(starts)}
+    hours = points * bucket_hours
 
     by_provider: dict[str, list[int]] = {}
-    fails_by_hour = [0] * hours
-    totals_by_hour = [0] * hours
-    # provider -> hour -> [ok_count, error_count]
+    fails_by_hour = [0] * points
+    totals_by_hour = [0] * points
+    # provider -> bucket -> [ok_count, error_count]
     health: dict[str, list[list[int]]] = {}
 
     lat_by_model: dict[str, list[float]] = defaultdict(list)
@@ -197,12 +239,12 @@ def recent_window(state_dir: str, hours: int = 24,
     spend = 0.0
     priced_rows = 0
 
-    for r in _audit_rows(state_dir):
+    for r in rows:
         try:
-            hour = _local_hour(r["timestamp"])
-        except (ValueError, KeyError):
+            bucket = _bucket_start(_local(r["timestamp"]), bucket_hours)
+        except (ValueError, KeyError, TypeError):
             continue
-        i = slot.get(hour)
+        i = slot.get(bucket)
         if i is None:
             continue
 
@@ -210,8 +252,8 @@ def recent_window(state_dir: str, hours: int = 24,
         status = r.get("status") or ""
         good = status == "ok"
 
-        by_provider.setdefault(provider, [0] * hours)[i] += 1
-        health.setdefault(provider, [[0, 0] for _ in range(hours)])
+        by_provider.setdefault(provider, [0] * points)[i] += 1
+        health.setdefault(provider, [[0, 0] for _ in range(points)])
         health[provider][i][0 if good else 1] += 1
 
         totals_by_hour[i] += 1
@@ -274,8 +316,11 @@ def recent_window(state_dir: str, hours: int = 24,
     gave_up = sum(1 for a, ok in attempts.values() if a > 1 and not ok)
 
     return {
-        "hours": hours,
-        "labels": [s.strftime("%H:%M") for s in starts],
+        "hours": points,          # how many buckets the chart draws
+        "bucket_hours": bucket_hours,
+        "span_hours": hours,
+        "labels": [s.strftime(label_format).lstrip("0") or s.strftime(label_format)
+                   for s in starts],
         "requests_traced": len(attempts),
         "failovers": failovers,
         "gave_up": gave_up,
