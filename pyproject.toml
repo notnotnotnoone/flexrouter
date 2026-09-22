@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "flexrouter"
 version = "0.1.0"
-description = "Universal LLM router with named tiers, rate-limit awareness, and a live dashboard"
+description = "Stack every provider's free-tier LLMs behind one OpenAI-compatible address, with automatic failover and a live dashboard"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"

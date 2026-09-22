@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/banner.svg" alt="flexrouter — one address for every LLM you use, with automatic failover" width="100%">
+<img src="docs/assets/banner.svg" alt="flexrouter — stack every provider's free tier behind one address" width="100%">
 
 [![Tests](https://github.com/notnotnotnoone/flexrouter/actions/workflows/test.yml/badge.svg)](https://github.com/notnotnotnoone/flexrouter/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -14,7 +14,7 @@
 
 ---
 
-flexrouter is a small program that runs in the background on your computer. Every app you have — scripts, other tools, whatever — sends its AI requests to it at one shared address, instead of each app juggling its own list of models and keys. flexrouter picks the best available model out of a list you set up, automatically switches to another one if a model is slow, out of quota, or down, tracks how much you're spending, and shows you all of this in a live dashboard.
+flexrouter is a small program that runs in the background on your computer. Every app you have — scripts, other tools, whatever — sends its AI requests to it at one shared address, instead of each app juggling its own list of free-tier providers and keys. flexrouter picks the best available model out of a list you set up, automatically switches to another one the moment one runs out of free quota for the minute, tracks how much (if anything) you're spending, and shows you all of this in a live dashboard.
 
 It speaks the same language as OpenAI's API, so anything that already knows how to talk to OpenAI can point at flexrouter instead, with no special code:
 
@@ -147,7 +147,8 @@ If you're moving from an older, per-project settings file, see [Moving from an o
 **1. Set up your settings file:**
 
 Open `config.yaml` in your flexrouter folder and fill it in. To find the folder,
-run `flexrouter doctor` — it prints the exact path. A small one looks like this:
+run `flexrouter doctor` — it prints the exact path. A small one looks like this
+(mixing a free bucket and a paid one — for an all-free setup, see [Free tier stacking](#free-tier-stacking)):
 
 ```yaml
 settings:

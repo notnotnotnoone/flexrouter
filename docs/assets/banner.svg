@@ -17,20 +17,22 @@
 
   <rect width="1200" height="260" fill="url(#bg)"/>
 
-  <!-- routing motif: several nodes, one lit path from left to a chosen node -->
-  <g stroke="#334166" stroke-width="2" fill="none" opacity="0.9">
-    <path d="M 120 130 C 260 60, 340 60, 430 92"/>
-    <path d="M 120 130 C 260 130, 340 130, 430 130"/>
-    <path d="M 120 130 C 260 200, 340 200, 430 176"/>
+  <!-- mark: three provider tiers stacking/merging into one address -->
+  <g>
+    <g stroke-linecap="round">
+      <rect x="70" y="72" width="72" height="16" rx="8" fill="#7dd3fc" opacity="0.9"/>
+      <rect x="70" y="122" width="72" height="16" rx="8" fill="#a78bfa" opacity="0.9"/>
+      <rect x="70" y="172" width="72" height="16" rx="8" fill="#34d399" opacity="0.9"/>
+    </g>
+    <g stroke-width="2.5" fill="none" opacity="0.85">
+      <path d="M 142 80 C 220 80, 260 128, 330 130" stroke="#7dd3fc"/>
+      <path d="M 142 130 C 220 130, 260 130, 330 130" stroke="#a78bfa"/>
+      <path d="M 142 180 C 220 180, 260 132, 330 130" stroke="#34d399"/>
+    </g>
+    <circle cx="330" cy="130" r="12" fill="#e2e8f0"/>
+    <circle cx="330" cy="130" r="26" fill="url(#dot-glow)"/>
   </g>
-  <path d="M 120 130 C 260 130, 340 130, 430 130" stroke="#34d399" stroke-width="3" fill="none"/>
 
-  <circle cx="120" cy="130" r="10" fill="#e2e8f0"/>
-  <circle cx="430" cy="92" r="7" fill="#475173"/>
-  <circle cx="430" cy="176" r="7" fill="#475173"/>
-  <circle cx="430" cy="130" r="11" fill="#34d399"/>
-  <circle cx="430" cy="130" r="22" fill="url(#dot-glow)"/>
-
-  <text x="490" y="120" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="64" font-weight="700" fill="url(#title)">flexrouter</text>
-  <text x="492" y="160" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="21" fill="#9aa4c7">one address for every LLM you use, with automatic failover</text>
+  <text x="390" y="120" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="64" font-weight="700" fill="url(#title)">flexrouter</text>
+  <text x="392" y="160" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="21" fill="#9aa4c7">stack every provider's free tier behind one address</text>
 </svg>
