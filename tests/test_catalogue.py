@@ -11,7 +11,7 @@ from flexrouter.catalogue import PROVIDERS, AA_MODELS_URL, ProviderDef
 
 
 def test_provider_count():
-    assert len(PROVIDERS) == 8
+    assert len(PROVIDERS) == 10
 
 
 def test_all_providers_have_required_fields():
@@ -27,7 +27,7 @@ def test_all_providers_have_required_fields():
 def test_free_providers():
     free = [p for p in PROVIDERS if p.free]
     names = {p.name for p in free}
-    assert names == {"cerebras", "groq", "openrouter", "googleai", "ollama"}
+    assert names == {"cerebras", "groq", "openrouter", "googleai", "ollama", "mistral", "nvidia"}
 
 
 def test_paid_providers():

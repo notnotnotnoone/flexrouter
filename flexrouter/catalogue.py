@@ -69,81 +69,42 @@ def _googleai_free(model: dict) -> bool:
     return "flash" in mid
 
 
-PROVIDERS: list[ProviderDef] = [
-    ProviderDef(
-        name="cerebras",
-        base_url="https://api.cerebras.ai/v1",
-        signup_url="https://cloud.cerebras.ai",
-        free=True,
-        free_filter=_all_free,
-        default_rpm=30,
-        default_tpm=60_000,
-    ),
-    ProviderDef(
-        name="groq",
-        base_url="https://api.groq.com/openai/v1",
-        signup_url="https://console.groq.com/keys",
-        free=True,
-        free_filter=_all_free,
-        default_rpm=30,
-        default_tpm=6_000,
-    ),
-    ProviderDef(
-        name="openrouter",
-        base_url="https://openrouter.ai/api/v1",
-        signup_url="https://openrouter.ai/keys",
-        free=True,
-        free_filter=_openrouter_free,
-        default_rpm=20,
-        default_tpm=100_000,
-    ),
-    ProviderDef(
-        name="googleai",
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        signup_url="https://aistudio.google.com/apikey",
-        free=True,
-        free_filter=_googleai_free,
-        default_rpm=15,
-        default_tpm=1_000_000,
-    ),
-    ProviderDef(
-        name="ollama",
-        base_url="http://localhost:11434/v1",
-        signup_url="https://ollama.com",
-        free=True,
-        free_filter=_all_free,
-        default_rpm=600,
-        default_tpm=10_000_000,
-        ollama=True,
-    ),
-    ProviderDef(
-        name="deepseek",
-        base_url="https://api.deepseek.com/v1",
-        signup_url="https://platform.deepseek.com",
-        free=False,
-        free_filter=_all_free,
-        default_rpm=60,
-        default_tpm=200_000,
-    ),
-    ProviderDef(
-        name="siliconflow",
-        base_url="https://api.siliconflow.cn/v1",
-        signup_url="https://cloud.siliconflow.cn",
-        free=False,
-        free_filter=_all_free,
-        default_rpm=20,
-        default_tpm=100_000,
-    ),
-    ProviderDef(
-        name="sambanova",
-        base_url="https://api.sambanova.ai/v1",
-        signup_url="https://cloud.sambanova.ai",
-        free=False,
-        free_filter=_all_free,
-        default_rpm=20,
-        default_tpm=50_000,
-    ),
-]
+# A preset names its filter; this is the only place a name becomes code.
+# Keeping it a closed dict rather than a lookup by import path is
+# deliberate: a preset file is hand-edited, and "name a Python callable"
+# is one keystroke away from "import anything you like".
+FREE_FILTERS: dict[str, Callable[[dict], bool]] = {
+    "all": _all_free,
+    "zero_price": _openrouter_free,
+    "flash_only": _googleai_free,
+}
+
+
+def _as_provider_def(p) -> ProviderDef:
+    """One preset in the shape `refresh.py` has always read.
+
+    `default_rpm`/`default_tpm` keep their old names here even though the
+    preset calls them seeds, because this dataclass is what the refresh
+    path consumes and renaming it is not this change's job.
+    """
+    return ProviderDef(
+        name=p.name,
+        base_url=p.base_url,
+        signup_url=p.signup_url,
+        free=p.free,
+        free_filter=FREE_FILTERS.get(p.free_filter, _all_free),
+        default_rpm=p.seed_rpm,
+        default_tpm=p.seed_tpm,
+        ollama=(p.name == "ollama"),
+    )
+
+
+def _load_providers() -> list[ProviderDef]:
+    from flexrouter import presets
+    return [_as_provider_def(p) for p in presets.shipped().values()]
+
+
+PROVIDERS: list[ProviderDef] = _load_providers()
 
 
 async def discover_models(provider: ProviderDef, api_key: str) -> list[dict]:

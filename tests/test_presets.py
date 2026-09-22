@@ -112,3 +112,25 @@ def test_a_missing_file_is_not_a_problem(tmp_path):
 def test_get_returns_none_for_an_unknown_name(tmp_path):
     assert presets.get("groq") is not None
     assert presets.get("no-such-provider") is None
+
+
+# --- Catalogue ↔ Registry (Task 3) ---
+
+
+def test_the_catalogue_is_now_a_view_of_the_registry():
+    """`refresh.py` still reads catalogue.PROVIDERS. It must not notice."""
+    from flexrouter import catalogue
+    names = {p.name for p in catalogue.PROVIDERS}
+    assert names == set(presets.shipped())
+    groq = next(p for p in catalogue.PROVIDERS if p.name == "groq")
+    assert groq.base_url == "https://api.groq.com/openai/v1"
+    # The seed values reach the old attribute names refresh.py reads.
+    assert groq.default_rpm == 30
+    assert callable(groq.free_filter)
+
+
+def test_the_openrouter_filter_still_drops_paid_models():
+    from flexrouter import catalogue
+    orouter = next(p for p in catalogue.PROVIDERS if p.name == "openrouter")
+    assert orouter.free_filter({"id": "x", "pricing": {"prompt": "0"}}) is True
+    assert orouter.free_filter({"id": "x", "pricing": {"prompt": "0.5"}}) is False
