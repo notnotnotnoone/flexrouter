@@ -1,0 +1,82 @@
+{
+  "groq": {
+    "label": "Groq",
+    "base_url": "https://api.groq.com/openai/v1",
+    "signup_url": "https://console.groq.com/keys",
+    "models_path": "/models",
+    "header_parser": "openai_compatible",
+    "free": true, "seed_rpm": 30, "seed_tpm": 6000, "free_filter": "all"
+  },
+  "cerebras": {
+    "label": "Cerebras",
+    "base_url": "https://api.cerebras.ai/v1",
+    "signup_url": "https://cloud.cerebras.ai",
+    "models_path": "/models",
+    "header_parser": "cerebras",
+    "free": true, "seed_rpm": 30, "seed_tpm": 60000, "free_filter": "all"
+  },
+  "openrouter": {
+    "label": "OpenRouter",
+    "base_url": "https://openrouter.ai/api/v1",
+    "signup_url": "https://openrouter.ai/keys",
+    "models_path": "/models",
+    "header_parser": "openrouter",
+    "free": true, "seed_rpm": 20, "seed_tpm": 100000, "free_filter": "zero_price"
+  },
+  "mistral": {
+    "label": "Mistral",
+    "base_url": "https://api.mistral.ai/v1",
+    "signup_url": "https://console.mistral.ai/api-keys",
+    "models_path": "/models",
+    "header_parser": "openai_compatible",
+    "free": true, "seed_rpm": 60, "seed_tpm": 500000, "free_filter": "all"
+  },
+  "nvidia": {
+    "label": "NVIDIA NIM",
+    "base_url": "https://integrate.api.nvidia.com/v1",
+    "signup_url": "https://build.nvidia.com",
+    "models_path": "/models",
+    "header_parser": "openai_compatible",
+    "free": true, "seed_rpm": 40, "seed_tpm": 60000, "free_filter": "all"
+  },
+  "googleai": {
+    "label": "Google AI Studio",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    "signup_url": "https://aistudio.google.com/apikey",
+    "models_path": "/models",
+    "header_parser": "google",
+    "free": true, "seed_rpm": 15, "seed_tpm": 1000000, "free_filter": "flash_only"
+  },
+  "deepseek": {
+    "label": "DeepSeek",
+    "base_url": "https://api.deepseek.com/v1",
+    "signup_url": "https://platform.deepseek.com",
+    "models_path": "/models",
+    "header_parser": "openai_compatible",
+    "free": false, "seed_rpm": 60, "seed_tpm": 200000, "free_filter": "all"
+  },
+  "siliconflow": {
+    "label": "SiliconFlow",
+    "base_url": "https://api.siliconflow.cn/v1",
+    "signup_url": "https://cloud.siliconflow.cn",
+    "models_path": "/models",
+    "header_parser": "siliconflow",
+    "free": false, "seed_rpm": 20, "seed_tpm": 100000, "free_filter": "all"
+  },
+  "sambanova": {
+    "label": "SambaNova",
+    "base_url": "https://api.sambanova.ai/v1",
+    "signup_url": "https://cloud.sambanova.ai",
+    "models_path": "/models",
+    "header_parser": "openai_compatible",
+    "free": false, "seed_rpm": 20, "seed_tpm": 50000, "free_filter": "all"
+  },
+  "ollama": {
+    "label": "Ollama (local)",
+    "base_url": "http://localhost:11434/v1",
+    "signup_url": "https://ollama.com",
+    "models_path": "/api/tags",
+    "header_parser": "openai_compatible",
+    "free": true, "seed_rpm": 600, "seed_tpm": 10000000, "free_filter": "all"
+  }
+}

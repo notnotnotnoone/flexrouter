@@ -17,6 +17,13 @@ dependencies = [
     "watchdog>=4.0",
     "tiktoken>=0.7",
     "click>=8.1",
+    # The terminal surface. `textual` is the TUI (`flexrouter tui`); `rich` is
+    # what styles the ordinary commands, so the terminal looks the same whether
+    # the owner runs one command or opens the TUI. textual depends on rich, but
+    # rich is declared on its own because flexrouter/tui/render.py imports it
+    # directly and the CLI would break if textual ever dropped it.
+    "textual>=0.80",
+    "rich>=13.0",
     # The dashboard reads HTML form posts via `await request.form()` in 11
     # places; Starlette refuses to parse a form without this. It was never
     # declared, so a clean install had a dashboard whose every write button
@@ -41,7 +48,8 @@ where = ["."]
 include = ["flexrouter*"]
 
 [tool.setuptools.package-data]
-"flexrouter.dashboard" = ["static/**/*", "*.css"]
+"flexrouter.dashboard" = ["static/**/*", "*.css", "*.js"]
+"flexrouter.data" = ["*.json"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
