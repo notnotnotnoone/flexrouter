@@ -57,3 +57,9 @@ th { background: #eee; font-weight: 600; }
 
 .stub { border: 1px dashed #999; padding: 14px; color: #444; max-width: 70ch; }
 .note { color: #666; font-size: 12px; max-width: 70ch; }
+
+.cap-published { font-weight: 600; }
+.cap-observed  { color: #070; }
+.cap-guessed   { color: #666; font-style: italic; }
+.cap-manual    { text-decoration: underline; }
+.cap-unknown   { color: #999; }

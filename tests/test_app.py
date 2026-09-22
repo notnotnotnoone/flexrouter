@@ -115,7 +115,8 @@ class FakeRouter:
                     # flexrouter/keys.py's KeyRecord) - api_keys and keys
                     # come from the same records, so non-empty api_keys with
                     # an empty keys list can't happen for real.
-                    keys=[SimpleNamespace(id="env:GROQ_API_KEY", enabled=True)]),
+                    keys=[SimpleNamespace(id="env:GROQ_API_KEY", enabled=True,
+                                          label="env:GROQ_API_KEY")]),
                 "ollama": SimpleNamespace(
                     base_url="http://localhost:11434/v1", api_keys=[], keys=[]),
             },
@@ -162,6 +163,9 @@ class FakeRouter:
         yield DoneEvent(result=dict(OK_RESULT))
 
     def close(self):
+        pass
+
+    def _maybe_hot_reload(self):
         pass
 
 

@@ -23,22 +23,30 @@ ALLOWED_FIELDS: dict[str, frozenset[str]] = {
     "settings": frozenset({
         "port", "dashboard_port", "state_dir", "window_seconds",
         "penalty_base_seconds", "penalty_max_seconds", "session_ttl_minutes",
-        "sample_interval_seconds", "health_history_days", "retry_policy",
-        "retries", "backoff_seconds", "provider_budget", "hooks",
+        "sample_interval_seconds", "health_history_days", "key_concurrency_cap",
+        "retry_policy", "retries", "backoff_seconds", "provider_budget", "hooks",
     }),
     # Not `auth_token`: it is a credential. A key that could be set from the
     # dashboard could be set by anything that reached the dashboard.
     # Not `api_key`/`api_keys` (credentials never go in settings) and not
     # `api_key_env` (it would let a caller point a provider at any environment
     # variable on the machine).
-    "providers": frozenset({"base_url", "header_parser"}),
+    "providers": frozenset({"base_url", "header_parser", "key_strategy"}),
     # Deliberately not `provider` or `model`: those two fields are the
     # model's identity. Rewriting them turns an override for one model into a
-    # different model, possibly on a provider that does not exist.
+    # different model, possibly on a provider that does not exist. A model
+    # that genuinely does not exist yet goes through `add_model()` below
+    # instead, which is additive rather than a rewrite of something already
+    # there.
     "models": frozenset({
         "enabled", "score", "rpm", "tpm", "context_window", "vision", "quotas",
     }),
 }
+
+# Fields `add_model()` requires, on top of `ALLOWED_FIELDS["models"]` - the
+# identity a brand-new model needs that an *existing* model must never have
+# rewritten out from under it (see the comment on "models" above).
+_NEW_MODEL_IDENTITY = frozenset({"provider", "model"})
 
 
 def check_fields(section: str, fields: dict) -> None:
@@ -89,6 +97,59 @@ def clear_override(section: str, key: str, path: Path | str | None = None) -> bo
     return True
 
 
+def add_provider(name: str, fields: dict, path: Path | str | None = None) -> None:
+    """Represent a provider `config.yaml` has never heard of.
+
+    Closes the first of the three gaps Stage 8 roadmap ruling R4 named:
+    `config.yaml` stays untouched, and the provider only exists at all
+    once this override is layered on top of it (`apply_overrides` below).
+    """
+    fields = dict(fields or {})
+    if not fields.get("base_url"):
+        raise ValueError("base_url is required")
+    extra = sorted(set(fields) - ALLOWED_FIELDS["providers"] - {"base_url"})
+    if extra:
+        raise ValueError(f"{', '.join(extra)} cannot be set here")
+    data = load_overrides(path)
+    if name in (data.get("providers") or {}) or name in (data.get("new_providers") or {}):
+        raise ValueError(f"a provider named {name!r} already has changes recorded")
+    data.setdefault("new_providers", {})[name] = fields
+    save_overrides(data, path)
+
+
+def add_bucket(name: str, path: Path | str | None = None) -> None:
+    """Represent a bucket `config.yaml` has never heard of - starts empty;
+    `add_model()` is what puts a model in it."""
+    data = load_overrides(path)
+    names = data.setdefault("new_buckets", [])
+    if name not in names:
+        names.append(name)
+    save_overrides(data, path)
+
+
+def add_model(bucket: str, fields: dict, path: Path | str | None = None) -> None:
+    """Represent a model `config.yaml` has never heard of, in `bucket`.
+
+    Unlike `set_override("models", ...)`, this is additive rather than a
+    patch onto something that already exists, so it is the one place a
+    model's identity (`provider`/`model`) is allowed to be set at all.
+    """
+    fields = dict(fields or {})
+    missing = sorted(_NEW_MODEL_IDENTITY - set(fields))
+    if missing:
+        raise ValueError(f"{', '.join(missing)} required")
+    allowed = _NEW_MODEL_IDENTITY | ALLOWED_FIELDS["models"]
+    extra = sorted(set(fields) - allowed)
+    if extra:
+        raise ValueError(f"{', '.join(extra)} cannot be set here")
+    for required in ("score", "rpm", "tpm"):
+        if required not in fields:
+            raise ValueError(f"{required} is required")
+    data = load_overrides(path)
+    data.setdefault("new_models", {}).setdefault(bucket, []).append(fields)
+    save_overrides(data, path)
+
+
 def _is_off(value) -> bool:
     """Whether a model's `enabled` field means "off".
 
@@ -120,13 +181,28 @@ def apply_overrides(raw: dict, ov: dict) -> dict:
     for key, value in (ov.get("settings") or {}).items():
         merged.setdefault("settings", {})[key] = value
 
+    # A brand-new provider is layered in before ordinary provider overrides
+    # are applied, so nothing about how those are merged needs to change to
+    # cover it - by the time the loop below runs, it is just another entry
+    # in merged["providers"].
+    for name, fields in (ov.get("new_providers") or {}).items():
+        merged.setdefault("providers", {}).setdefault(name, dict(fields or {}))
+
     for name, fields in (ov.get("providers") or {}).items():
         target = merged.setdefault("providers", {}).setdefault(name, {})
         target.update(fields or {})
 
+    bkey = _bucket_key(merged) or "tiers"
+
+    # A brand-new bucket starts empty; add_model() is what puts anything in
+    # it. Read alongside a config.yaml that has never heard of it, this is
+    # the only override that can create a bucket key that did not exist at
+    # all before overrides were applied.
+    for name in (ov.get("new_buckets") or []):
+        merged.setdefault(bkey, {}).setdefault(name, [])
+
     model_ov = ov.get("models") or {}
-    bkey = _bucket_key(merged)
-    if model_ov and bkey:
+    if model_ov:
         for bucket_name, models in list((merged.get(bkey) or {}).items()):
             kept = []
             for entry in models or []:
@@ -137,5 +213,15 @@ def apply_overrides(raw: dict, ov: dict) -> dict:
                 entry.update(fields)
                 kept.append(entry)
             merged[bkey][bucket_name] = kept
+
+    # A brand-new model is appended after the loop above, not folded into
+    # it: that loop patches and can drop entries that already exist, and a
+    # new model has nothing to patch and must never be droppable by an
+    # `enabled` override it was never given.
+    for bucket_name, new_entries in (ov.get("new_models") or {}).items():
+        merged.setdefault(bkey, {}).setdefault(bucket_name, [])
+        merged[bkey][bucket_name] = [
+            *merged[bkey][bucket_name], *copy.deepcopy(new_entries),
+        ]
 
     return merged

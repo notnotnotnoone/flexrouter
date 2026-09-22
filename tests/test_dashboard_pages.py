@@ -42,9 +42,193 @@ def test_overview_shows_the_real_counts(client):
     assert "Models" in body
 
 
-def test_unbuilt_areas_say_so_rather_than_pretending(client):
+def test_broken_is_no_longer_a_stub(client):
+    body = client.get("/broken").text
+    assert "not built yet" not in body.lower()
+    assert "needs you" in body.lower()
+
+
+def test_overview_says_nothing_needs_you_when_nothing_does(client):
+    body = client.get("/").text
+    assert "nothing needs you" in body.lower()
+
+
+def test_overview_points_at_broken_once_something_does(client):
+    router = app_module.get_router()
+    router._engine._penalties.quarantine_provider("groq", "key rejected")
+    body = client.get("/").text
+    assert "need" in body.lower()
+    assert 'href="/broken"' in body
+
+
+def test_a_benched_key_reason_is_escaped_not_injected(client):
+    router = app_module.get_router()
+    pcfg = router._cfg.providers["groq"]
+    router._key_states.mark_benched(
+        "groq", pcfg.keys[0].id, "<script>bad</script> said the provider")
+    body = client.get("/broken").text
+    assert "<script>bad</script>" not in body
+    assert "&lt;script&gt;bad&lt;/script&gt;" in body
+
+
+def test_providers_is_no_longer_a_stub(client):
+    body = client.get("/providers").text
+    assert "not built yet" not in body.lower()
+    assert "groq" in body
+
+
+def test_providers_list_links_to_the_detail_page(client):
+    body = client.get("/providers").text
+    assert 'href="/providers/groq"' in body
+
+
+def test_provider_detail_page_shows_its_keys(client):
+    body = client.get("/providers/groq").text
+    assert "GROQ_API_KEY" in body
+    assert "live" in body.lower()
+
+
+def test_provider_detail_page_404s_for_an_unknown_provider(client):
+    r = client.get("/providers/no-such-provider")
+    assert r.status_code == 404
+
+
+def test_provider_detail_shows_a_test_form_per_key(client):
+    body = client.get("/providers/groq").text
+    assert 'action="/providers/groq/keys/env:GROQ_API_KEY/test"' in body
+
+
+def test_testing_a_key_redirects_back_with_the_outcome(client, monkeypatch):
+    async def fake_chat(self, route, messages, **kwargs):
+        return {"choices": [{"message": {"content": "pong"}}]}
+
+    monkeypatch.setattr("flexrouter.client.AsyncClient.chat", fake_chat)
+    r = client.post("/providers/groq/keys/env:GROQ_API_KEY/test", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/providers/groq?")
+
+    body = client.get(r.headers["location"]).text
+    assert "answered" in body.lower()
+
+
+def test_a_failed_key_test_shows_the_real_reason(client, monkeypatch):
+    from flexrouter.exceptions import RouterError
+
+    async def fake_chat(self, route, messages, **kwargs):
+        raise RouterError("Auth failure for provider 'groq': 401")
+
+    monkeypatch.setattr("flexrouter.client.AsyncClient.chat", fake_chat)
+    r = client.post("/providers/groq/keys/env:GROQ_API_KEY/test", follow_redirects=True)
+    assert "401" in r.text
+
+
+def test_models_is_no_longer_a_stub(client):
     body = client.get("/models").text
-    assert "not built yet" in body.lower()
+    assert "not built yet" not in body.lower()
+    assert "llama-3.1-8b-instant" in body
+
+
+def test_models_shows_a_quarantined_model_as_gone_and_why(client):
+    router = app_module.get_router()
+    router._engine._penalties.quarantine("groq", "llama-3.1-8b-instant", "model gone")
+    body = client.get("/models").text
+    assert "model gone" in body
+
+
+def test_pending_catalogue_says_nothing_pending_when_empty(client):
+    router = app_module.get_router()
+    from flexrouter.store import write_json
+    write_json(router._cfg.state_dir + "/catalog_pending.json", {})
+    body = client.get("/models").text
+    assert "nothing pending" in body.lower()
+
+
+def test_pending_catalogue_shows_what_a_refresh_found(client):
+    router = app_module.get_router()
+    from flexrouter.store import write_json
+    write_json(router._cfg.state_dir + "/catalog_pending.json", {
+        "groq": {"checked_at": "now", "appeared": [{"model": "brand-new-model"}],
+                 "vanished": [], "changed": []},
+    })
+    body = client.get("/models").text
+    assert "brand-new-model" in body
+
+
+def test_buckets_is_no_longer_a_stub(client):
+    body = client.get("/buckets").text
+    assert "not built yet" not in body.lower()
+    assert "low" in body
+    assert "llama-3.1-8b-instant" in body
+
+
+def test_buckets_shows_the_would_answer_verdict(client):
+    body = client.get("/buckets").text
+    assert "would answer" in body.lower()
+
+
+def test_buckets_shows_why_a_model_is_skipped(client):
+    router = app_module.get_router()
+    router._engine._penalties.quarantine("groq", "llama-3.1-8b-instant", "model gone")
+    body = client.get("/buckets").text
+    assert "model gone" in body
+
+
+def test_requests_is_no_longer_a_stub(client):
+    body = client.get("/requests").text
+    assert "not built yet" not in body.lower()
+    assert "nothing has come through" in body.lower()
+
+
+def test_requests_shows_a_written_trace(client):
+    import json, os
+    router = app_module.get_router()
+    os.makedirs(router._cfg.state_dir, exist_ok=True)
+    with open(router._cfg.state_dir + "/traces.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "id": "req_1", "at": "2026-09-21T00:00:00Z",
+            "asked": {"bucket": "low"}, "skipped": [],
+            "answered_by": {"provider": "groq", "model": "llama-3.1-8b-instant"},
+            "tokens": {"in": 10, "out": 5}, "ms_total": 123, "ok": True,
+        }) + "\n")
+    body = client.get("/requests").text
+    assert "groq/llama-3.1-8b-instant" in body
+
+
+def test_brain_is_no_longer_a_stub(client):
+    body = client.get("/brain").text
+    assert "not built yet" not in body.lower()
+    assert "nothing learned yet" in body.lower()
+
+
+def test_brain_shows_a_learned_entry_and_flags_it_for_review(client):
+    router = app_module.get_router()
+    router._error_brain.classify("a completely unrecognized provider message", None)
+    body = client.get("/brain").text
+    assert "needs review" in body.lower()
+
+
+def test_a_brain_sample_is_escaped_not_injected(client):
+    router = app_module.get_router()
+    router._error_brain.classify("<script>bad</script> unrecognized text", None)
+    body = client.get("/brain").text
+    assert "<script>bad</script>" not in body
+    assert "&lt;script&gt;bad&lt;/script&gt;" in body
+
+
+def test_allowance_is_no_longer_a_stub(client):
+    body = client.get("/allowance").text
+    assert "not built yet" not in body.lower()
+    assert "groq" in body
+
+
+def test_a_key_test_message_is_escaped_not_injected(client, monkeypatch):
+    async def fake_chat(self, route, messages, **kwargs):
+        from flexrouter.client import ProviderError
+        raise ProviderError("<script>bad</script>", status_code=500)
+
+    monkeypatch.setattr("flexrouter.client.AsyncClient.chat", fake_chat)
+    r = client.post("/providers/groq/keys/env:GROQ_API_KEY/test", follow_redirects=True)
+    assert "<script>bad</script>" not in r.text
 
 
 def test_an_unknown_path_is_a_404_not_the_dashboard(client):
@@ -128,3 +312,170 @@ def test_nothing_still_tells_the_owner_to_build_the_front_end():
         if "npm run build" in path.read_text(encoding="utf-8")
     ]
     assert offenders == []
+
+
+# --- Stage 8 sub-plan 7: Settings and writing back -------------------------
+
+
+def test_settings_is_no_longer_a_stub(client):
+    body = client.get("/settings").text
+    assert "not built yet" not in body.lower()
+    assert "window_seconds" in body
+
+
+def test_settings_field_can_be_saved_and_shows_up_as_changed_here(client):
+    client.post("/settings/window_seconds", data={"value": "999"}, follow_redirects=False)
+    body = client.get("/settings").text
+    assert "999" in body
+    assert "changed here" in body.lower()
+
+
+def test_settings_field_can_be_put_back(client):
+    client.post("/settings/window_seconds", data={"value": "999"})
+    client.post("/settings/window_seconds/clear")
+    body = client.get("/settings").text
+    assert "60" in body  # back to the config file's own value
+
+
+def test_settings_rejects_a_field_outside_the_allowed_set(client):
+    r = client.post("/settings/auth_token", data={"value": "x"}, follow_redirects=False)
+    assert r.status_code == 303
+    body = client.get(r.headers["location"]).text
+    assert "cannot be changed here" in body.lower()
+
+
+def test_settings_rejects_a_non_numeric_value_for_a_numeric_field(client):
+    r = client.post("/settings/window_seconds", data={"value": "not-a-number"},
+                    follow_redirects=False)
+    body = client.get(r.headers["location"]).text
+    assert "state-bad" in body
+
+
+def test_add_a_provider(client):
+    client.post("/providers", data={"name": "newprov", "base_url": "https://x/v1"})
+    body = client.get("/providers").text
+    assert "newprov" in body
+
+
+def test_add_a_provider_without_a_base_url_fails_cleanly(client):
+    r = client.post("/providers", data={"name": "newprov"}, follow_redirects=False)
+    body = client.get(r.headers["location"]).text
+    assert "state-bad" in body
+
+
+def test_edit_a_provider_and_see_the_new_value(client):
+    client.post("/providers/groq/edit", data={"base_url": "http://localhost:9999/v1"})
+    body = client.get("/providers/groq").text
+    assert "http://localhost:9999/v1" in body
+
+
+def test_put_a_provider_edit_back(client):
+    client.post("/providers/groq/edit", data={"base_url": "http://localhost:9999/v1"})
+    client.post("/providers/groq/clear")
+    body = client.get("/providers/groq").text
+    assert "https://api.groq.com/openai/v1" in body
+
+
+def test_add_a_bucket(client):
+    client.post("/buckets", data={"name": "experimental"})
+    body = client.get("/buckets").text
+    assert "experimental" in body
+
+
+def test_add_a_bucket_without_a_name_fails_cleanly(client):
+    r = client.post("/buckets", data={"name": ""}, follow_redirects=False)
+    body = client.get(r.headers["location"]).text
+    assert "state-bad" in body
+
+
+def test_add_a_model_to_a_bucket(client):
+    client.post("/buckets/low/models", data={
+        "provider": "groq", "model": "brand-new", "score": "70",
+        "rpm": "30", "tpm": "6000",
+    })
+    body = client.get("/buckets").text
+    assert "brand-new" in body
+
+
+def test_add_a_model_with_missing_required_fields_fails_cleanly(client):
+    r = client.post("/buckets/low/models", data={"provider": "groq", "model": "brand-new"},
+                    follow_redirects=False)
+    body = client.get(r.headers["location"]).text
+    assert "state-bad" in body
+
+
+def test_edit_a_model_and_see_the_new_score(client):
+    client.post("/models/groq/llama-3.1-8b-instant", data={
+        "action": "edit", "score": "42", "rpm": "60", "tpm": "60000",
+        "context_window": "131072",
+    })
+    body = client.get("/models").text
+    assert ">42<" in body
+
+
+def test_disable_a_model_removes_it_from_the_live_table(client):
+    client.post("/models/groq/llama-3.1-8b-instant", data={"action": "disable"})
+    body = client.get("/models").text
+    assert "llama-3.1-8b-instant" not in body.split("Disabled models")[0]
+    assert "groq/llama-3.1-8b-instant" in body
+
+
+def test_a_disabled_model_can_be_put_back(client):
+    client.post("/models/groq/llama-3.1-8b-instant", data={"action": "disable"})
+    client.post("/models/groq/llama-3.1-8b-instant", data={"action": "clear"})
+    body = client.get("/models").text
+    assert "No disabled models" in body
+
+
+def test_accept_an_appeared_pending_model(client):
+    router = app_module.get_router()
+    from flexrouter.store import write_json
+    write_json(router._cfg.state_dir + "/catalog_pending.json", {
+        "groq": {"checked_at": "now",
+                 "appeared": [{"model": "brand-new", "score": 70, "rpm": 30, "tpm": 6000}],
+                 "vanished": [], "changed": []},
+    })
+    client.post("/models/pending/groq/appeared/brand-new",
+               data={"action": "accept", "bucket": "low"})
+    body = client.get("/models").text
+    assert "brand-new" in body
+    assert "brand-new appeared" not in body
+
+
+def test_reject_an_appeared_pending_model(client):
+    router = app_module.get_router()
+    from flexrouter.store import write_json
+    write_json(router._cfg.state_dir + "/catalog_pending.json", {
+        "groq": {"checked_at": "now",
+                 "appeared": [{"model": "brand-new", "score": 70, "rpm": 30, "tpm": 6000}],
+                 "vanished": [], "changed": []},
+    })
+    client.post("/models/pending/groq/appeared/brand-new", data={"action": "reject"})
+    body = client.get("/models").text
+    assert "brand-new appeared" not in body
+
+
+def test_accept_a_vanished_pending_model_disables_it(client):
+    router = app_module.get_router()
+    from flexrouter.store import write_json
+    write_json(router._cfg.state_dir + "/catalog_pending.json", {
+        "groq": {"checked_at": "now", "appeared": [],
+                 "vanished": ["llama-3.1-8b-instant"], "changed": []},
+    })
+    client.post("/models/pending/groq/vanished/llama-3.1-8b-instant", data={"action": "accept"})
+    body = client.get("/models").text
+    assert "groq/llama-3.1-8b-instant" in body.split("Pending catalogue")[0]
+
+
+def test_accept_a_changed_pending_field(client):
+    router = app_module.get_router()
+    from flexrouter.store import write_json
+    write_json(router._cfg.state_dir + "/catalog_pending.json", {
+        "groq": {"checked_at": "now", "appeared": [], "vanished": [],
+                 "changed": [{"model": "llama-3.1-8b-instant", "field": "rpm",
+                             "old": 60, "new": 999}]},
+    })
+    client.post("/models/pending/groq/changed/llama-3.1-8b-instant",
+               data={"action": "accept", "field": "rpm"})
+    body = client.get("/models").text
+    assert 'name="rpm" value="999"' in body

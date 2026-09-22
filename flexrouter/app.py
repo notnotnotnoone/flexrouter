@@ -24,12 +24,11 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from flexrouter.dashboard.api import (
     get_config, get_config_validation, get_health_current, get_last_refresh,
@@ -40,8 +39,6 @@ from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.probe import probe_key, stale_models
 from flexrouter.redact import scrub
 from flexrouter.wire import bucket_id, model_id, parse_model, resolve
-
-STATIC_DIR = Path(__file__).parent / "dashboard" / "static"
 
 # The library blocks indefinitely when a tier is saturated, which is the right
 # default for a script. A server must not: an HTTP client that never gets a

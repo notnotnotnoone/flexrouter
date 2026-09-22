@@ -1,6 +1,7 @@
 import pytest
 
 from flexrouter.overrides import (
+    add_bucket, add_model, add_provider,
     apply_overrides, clear_override, load_overrides, save_overrides, set_override,
 )
 
@@ -117,3 +118,96 @@ def test_a_model_stays_when_enabled_says_so(on):
         BASE, {"models": {"openrouter/gone-model": {"enabled": on}}})
     models = [m["model"] for m in merged["buckets"]["smart"]]
     assert "gone-model" in models
+
+
+# --- Stage 8 sub-plan 7: adding a provider, a bucket, a model -------------
+
+
+def test_add_provider_requires_a_base_url():
+    with pytest.raises(ValueError):
+        add_provider("newprov", {})
+
+
+def test_add_provider_rejects_a_field_outside_the_allowed_set():
+    with pytest.raises(ValueError):
+        add_provider("newprov", {"base_url": "https://x/v1", "api_key": "sk-x"})
+
+
+def test_add_provider_refuses_a_name_that_already_has_changes():
+    add_provider("newprov", {"base_url": "https://x/v1"})
+    with pytest.raises(ValueError):
+        add_provider("newprov", {"base_url": "https://y/v1"})
+
+
+def test_a_new_provider_appears_after_apply_overrides():
+    add_provider("newprov", {"base_url": "https://x/v1", "header_parser": "openai_compatible"})
+    merged = apply_overrides(BASE, load_overrides())
+    assert merged["providers"]["newprov"]["base_url"] == "https://x/v1"
+    # The original provider must still be there, untouched.
+    assert merged["providers"]["openrouter"]["base_url"] == BASE["providers"]["openrouter"]["base_url"]
+
+
+def test_add_bucket_creates_an_empty_bucket():
+    add_bucket("experimental")
+    merged = apply_overrides(BASE, load_overrides())
+    assert merged["buckets"]["experimental"] == []
+
+
+def test_add_bucket_is_idempotent():
+    add_bucket("experimental")
+    add_bucket("experimental")
+    assert load_overrides()["new_buckets"] == ["experimental"]
+
+
+def test_add_model_requires_provider_and_model():
+    with pytest.raises(ValueError):
+        add_model("smart", {"score": 90, "rpm": 20, "tpm": 10000})
+
+
+def test_add_model_requires_score_rpm_tpm():
+    with pytest.raises(ValueError):
+        add_model("smart", {"provider": "openrouter", "model": "brand-new"})
+
+
+def test_add_model_rejects_an_unknown_field():
+    with pytest.raises(ValueError):
+        add_model("smart", {
+            "provider": "openrouter", "model": "brand-new",
+            "score": 90, "rpm": 20, "tpm": 10000, "api_key": "sk-x",
+        })
+
+
+def test_a_new_model_appears_in_its_bucket_after_apply_overrides():
+    add_model("smart", {
+        "provider": "openrouter", "model": "brand-new",
+        "score": 90, "rpm": 20, "tpm": 10000,
+    })
+    merged = apply_overrides(BASE, load_overrides())
+    models = [m["model"] for m in merged["buckets"]["smart"]]
+    assert "brand-new" in models
+    # The models that were already there must still be there too.
+    assert "deepseek-chat" in models
+
+
+def test_a_new_model_can_land_in_a_new_bucket():
+    add_bucket("experimental")
+    add_model("experimental", {
+        "provider": "openrouter", "model": "brand-new",
+        "score": 90, "rpm": 20, "tpm": 10000,
+    })
+    merged = apply_overrides(BASE, load_overrides())
+    assert [m["model"] for m in merged["buckets"]["experimental"]] == ["brand-new"]
+
+
+def test_a_new_model_is_not_droppable_by_an_enabled_override_it_never_had():
+    add_model("smart", {
+        "provider": "openrouter", "model": "brand-new",
+        "score": 90, "rpm": 20, "tpm": 10000,
+    })
+    # An unrelated model override must not accidentally sweep up the new one.
+    ov = load_overrides()
+    ov.setdefault("models", {})["openrouter/gone-model"] = {"enabled": False}
+    merged = apply_overrides(BASE, ov)
+    models = [m["model"] for m in merged["buckets"]["smart"]]
+    assert "brand-new" in models
+    assert "gone-model" not in models
