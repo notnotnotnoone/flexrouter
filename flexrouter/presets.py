@@ -16,9 +16,12 @@ work.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from importlib import resources
+from pathlib import Path
 from typing import Optional
+
+from flexrouter import home
 
 
 @dataclass(frozen=True)
@@ -64,3 +67,57 @@ def shipped() -> dict[str, Preset]:
         .read_text(encoding="utf-8")
     )
     return {name: _coerce(name, body) for name, body in raw.items()}
+
+
+def _owner_raw(path=None) -> tuple[dict, list[str]]:
+    """Load the owner's presets file, reporting file-level problems."""
+    target = Path(path) if path else home.presets_path()
+    if not target.exists():
+        return {}, []
+    try:
+        raw = json.loads(target.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        return {}, [f"{target.name}: {e}"]
+    return (raw if isinstance(raw, dict) else {}), []
+
+
+def _merge(base: dict[str, Preset], raw: dict) -> tuple[dict[str, Preset], list[str]]:
+    """Layer the owner's file over the shipped set, entry by entry.
+
+    A bad entry is dropped and named, never raised: this file is
+    hand-edited, and one typo must not take the Providers page down with
+    it. The shipped set is what remains, which is always a working app.
+    """
+    out = dict(base)
+    problems: list[str] = []
+    for name, body in raw.items():
+        if not isinstance(body, dict):
+            problems.append(f"{name}: expected a block of fields")
+            continue
+        try:
+            if name in out:
+                # A patch, not a replacement - see the test.
+                merged = {**asdict(out[name]), **body}
+                merged.pop("name", None)
+                out[name] = _coerce(name, merged)
+            else:
+                out[name] = _coerce(name, body)
+        except (TypeError, ValueError) as e:
+            problems.append(f"{name}: {e}")
+    return out, problems
+
+
+def all(path=None) -> dict[str, Preset]:
+    owner, _ = _owner_raw(path)
+    found, _ = _merge(shipped(), owner)
+    return found
+
+
+def problems(path=None) -> list[str]:
+    owner, file_problems = _owner_raw(path)
+    _, merge_problems = _merge(shipped(), owner)
+    return file_problems + merge_problems
+
+
+def get(name: str, path=None) -> Optional[Preset]:
+    return all(path).get(name)

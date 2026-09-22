@@ -47,3 +47,68 @@ def test_seed_limits_are_named_seeds_not_defaults():
     groq = presets.shipped()["groq"]
     assert not hasattr(groq, "default_rpm")
     assert not hasattr(groq, "default_tpm")
+
+
+# --- Owner presets layering (Task 2) ---
+
+import json
+
+
+def _write(tmp_path, body):
+    p = tmp_path / "presets.json"
+    p.write_text(json.dumps(body), encoding="utf-8")
+    return p
+
+
+def test_the_owner_can_add_a_preset_of_their_own(tmp_path):
+    path = _write(tmp_path, {"fireworks": {
+        "label": "Fireworks",
+        "base_url": "https://api.fireworks.ai/inference/v1",
+        "models_path": "/models",
+    }})
+    found = presets.all(path)
+    assert "fireworks" in found
+    assert found["fireworks"].base_url == "https://api.fireworks.ai/inference/v1"
+    # and the shipped ten are still there
+    assert "groq" in found
+
+
+def test_an_owner_preset_overrides_a_shipped_one_field_by_field(tmp_path):
+    path = _write(tmp_path, {"groq": {"seed_rpm": 1000}})
+    groq = presets.all(path)["groq"]
+    assert groq.seed_rpm == 1000
+    # Untouched fields survive: this is a patch, not a replacement. A whole
+    # -entry replace would silently blank base_url for anyone who only
+    # wanted to bump a rate.
+    assert groq.base_url == "https://api.groq.com/openai/v1"
+    assert groq.label == "Groq"
+
+
+def test_a_broken_entry_costs_one_preset_not_the_page(tmp_path):
+    path = _write(tmp_path, {
+        "good": {"base_url": "https://example.test/v1"},
+        "bad": {"seed_rpm": "not a number"},
+    })
+    found = presets.all(path)
+    assert "good" in found
+    assert "bad" not in found
+    assert "groq" in found          # shipped set unharmed
+    assert any("bad" in p for p in presets.problems(path))
+
+
+def test_a_corrupt_file_is_survivable(tmp_path):
+    path = tmp_path / "presets.json"
+    path.write_text("{ this is not json", encoding="utf-8")
+    assert "groq" in presets.all(path)
+    assert presets.problems(path)
+
+
+def test_a_missing_file_is_not_a_problem(tmp_path):
+    path = tmp_path / "nope.json"
+    assert "groq" in presets.all(path)
+    assert presets.problems(path) == []
+
+
+def test_get_returns_none_for_an_unknown_name(tmp_path):
+    assert presets.get("groq") is not None
+    assert presets.get("no-such-provider") is None
