@@ -228,6 +228,8 @@ class ModelRow:
     reasoning: Optional[CapabilityFact]
     learned_context: Optional[int]
     size_class: Optional[str]
+    price_in: Optional[float]   # USD per million input tokens; None = not priced
+    price_out: Optional[float]  # USD per million output tokens; None = not priced
     state: str  # "available" | "gone"
     why: str
 
@@ -266,6 +268,7 @@ def models(router) -> list[ModelRow]:
                 vision=mf.vision, tools=mf.tools, reasoning=mf.reasoning,
                 learned_context=mf.context.value if mf.context else None,
                 size_class=mf.size_class.value if mf.size_class else None,
+                price_in=mc.price_in, price_out=mc.price_out,
                 state="available" if available else "gone",
                 why=reason,
             )
