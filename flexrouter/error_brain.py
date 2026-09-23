@@ -160,6 +160,24 @@ class ErrorBrain:
             return False
         return getattr(self._decider, "configured", True)
 
+    def correct(self, fp: str, verdict: str) -> None:
+        """The owner's own answer for one learned error.
+
+        Stored as `source="manual"` at full confidence, which `_record`
+        already refuses to overwrite: once corrected by hand, no rule or
+        classifier ever changes this entry again - only its counters move.
+        """
+        from flexrouter.decider import VERDICTS
+        if verdict not in VERDICTS:
+            raise ValueError(f"{verdict!r} is not a verdict; choose one of {', '.join(VERDICTS)}")
+        with self._lock:
+            entry = self._entries[fp]  # KeyError for an unknown entry, on purpose
+            entry.verdict = verdict
+            entry.source = "manual"
+            entry.confidence = 1.0
+            entry.flagged_for_review = False
+            self._save()
+
     def _record(self, fp: str, verdict: ErrorVerdict, sample: str, now: str) -> None:
       with self._lock:
         existing = self._entries.get(fp)

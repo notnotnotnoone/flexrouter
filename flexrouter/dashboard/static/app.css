@@ -736,6 +736,28 @@ table.log td { padding: 8px 12px; }
 .card-why { margin: 0; color: var(--ink-2); font-size: 12px; }
 .card-foot { display: flex; align-items: center; gap: 12px; }
 
+/* error brain */
+.brain-card { gap: 10px; border-left-color: var(--violet); }
+.brain-card.is-review { border-left-color: var(--warn); }
+.brain-card:hover { border-left-color: var(--violet); }
+.brain-card.is-review:hover { border-left-color: var(--warn); }
+.brain-top { display: flex; align-items: center; gap: 6px; }
+.brain-sample {
+  margin: 0;
+  padding: 9px 11px;
+  background: var(--ground);
+  border: 1px solid var(--rule);
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 120px;
+  overflow: auto;
+}
+.brain-foot { display: flex; align-items: center; gap: 10px; }
+.brain-label { font: 500 10px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--ink-4); }
+.correct-form { display: flex; gap: 6px; align-items: center; }
+.correct-form select { font-size: 12px; padding: 5px 8px; }
+
 .all-clear {
   padding: 40px 28px;
   border: 1px solid var(--rule);

@@ -24,6 +24,7 @@ from flexrouter import service_keys
 from flexrouter.dashboard import (facts, keytest, overview, pending_actions,
                                   ranking, settings_write, ui)
 from flexrouter.dashboard import allowance_page as allowance_page_mod
+from flexrouter.dashboard import brain_page as brain_page_mod
 from flexrouter.dashboard import broken_page as broken_page_mod
 from flexrouter.dashboard import requests_page as requests_page_mod
 from flexrouter.dashboard.render import attrs, esc, page, tag
@@ -682,39 +683,6 @@ def _buckets_body(router, banner: str = "") -> str:
     )
 
 
-def _brain_body(router) -> str:
-    entries = facts.error_brain_entries(router)
-    if not entries:
-        return tag("h1", "Error brain", cls="page-title") + tag("p", "Nothing learned yet.", cls="note")
-
-    header = tag("tr", "".join(tag("th", h) for h in [
-        "Verdict", "Source", "Confidence", "Seen", "First seen",
-        "Last seen", "Sample", "Needs review",
-    ]))
-    rows = [header]
-    for e in entries:
-        rows.append(tag("tr", "".join([
-            tag("td", esc(e.verdict)),
-            tag("td", esc(e.source)),
-            tag("td", esc(f"{e.confidence:.0%}")),
-            tag("td", esc(e.seen)),
-            tag("td", esc(e.first_at)),
-            tag("td", esc(e.last_at)),
-            tag("td", esc(e.sample)),
-            tag("td", esc("yes" if e.flagged_for_review else ""),
-                cls="state-warn" if e.flagged_for_review else ""),
-        ])))
-
-    return (
-        tag("h1", "Error brain", cls="page-title")
-        + tag("p", "Every kind of provider error the service has learned "
-                   "to recognise. Entries marked \"needs review\" were "
-                   "guessed below its confidence threshold - correcting "
-                   "one by hand isn't wired up yet.", cls="lede")
-        + tag("table", "".join(rows))
-    )
-
-
 _INT_SETTINGS = frozenset({
     "port", "dashboard_port", "window_seconds", "penalty_base_seconds",
     "penalty_max_seconds", "session_ttl_minutes", "sample_interval_seconds",
@@ -1038,8 +1006,25 @@ def request_journey(request_id: str) -> HTMLResponse:
 
 
 @pages.get("/brain", response_class=HTMLResponse, include_in_schema=False)
-def brain_page() -> HTMLResponse:
-    return HTMLResponse(page("Error brain", "brain", _brain_body(_live_router())))
+def brain_page(ok: str = "", message: str = "") -> HTMLResponse:
+    return HTMLResponse(page("Error brain", "brain",
+                             brain_page_mod.body(_live_router(), _message_banner(ok, message))))
+
+
+@pages.post("/brain/{fp}/verdict", include_in_schema=False)
+async def brain_correct(fp: str, request: Request) -> RedirectResponse:
+    """Correct what one learned error means. Stored as the owner's own
+    answer, which nothing afterwards overrules."""
+    form = await request.form()
+    verdict = str(form.get("verdict", ""))
+    try:
+        _live_router()._error_brain.correct(fp, verdict)
+    except KeyError:
+        return _redirect_with_message("/brain", False, "That error is no longer on record.")
+    except ValueError as exc:
+        return _redirect_with_message("/brain", False, str(exc))
+    label = brain_page_mod.LABELS.get(verdict, verdict)
+    return _redirect_with_message("/brain", True, f"Saved: that error now means \"{label}\".")
 
 
 @pages.get("/allowance", response_class=HTMLResponse, include_in_schema=False)
