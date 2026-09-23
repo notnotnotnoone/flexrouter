@@ -41,6 +41,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "respx>=0.21",
     "pytest-cov>=5.0",
+    "pytest-playwright>=0.5",
 ]
 
 [tool.setuptools.packages.find]
@@ -54,3 +55,8 @@ include = ["flexrouter*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Browser tests drive the dashboard in a real (headless) Chromium. They are
+# opt-in - a plain `pytest` skips them; run them with `pytest -m browser`.
+# See docs/agents/testing.md.
+markers = ["browser: drives the dashboard in a real browser (opt-in: pytest -m browser)"]
+addopts = "-m 'not browser'"
