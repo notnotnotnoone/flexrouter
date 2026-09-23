@@ -1448,10 +1448,26 @@ def broken_page() -> HTMLResponse:
     return HTMLResponse(page("What's broken", "broken", _broken_body(_live_router())))
 
 
+def toast_trigger(message: str, kind: str = "ok") -> dict[str, str]:
+    """Response headers that make htmx raise a `toast` event on the page,
+    which app.js shows in the corner."""
+    return {"HX-Trigger": json.dumps({"toast": {"message": message, "kind": kind}})}
+
+
 def _message_banner(ok: str, message: str) -> str:
+    """The outcome a redirect carried back in its querystring.
+
+    Success becomes a toast (app.js reads the hidden seed and shows it).
+    Failure stays on the page as well: an error that fades after four
+    seconds, while the owner is looking somewhere else, is worse than none.
+    """
     if not message:
         return ""
-    return tag("p", esc(message), cls=f"state-{'ok' if ok == '1' else 'bad'}")
+    if ok == "1":
+        return tag("div", esc(message), cls="toast-seed", hidden=True,
+                   **{"data-kind": "ok"})
+    return (tag("div", esc(message), cls="toast-seed", hidden=True, **{"data-kind": "bad"})
+            + tag("p", esc(message), cls="state-bad"))
 
 
 @pages.get("/models", response_class=HTMLResponse, include_in_schema=False)

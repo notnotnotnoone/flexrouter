@@ -1,3 +1,4 @@
+import json
 import pytest
 from fastapi.testclient import TestClient
 
@@ -623,3 +624,20 @@ def test_accept_a_changed_pending_field(client):
                data={"action": "accept", "field": "rpm"})
     body = client.get("/models").text
     assert 'name="rpm" value="999"' in body
+
+
+def test_toast_trigger_is_an_htmx_event():
+    from flexrouter.dashboard.pages import toast_trigger
+    h = toast_trigger("Key saved")
+    assert json.loads(h["HX-Trigger"]) == {"toast": {"message": "Key saved", "kind": "ok"}}
+
+
+def test_a_success_message_becomes_a_toast_seed(client):
+    body = client.get("/providers?ok=1&message=Saved").text
+    assert 'class="toast-seed"' in body and "Saved" in body
+    assert 'class="state-bad"' not in body
+
+
+def test_a_failure_message_stays_on_the_page(client):
+    body = client.get("/providers?ok=0&message=Nope").text
+    assert 'class="state-bad">Nope<' in body

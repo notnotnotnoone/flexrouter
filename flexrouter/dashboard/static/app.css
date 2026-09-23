@@ -781,7 +781,12 @@ button.danger:hover { border-color: var(--bad); background: var(--bad-wash); }
 
 /* With JavaScript, blocks wait hidden for their entrance; without it they
    are simply there. */
-html.js[data-motion="full"] [data-enter] { opacity: 0; }
+html.js[data-motion="full"]:not(.entered) [data-enter] {
+  opacity: 0;
+  /* Safety net: if app.js or Motion never runs, show everything anyway. */
+  animation: reveal-late 1ms 1.5s forwards;
+}
+@keyframes reveal-late { to { opacity: 1; } }
 
 .flash-up { animation: flash-up 900ms var(--ease); }
 .flash-down { animation: flash-down 900ms var(--ease); }

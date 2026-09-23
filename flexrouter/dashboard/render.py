@@ -128,6 +128,9 @@ def page(title: str, current: str, body: str, *, badges: dict | None = None) -> 
         '<meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>{esc(title)} - flexrouter</title>"
+        # Marks JavaScript as present before the first paint, so blocks that
+        # are about to animate in are never shown and then hidden again.
+        "<script>document.documentElement.classList.add('js')</script>"
         f'<link rel="preload" href="{assets.asset_url("fonts/GeistMono.woff2")}" '
         'as="font" type="font/woff2" crossorigin>'
         f'<link rel="stylesheet" href="{assets.asset_url("app.css")}">'
