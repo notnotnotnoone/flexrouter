@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from flexrouter import keys as keystore
 from flexrouter import overrides as ov
 from flexrouter import presets
+from flexrouter.probe import probe_key
 from flexrouter import score_facts
 from flexrouter import service_keys
 from flexrouter.dashboard import (charts, facts, keytest, pending_actions,
@@ -1693,6 +1694,35 @@ async def providers_add(request: Request) -> RedirectResponse:
         dest, ok=True, message=f"provider {name!r} and its key added")
 
 
+@pages.post("/providers/add", include_in_schema=False)
+async def provider_add_from_preset(request: Request) -> RedirectResponse:
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    preset = presets.get(name)
+    if preset is None:
+        return _redirect_with_message("/providers", ok=False,
+                                      message=f"unknown preset {name!r}")
+    dest = f"/providers/{quote(name, safe=':')}"
+    try:
+        ov.add_provider(name, {"base_url": preset.base_url,
+                               "header_parser": preset.header_parser})
+    except ValueError as e:
+        return _redirect_with_message("/providers", ok=False, message=str(e))
+
+    # The provider now genuinely exists. A key failure past this point must
+    # not read as "nothing happened" - the same reasoning as providers_add.
+    secret = (form.get("secret") or "").strip()
+    if secret:
+        try:
+            keystore.add_key(name, secret, (form.get("label") or "").strip())
+        except (ValueError, OSError) as e:
+            return _redirect_with_message(
+                dest, ok=False, message=f"{name} added, but its key failed: {e}")
+    if preset.models_path and secret:
+        return RedirectResponse(url=f"{dest}/discover", status_code=303)
+    return _redirect_with_message(dest, ok=True, message=f"{name} added")
+
+
 @pages.get("/providers/add/{name}", response_class=HTMLResponse, include_in_schema=False)
 def provider_add_page(name: str, ok: str = "", message: str = "") -> HTMLResponse:
     preset = presets.get(name)
@@ -1795,6 +1825,72 @@ def provider_detail_page(provider: str, tested: str = "", ok: str = "",
         page(f"{provider} - Providers & keys", "providers",
              _provider_detail_body(detail, editable, bucket_names, banner))
     )
+
+
+@pages.get("/providers/{provider}/discover", response_class=HTMLResponse,
+           include_in_schema=False)
+async def provider_discover(provider: str) -> HTMLResponse:
+    router = _live_router()
+    preset = presets.get(provider)
+    pcfg = router._cfg.providers.get(provider)
+    if pcfg is None:
+        return HTMLResponse(
+            page("Providers & keys", "providers",
+                 tag("h1", "No such provider") + tag("p", esc(provider))),
+            status_code=404)
+    result = await probe_key(
+        pcfg.base_url,
+        pcfg.api_keys[0] if pcfg.api_keys else None,
+        timeout=router._cfg.probe_timeout_seconds,
+        models_path=(preset.models_path if preset else "/models") or "/models",
+    )
+    return HTMLResponse(
+        page(f"{provider} - Providers & keys", "providers",
+             _discovered_body(provider, preset, result, list(router._cfg.tiers))))
+
+
+def _discovered_body(provider: str, preset, result, bucket_names: list) -> str:
+    head = tag("div", tag("h1", esc(provider)), cls="page-head")
+    if not result.ok:
+        return (head
+                + tag("p", esc(result.error or "the provider did not answer"),
+                      cls="state-bad")
+                + tag("p", tag("a", "Back to the provider",
+                               href=f"/providers/{quote(provider, safe=':')}",
+                               cls="button-link")))
+    if not result.models:
+        return (head + tag("p", "This key works, but the provider lists no "
+                               "models it can reach.", cls="note"))
+
+    seed_rpm = preset.seed_rpm if preset else 30
+    seed_tpm = preset.seed_tpm if preset else 60_000
+    options = "".join(tag("option", esc(b), value=esc(b)) for b in bucket_names)
+    rows = []
+    for model_id in result.models:
+        picker = f"<select{attrs({'name': 'bucket'})}>{options}</select>"
+        form = tag(
+            "form",
+            _input(type="hidden", name="model", value=esc(model_id))
+            + _input(type="hidden", name="score", value="50")
+            + _input(type="hidden", name="rpm", value=esc(seed_rpm))
+            + _input(type="hidden", name="tpm", value=esc(seed_tpm))
+            + picker
+            + tag("button", "Import", type="submit"),
+            method="post",
+            action=f"/providers/{quote(provider, safe=':')}/models",
+        )
+        rows.append(tag("tr", tag("td", esc(model_id)) + tag("td", form)))
+    table = tag("div", tag("table",
+        tag("tr", tag("th", "Model") + tag("th", "Import into")) + "".join(rows),
+        cls="matrix"), cls="scroll")
+    return (
+        head
+        + tag("p", esc(f"{len(result.models)} models reachable with this key, "
+                       f"answered in {result.latency_ms} ms"), cls="lede")
+        + tag("div", _panel(
+            "What this key can reach", table,
+            sub=f"seeded at {seed_rpm} rpm / {seed_tpm} tpm - correct them "
+                f"afterwards on the Models page"), cls="panel-page"))
 
 
 @pages.post("/providers/{provider}/edit", include_in_schema=False)

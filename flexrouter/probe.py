@@ -42,7 +42,15 @@ class ProbeResult:
 
 def _model_ids(payload) -> list[str]:
     """Pull model ids out of an OpenAI-compatible /models response."""
-    rows = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if isinstance(payload, dict):
+        # `data` is the OpenAI shape; `models` is Ollama's. Both are lists
+        # of rows whose id lives under `id` or `name`, which the loop below
+        # already handles.
+        rows = payload.get("data")
+        if rows is None:
+            rows = payload.get("models", payload)
+    else:
+        rows = payload
     if not isinstance(rows, list):
         return []
     ids = []
@@ -77,14 +85,15 @@ def _explain_status(status: int, body: str) -> str:
 
 
 async def probe_key(base_url: str, api_key: str | None,
-                    timeout: float = DEFAULT_TIMEOUT) -> ProbeResult:
+                    timeout: float = DEFAULT_TIMEOUT,
+                    models_path: str = "/models") -> ProbeResult:
     """Test one credential against one provider and report what it can reach.
 
     Uses GET /models because it is the cheapest call that proves a key works
     and simultaneously answers "which models does this key actually have".
     A completion request would cost tokens and tell us less.
     """
-    url = f"{base_url.rstrip('/')}/models"
+    url = f"{base_url.rstrip('/')}/{models_path.lstrip('/')}"
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     started = time.monotonic()
 
