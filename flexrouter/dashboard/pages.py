@@ -608,169 +608,263 @@ def _broken_body(router) -> str:
     )
 
 
+def _field(label: str, input_html: str) -> str:
+    """One form control with a small caption above it, instead of a bare
+    input whose meaning only shows up in a hover tooltip."""
+    return tag("label", tag("span", esc(label)) + input_html, cls="field")
+
+
 def _add_provider_form() -> str:
     return tag(
         "form",
-        _input(type="text", name="name", placeholder="name") + " "
-        + _input(type="text", name="base_url", placeholder="base URL") + " "
-        + _input(type="text", name="header_parser",
-              placeholder="header parser (optional)") + " "
-        + _input(type="text", name="key_strategy",
-              placeholder="key strategy (optional)") + " "
-        + _input(type="text", name="key_secret",
-              placeholder="key (optional)") + " "
-        + _input(type="text", name="key_label",
-              placeholder="key label (optional)") + " "
+        _field("Name", _input(type="text", name="name", placeholder="name"))
+        + _field("Base URL", _input(type="text", name="base_url", placeholder="base URL"))
+        + _field("Header parser", _input(type="text", name="header_parser",
+              placeholder="optional"))
+        + _field("Key strategy", _input(type="text", name="key_strategy",
+              placeholder="optional"))
+        + _field("Key", _input(type="text", name="key_secret",
+              placeholder="optional"))
+        + _field("Key label", _input(type="text", name="key_label",
+              placeholder="optional"))
         + tag("button", "Add provider", type="submit"),
-        method="post", action="/providers",
+        method="post", action="/providers", cls="grouped-form",
     )
+
+
+def _provider_row(s) -> str:
+    return tag("tr", "".join([
+        tag("td", tag("a", esc(s.name), href=f"/providers/{quote(s.name)}")),
+        tag("td", esc(s.state), cls=f"state-{s.state}"),
+        tag("td", esc(s.base_url), cls="dim"),
+        tag("td", esc(f"{s.keys_live} live, {s.keys_cooling} resting, {s.keys_parked} parked")),
+        tag("td", _num(s.models_total), cls="num"),
+        tag("td", esc(s.quarantine_reason or ""), cls="dim"),
+    ]))
 
 
 def _providers_body(router, banner: str = "") -> str:
     summaries = facts.provider_summaries(router)
 
-    rows = [tag("tr", "".join([
-        tag("th", "Provider"), tag("th", "State"), tag("th", "Address"),
-        tag("th", "Keys"), tag("th", "Models"), tag("th", "Why"),
-    ]))]
-    for s in summaries:
-        rows.append(tag("tr", "".join([
-            tag("td", tag("a", esc(s.name), href=f"/providers/{quote(s.name)}")),
-            tag("td", esc(s.state), cls=f"state-{s.state}"),
-            tag("td", esc(s.base_url)),
-            tag("td", esc(f"{s.keys_live} live, {s.keys_cooling} resting, {s.keys_parked} parked")),
-            tag("td", esc(s.models_total)),
-            tag("td", esc(s.quarantine_reason or "")),
-        ])))
+    if summaries:
+        header = tag("tr", "".join([
+            tag("th", "Provider"), tag("th", "State"), tag("th", "Address"),
+            tag("th", "Keys"), tag("th", "Models"), tag("th", "Why"),
+        ]))
+        rows = "".join(_provider_row(s) for s in summaries)
+        table_html = tag("div", tag("table", header + rows, cls="matrix"), cls="scroll")
+        sub = f"{len(summaries)} configured"
+    else:
+        table_html = tag("div", tag("p", "No providers configured yet.", cls="note"), cls="pb")
+        sub = ""
+
+    providers_panel = _panel("Providers", table_html, sub=sub)
+    add_panel = _panel(
+        "Add a provider",
+        tag("div",
+            tag("p", "A key can be added right here, or later from the "
+                     "provider's own page - models are always added from "
+                     "there, one at a time, once the provider exists.",
+                cls="note")
+            + _add_provider_form(),
+            cls="pb"),
+    )
 
     return (
-        tag("h1", "Providers & keys")
+        tag("div", tag("h1", "Providers & keys"), cls="page-head")
         + banner
         + tag("p", "Every provider you've configured, and every key it "
                    "holds. Click a provider for its keys.", cls="lede")
-        + tag("table", "".join(rows))
-        + tag("h3", "Add a provider")
-        + tag("p", "A key can be added right here, or later from the "
-                   "provider's own page - models are always added from "
-                   "there, one at a time, once the provider exists.",
-              cls="note")
-        + _add_provider_form()
+        + tag("div", providers_panel + add_panel, cls="panel-page")
     )
+
+
+def _key_fact(label: str, value: object) -> str:
+    return tag("span", tag("span", esc(label) + " ", cls="dim") + esc(value))
+
+
+def _key_row(detail, k) -> str:
+    until = f", back in {int(k.until - time.time())}s" if k.until else ""
+    status = f"{k.status}{until}"
+    status_cls = "ok" if k.status == "live" else "warn" if k.status == "cooling" else "bad"
+    last_used = (
+        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(k.last_used_at))
+        if k.last_used_at else "never"
+    )
+    latency = f"{k.ema_latency_ms:.0f} ms" if k.ema_latency_ms else "-"
+    test_form = tag(
+        "form",
+        tag("button", "Test", type="submit"),
+        method="post",
+        action=f"/providers/{quote(detail.name, safe=':')}/keys/{quote(k.id, safe=':')}/test",
+        cls="key-test",
+    )
+    remove_form = tag(
+        "form",
+        tag("button", "Remove", type="submit", cls="danger"),
+        method="post",
+        action=f"/providers/{quote(detail.name, safe=':')}/keys/{quote(k.id, safe=':')}/remove",
+        cls="key-remove",
+    )
+    edit_form = tag(
+        "form",
+        _field("Label", _input(type="text", name="label", value=esc(k.label)))
+        + _field("Weight", _input(type="number", name="weight", value=esc(k.weight), min="1"))
+        + _field("Only these models",
+                 _input(type="text", name="allow_models",
+                        value=esc(" ".join(k.allow_models)),
+                        placeholder="* (all)"))
+        + tag("label",
+              _input(type="checkbox", name="enabled",
+                     **({"checked": True} if k.enabled else {}))
+              + "enabled", cls="check-field")
+        + tag("button", "Save", type="submit"),
+        method="post",
+        action=f"/providers/{quote(detail.name, safe=':')}/keys/{quote(k.id, safe=':')}/edit",
+        cls="grouped-form key-edit",
+    )
+
+    head = tag(
+        "div",
+        tag("span", esc(k.label or k.id), cls="key-label")
+        + tag("span", esc(k.masked), cls="key-value dim")
+        + tag("span", esc(status), cls=f"key-status state-{status_cls}")
+        + tag("span", esc("enabled" if k.enabled else "disabled"), cls="dim")
+        + test_form
+        + remove_form,
+        cls="key-head",
+    )
+    facts_line = tag(
+        "div",
+        _key_fact("Weight", k.weight)
+        + _key_fact("Allowed", ", ".join(k.allow_models) or "all")
+        + _key_fact("Today", f"{k.requests_today:,} req / {k.tokens_today:,} tok")
+        + _key_fact("Failures (24h)", k.failures_24h)
+        + _key_fact("Consecutive fails", k.consecutive_failures)
+        + _key_fact("Active now", k.active_requests)
+        + _key_fact("Typical latency", latency)
+        + _key_fact("Last used", last_used)
+        + _key_fact("Source", k.source),
+        cls="key-facts",
+    )
+    why = tag("div", esc(k.reason), cls="key-reason dim") if k.reason else ""
+    return tag("div", head + facts_line + why + edit_form, cls="key-row")
 
 
 def _key_rows(detail) -> str:
     if not detail.keys:
-        return tag("p", "No keys configured for this provider.", cls="note")
-
-    header = tag("tr", "".join([
-        tag("th", h) for h in [
-            "Key", "Value", "Status", "Why", "Weight", "Allowed models", "Enabled",
-            "Requests today", "Tokens today", "Failures (24h)",
-            "Consecutive failures", "Active now", "Typical latency",
-            "Last used", "Source", "Test",
-        ]
-    ]))
-    rows = [header]
-    for k in detail.keys:
-        until = f", back in {int(k.until - time.time())}s" if k.until else ""
-        status = f"{k.status}{until}"
-        last_used = (
-            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(k.last_used_at))
-            if k.last_used_at else "never"
-        )
-        latency = f"{k.ema_latency_ms:.0f} ms" if k.ema_latency_ms else ""
-        test_form = tag(
-            "form",
-            tag("button", "Test", type="submit"),
-            method="post",
-            action=f"/providers/{quote(detail.name, safe=':')}/keys/{quote(k.id, safe=':')}/test",
-        )
-        rows.append(tag("tr", "".join([
-            tag("td", esc(k.label or k.id)),
-            tag("td", esc(k.masked)),
-            tag("td", esc(status), cls=f"state-{'ok' if k.status == 'live' else 'warn' if k.status == 'cooling' else 'bad'}"),
-            tag("td", esc(k.reason)),
-            tag("td", esc(k.weight)),
-            tag("td", esc(", ".join(k.allow_models))),
-            tag("td", esc("yes" if k.enabled else "no")),
-            tag("td", esc(k.requests_today)),
-            tag("td", esc(k.tokens_today)),
-            tag("td", esc(k.failures_24h)),
-            tag("td", esc(k.consecutive_failures)),
-            tag("td", esc(k.active_requests)),
-            tag("td", esc(latency)),
-            tag("td", esc(last_used)),
-            tag("td", esc(k.source)),
-            tag("td", test_form),
-        ])))
-    return tag("table", "".join(rows))
+        return tag("div", tag("p", "No keys configured for this provider.", cls="note"), cls="pb")
+    return "".join(_key_row(detail, k) for k in detail.keys)
 
 
 def _provider_edit_form(detail, editable: dict) -> str:
     fields = editable["fields"]
+    labels = {
+        "base_url": "Base URL", "header_parser": "Header parser",
+        "key_strategy": "Key strategy",
+    }
     inputs = "".join(
-        _input(type="text", name=name,
-            value=esc(fields[name]["value"]), title=name) + " "
+        _field(labels[name], _input(type="text", name=name,
+            value=esc(fields[name]["value"])))
         for name in ("base_url", "header_parser", "key_strategy")
     )
     edit = tag(
         "form", inputs + tag("button", "Save", type="submit"),
         method="post", action=f"/providers/{quote(detail.name, safe=':')}/edit",
+        cls="grouped-form",
     )
     clear = (
         tag("form", tag("button", "Put it all back", type="submit"),
             method="post", action=f"/providers/{quote(detail.name, safe=':')}/clear")
         if editable["overridden_at_all"] else ""
     )
-    return tag("h3", "Change it") + edit + clear
+    return edit + clear
 
 
 def _provider_add_model_form(provider: str, bucket_names: list) -> str:
     bucket_options = "".join(
         tag("option", esc(b), value=esc(b)) for b in bucket_names
     )
+    picker = f"<select{attrs({'name': 'bucket'})}>{bucket_options}</select>"
     return tag(
         "form",
-        f"<select{attrs({'name': 'bucket'})}>{bucket_options}</select> "
-        + _input(type="text", name="model", placeholder="model") + " "
-        + _input(type="number", name="score", placeholder="score") + " "
-        + _input(type="number", name="rpm", placeholder="rpm") + " "
-        + _input(type="number", name="tpm", placeholder="tpm") + " "
-        + _input(type="number", name="context_window",
-              placeholder="context window (optional)") + " "
-        + tag("label", _input(type="checkbox", name="vision") + "vision") + " "
+        _field("Bucket", picker)
+        + _field("Model", _input(type="text", name="model", placeholder="model"))
+        + _field("Score", _input(type="number", name="score", placeholder="score"))
+        + _field("RPM", _input(type="number", name="rpm", placeholder="rpm"))
+        + _field("TPM", _input(type="number", name="tpm", placeholder="tpm"))
+        + _field("Context", _input(type="number", name="context_window",
+              placeholder="optional"))
+        + tag("label", _input(type="checkbox", name="vision") + "vision", cls="check-field")
         + tag("button", "Add model", type="submit"),
         method="post", action=f"/providers/{quote(provider, safe=':')}/models",
+        cls="grouped-form",
     )
+
+
+def _provider_models_line(label: str, models: list) -> str:
+    if not models:
+        return tag("div", tag("span", esc(label) + " ", cls="dim") + "none", cls="model-line")
+    return tag("div", tag("span", esc(label) + " ", cls="dim") + esc(", ".join(models)),
+              cls="model-line")
 
 
 def _provider_detail_body(detail, editable: dict, bucket_names: list,
                           banner: str = "") -> str:
-    models = (
-        tag("p", esc(f"Alive: {', '.join(detail.models_alive) or 'none'}"))
-        + tag("p", esc(f"Gone: {', '.join(detail.models_gone) or 'none'}"))
-    )
     quarantine_note = (
         tag("p", esc(detail.quarantine_reason), cls="state-bad")
         if detail.quarantined else ""
     )
+
+    models_panel = _panel(
+        "Models",
+        tag("div",
+            _provider_models_line("Alive:", detail.models_alive)
+            + _provider_models_line("Gone:", detail.models_gone),
+            cls="pb"),
+    )
+    add_model_panel = _panel(
+        "Add a model",
+        tag("div",
+            tag("p", "One model per submission, into the bucket you choose. "
+                     "Submit again for the next one.", cls="note")
+            + _provider_add_model_form(detail.name, bucket_names),
+            cls="pb"),
+    )
+    keys_panel = _panel(
+        "Keys",
+        _key_rows(detail)
+        + tag("div",
+              tag("p", "One key per account. Two keys from the same account "
+                       "share that account's rate limit, and flexrouter "
+                       "counts them separately - so add a second key only "
+                       "when it is a second signup.", cls="note")
+              + tag(
+                  "form",
+                  _field("Key", _input(type="password", name="secret",
+                                       placeholder="paste it here"))
+                  + _field("Label", _input(type="text", name="label",
+                                           placeholder="which account this is"))
+                  + tag("button", "Add key", type="submit"),
+                  method="post", action=f"/providers/{quote(detail.name, safe=':')}/keys",
+                  cls="grouped-form",
+              ),
+              cls="pb"),
+        sub="test sends one real chat request through this key",
+    )
+    edit_panel = _panel(
+        "Change it",
+        tag("div", _provider_edit_form(detail, editable), cls="pb"),
+    )
+
     return (
-        tag("h1", esc(detail.name))
+        tag("div", tag("h1", esc(detail.name)), cls="page-head")
         + banner
         + tag("p", esc(detail.base_url), cls="lede")
         + quarantine_note
-        + tag("h3", "Models")
-        + models
-        + tag("h3", "Add a model")
-        + tag("p", "One model per submission, into the bucket you choose. "
-                   "Submit again for the next one.", cls="note")
-        + _provider_add_model_form(detail.name, bucket_names)
-        + tag("h3", "Keys")
-        + tag("p", "Test sends one real chat request through this key - not "
-                   "just a model list lookup, which can look fine while "
-                   "every real request still fails.", cls="note")
-        + _key_rows(detail)
-        + _provider_edit_form(detail, editable)
+        + tag("div",
+              models_panel + add_model_panel + keys_panel + edit_panel,
+              cls="panel-page")
     )
 
 
@@ -1653,6 +1747,64 @@ async def provider_key_test(provider: str, key_id: str) -> RedirectResponse:
         f"&status={result.status_code or ''}"
     )
     return RedirectResponse(url=f"/providers/{quote(provider, safe=':')}?{qs}", status_code=303)
+
+
+def _globs(raw: str) -> list[str]:
+    """Split an `allow_models` box into patterns.
+
+    Commas and whitespace both separate, because the owner will use
+    whichever they think of first and neither one is wrong.
+    """
+    parts = [p.strip() for p in raw.replace(",", " ").split()]
+    return [p for p in parts if p]
+
+
+@pages.post("/providers/{provider}/keys", include_in_schema=False)
+async def provider_key_add(provider: str, request: Request) -> RedirectResponse:
+    form = await request.form()
+    dest = f"/providers/{quote(provider, safe=':')}"
+    secret = (form.get("secret") or "").strip()
+    if not secret:
+        return _redirect_with_message(dest, ok=False, message="paste a key first")
+    try:
+        keystore.add_key(provider, secret, (form.get("label") or "").strip())
+    except (ValueError, OSError) as e:
+        return _redirect_with_message(dest, ok=False, message=str(e))
+    return _redirect_with_message(dest, ok=True, message="key added")
+
+
+@pages.post("/providers/{provider}/keys/{key_id}/remove", include_in_schema=False)
+async def provider_key_remove(provider: str, key_id: str) -> RedirectResponse:
+    dest = f"/providers/{quote(provider, safe=':')}"
+    removed = keystore.remove_key(provider, key_id)
+    return _redirect_with_message(
+        dest, ok=removed,
+        message="key removed" if removed else "that key is already gone")
+
+
+@pages.post("/providers/{provider}/keys/{key_id}/edit", include_in_schema=False)
+async def provider_key_edit(provider: str, key_id: str,
+                            request: Request) -> RedirectResponse:
+    form = await request.form()
+    dest = f"/providers/{quote(provider, safe=':')}"
+    try:
+        weight = int(form.get("weight") or 1)
+    except (TypeError, ValueError):
+        return _redirect_with_message(dest, ok=False, message="weight must be a number")
+    updated = keystore.update_key(
+        provider, key_id,
+        label=(form.get("label") or "").strip(),
+        weight=weight,
+        allow_models=_globs(form.get("allow_models") or ""),
+        # An unchecked checkbox is simply absent from the form, which is
+        # the only way HTML says "false" without JavaScript.  We test
+        # truthiness (not key-presence) so that the test client can send
+        # an empty string to simulate an unchecked box.
+        enabled=bool(form.get("enabled")),
+    )
+    if updated is None:
+        return _redirect_with_message(dest, ok=False, message="that key is no longer there")
+    return _redirect_with_message(dest, ok=True, message="key saved")
 
 
 @pages.get("/settings", response_class=HTMLResponse, include_in_schema=False)
