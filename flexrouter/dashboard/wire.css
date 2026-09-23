@@ -684,3 +684,14 @@ table.matrix th { padding: 6px 13px; }
   .main { padding: 16px 14px 40px; }
   table { display: block; overflow-x: auto; }
 }
+
+/* Providers: the preset grid */
+.preset-grid { display: grid; gap: 6px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+.preset-card { display: flex; align-items: center; gap: 8px;
+  border: 1px solid var(--line); background: var(--panel);
+  padding: 8px 10px; border-radius: 3px; }
+.preset-name { font-weight: 600; }
+.preset-tier { font-size: 11px; }
+.preset-card .button-link { margin-left: auto; }
+.preset-card.is-configured { opacity: .72; }

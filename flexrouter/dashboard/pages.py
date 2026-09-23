@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from flexrouter import keys as keystore
 from flexrouter import overrides as ov
+from flexrouter import presets
 from flexrouter import score_facts
 from flexrouter import service_keys
 from flexrouter.dashboard import (charts, facts, keytest, pending_actions,
@@ -643,6 +644,38 @@ def _provider_row(s) -> str:
     ]))
 
 
+def _preset_card(p, configured: bool) -> str:
+    tier = "free tier" if p.free else "paid"
+    if configured:
+        inner = (
+            tag("span", esc(p.label), cls="preset-name")
+            + tag("span", esc(tier), cls="preset-tier dim")
+            + tag("a", "Open", href=f"/providers/{quote(p.name)}", cls="button-link")
+        )
+        return tag("div", inner, cls="preset-card is-configured")
+    inner = (
+        tag("span", esc(p.label), cls="preset-name")
+        + tag("span", esc(tier), cls="preset-tier dim")
+        + tag("a", "Add", href=f"/providers/add/{quote(p.name)}", cls="button-link")
+    )
+    return tag("div", inner, cls="preset-card")
+
+
+def _preset_grid(router) -> str:
+    known = set(router._cfg.providers)
+    cards = "".join(
+        _preset_card(p, p.name in known)
+        for p in sorted(presets.all().values(), key=lambda x: (x.name not in known, x.label))
+    )
+    trouble = presets.problems()
+    note = (
+        tag("p", esc("Some of your own presets could not be read: "
+                     + "; ".join(trouble)), cls="state-bad")
+        if trouble else ""
+    )
+    return tag("div", note + tag("div", cards, cls="preset-grid"), cls="pb")
+
+
 def _providers_body(router, banner: str = "") -> str:
     summaries = facts.provider_summaries(router)
 
@@ -661,13 +694,15 @@ def _providers_body(router, banner: str = "") -> str:
     providers_panel = _panel("Providers", table_html, sub=sub)
     add_panel = _panel(
         "Add a provider",
+        _preset_grid(router),
+        sub="pick one, paste a key, import its models",
+    )
+    custom_panel = _panel(
+        "Custom provider",
         tag("div",
-            tag("p", "A key can be added right here, or later from the "
-                     "provider's own page - models are always added from "
-                     "there, one at a time, once the provider exists.",
-                cls="note")
-            + _add_provider_form(),
-            cls="pb"),
+            tag("p", "For anything not in the list above. You supply the "
+                     "address; everything else works the same.", cls="note")
+            + _add_provider_form(), cls="pb"),
     )
 
     return (
@@ -675,7 +710,7 @@ def _providers_body(router, banner: str = "") -> str:
         + banner
         + tag("p", "Every provider you've configured, and every key it "
                    "holds. Click a provider for its keys.", cls="lede")
-        + tag("div", providers_panel + add_panel, cls="panel-page")
+        + tag("div", providers_panel + add_panel + custom_panel, cls="panel-page")
     )
 
 
@@ -1656,6 +1691,54 @@ async def providers_add(request: Request) -> RedirectResponse:
             dest, ok=False, message=f"provider {name!r} added, but its key failed: {e}")
     return _redirect_with_message(
         dest, ok=True, message=f"provider {name!r} and its key added")
+
+
+@pages.get("/providers/add/{name}", response_class=HTMLResponse, include_in_schema=False)
+def provider_add_page(name: str, ok: str = "", message: str = "") -> HTMLResponse:
+    preset = presets.get(name)
+    if preset is None:
+        return HTMLResponse(
+            page("Providers & keys", "providers",
+                 tag("h1", "No such preset") + tag("p", esc(name))),
+            status_code=404,
+        )
+    return HTMLResponse(
+        page(f"Add {preset.label} - Providers & keys", "providers",
+             _preset_add_body(preset, _message_banner(ok, message))))
+
+
+def _preset_add_body(p, banner: str = "") -> str:
+    where = (
+        tag("p", "Get a key: " + tag("a", esc(p.signup_url), href=esc(p.signup_url)))
+        if p.signup_url else ""
+    )
+    discovery = (
+        "Paste the key and flexrouter will ask this provider which models "
+        "it can reach, then let you pick which to import."
+        if p.models_path else
+        "This provider has no model list flexrouter knows how to read, so "
+        "you will add its models by hand afterwards."
+    )
+    form = tag(
+        "form",
+        _input(type="hidden", name="name", value=esc(p.name))
+        + _field("Key", _input(type="password", name="secret",
+                               placeholder="paste it here"))
+        + _field("Label", _input(type="text", name="label",
+                                 placeholder="which account this is"))
+        + tag("button", "Add and look for models", type="submit"),
+        method="post", action="/providers/add", cls="grouped-form",
+    )
+    return (
+        tag("div", tag("h1", esc(p.label)), cls="page-head")
+        + banner
+        + tag("p", esc(p.base_url), cls="lede")
+        + tag("div",
+              _panel("Connect it",
+                     tag("div", where + tag("p", esc(discovery), cls="note") + form,
+                         cls="pb")),
+              cls="panel-page")
+    )
 
 
 @pages.post("/providers/{provider}/models", include_in_schema=False)
