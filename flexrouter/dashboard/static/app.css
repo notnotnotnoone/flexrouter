@@ -497,6 +497,15 @@ button:active { transform: scale(.97); }
 .ov-duo { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 .ov-stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 
+/* verdict: the one loose, sentence-shaped block */
+.verdict { padding: 2px 0 4px; }
+.verdict-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.verdict-line strong { font: 600 18px var(--mono); letter-spacing: -.01em; }
+.verdict-ok .verdict-line strong::before { content: "● "; color: var(--green); }
+.verdict-warn .verdict-line strong::before { content: "◆ "; color: var(--warn); }
+.verdict-bad .verdict-line strong::before { content: "▲ "; color: var(--bad); }
+.verdict-story { margin: 6px 0 0; color: var(--ink-2); max-width: 90ch; }
+
 /* the time range: one strip of square cells */
 .ranges { display: flex; border: 1px solid var(--rule-2); }
 .ranges a, .range-link {
@@ -653,7 +662,6 @@ table.matrix th { padding: 9px 14px; }
 .pb { padding: 14px; }
 .panel-page { background: var(--panel); border: 1px solid var(--rule); padding: 16px; margin: 12px 0; }
 
-.ov-banner, .verdict, .verdict-line, .minis, .mini, .tally, .tally-big, .tally-split, .tally-sub { display: block; }
 
 .state-ok, .state-warn, .state-bad { white-space: nowrap; font-family: var(--mono); font-size: 12px; }
 .state-ok { color: var(--green); }

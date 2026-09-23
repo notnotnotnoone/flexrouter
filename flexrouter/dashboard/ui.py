@@ -69,19 +69,24 @@ def stat(label: str, value: str, *, key: str, note: str = "",
     return tag("div", inner, cls="stat", **{"data-stat": key})
 
 
-def meter(fraction: float | None, *, cells: int = 20, label: str = "") -> str:
+def meter(fraction: float | None, *, cells: int = 20, label: str = "",
+          share: bool = False) -> str:
     """The block meter: `cells` squares, lit up to `fraction`.
 
     Anything above zero lights at least one cell - a nearly-empty meter
     that shows nothing reads as "unused", which is a different fact.
     `None` means the total isn't known, and the meter claims nothing.
+
+    `share=True` is for a comparison (this bucket against the busiest one),
+    not a limit: a full meter there is not a warning, so it never turns
+    amber or red.
     """
     common = f'role="meter" aria-valuemin="0" aria-valuemax="100" aria-label="{esc(label)}"'
     if fraction is None:
         return f'<div class="meter" {common} data-level="none">{"<i></i>" * cells}</div>'
     f = min(max(float(fraction), 0.0), 1.0)
     on = min(cells, math.ceil(f * cells)) if 0 < f < 1 / cells else round(f * cells)
-    level = "full" if f >= 1 else "warn" if f >= 0.8 else "ok"
+    level = "share" if share else "full" if f >= 1 else "warn" if f >= 0.8 else "ok"
     pct = round(f * 100)
     body = '<i class="on"></i>' * on + "<i></i>" * (cells - on)
     return (f'<div class="meter" {common} aria-valuenow="{pct}" '

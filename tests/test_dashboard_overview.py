@@ -90,7 +90,8 @@ def test_the_chart_has_a_table_beside_it(client, state_dir):
 def test_the_headline_counts_what_actually_came_through(client, state_dir):
     _seed(state_dir, [_row(m) for m in range(1, 8)])
     body = client.get("/").text
-    assert 'class="tally-big">7<' in body
+    assert 'data-stat="requests"' in body
+    assert 'data-value="7"' in body
 
 
 def test_a_failure_shows_up_in_the_answered_rate(client, state_dir):
@@ -216,7 +217,7 @@ def test_the_fragment_is_the_live_block_and_nothing_else(client, state_dir):
     frag = client.get("/?fragment=1").text
     assert "<!doctype html>" not in frag.lower()
     assert "<nav" not in frag          # no menu, no shell
-    assert 'class="ov-banner"' in frag
+    assert 'data-stat="requests"' in frag
 
 
 def test_the_fragment_is_built_by_the_same_code_as_the_page(client, state_dir):
@@ -265,3 +266,35 @@ def test_unpriced_traffic_says_so_rather_than_claiming_it_was_free(client, state
     body = client.get("/").text
     assert "not priced" in body
     assert "$0.00" not in body
+
+
+def test_the_overview_polls_with_a_morph_not_a_replace(client):
+    body = client.get("/").text
+    assert 'hx-swap="morph:innerHTML"' in body
+    assert 'hx-trigger="every 10s' in body
+    assert "data-live" in body
+
+
+def test_the_poll_interval_follows_the_preference(client):
+    from flexrouter import home
+    (home.home_dir() / "dashboard.json").write_text('{"refresh_seconds": 30}')
+    assert 'hx-trigger="every 30s' in client.get("/").text
+
+
+def test_five_stats_in_the_approved_order(client):
+    body = client.get("/").text
+    keys = ["requests", "answered", "failovers", "median", "spent"]
+    positions = [body.find(f'data-stat="{k}"') for k in keys]
+    assert all(p != -1 for p in positions)
+    assert positions == sorted(positions)
+
+
+def test_buckets_are_drawn_as_block_meters(client, state_dir):
+    _seed(state_dir, [_row(1)])
+    assert 'class="meter"' in client.get("/").text
+
+
+def test_provider_state_is_a_word_not_only_a_colour(client, state_dir):
+    _seed(state_dir, [_row(1)])
+    body = client.get("/").text
+    assert any(w in body for w in ("● OK", "◆ ATTENTION", "▲ BROKEN"))

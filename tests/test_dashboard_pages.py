@@ -250,7 +250,7 @@ def test_a_healthy_provider_shows_state_ok(client):
     # the config_file fixture's one provider has a live, unquarantined key,
     # so it must render as "ok".
     body = client.get("/").text
-    assert "state-ok" in body
+    assert "status-ok" in body and "● OK" in body
 
 
 def test_a_quarantined_provider_shows_state_bad_and_why(client):
@@ -259,7 +259,7 @@ def test_a_quarantined_provider_shows_state_bad_and_why(client):
     router = app_module.get_router()
     router._engine._penalties.quarantine_provider("groq", "key rejected")
     body = client.get("/").text
-    assert "state-bad" in body
+    assert "status-bad" in body and "▲ BROKEN" in body
     assert "key rejected" in body
 
 

@@ -83,3 +83,9 @@ def test_button_escapes_label_and_href():
 
 def test_empty_state_escapes_its_message():
     assert "&lt;" in ui.empty("<nothing>")
+
+
+def test_a_share_meter_never_warns():
+    # "This bucket against the busiest" is a comparison, not a limit:
+    # the busiest bucket must not look used up.
+    assert 'data-level="share"' in ui.meter(1.0, share=True)
