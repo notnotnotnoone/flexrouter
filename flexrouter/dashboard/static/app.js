@@ -225,6 +225,54 @@
     });
   }, 1000);
 
+  /* ── filter-as-you-type (Settings) ───────────────────────── */
+
+  document.addEventListener("input", function (e) {
+    var box = e.target;
+    var sel = box.getAttribute && box.getAttribute("data-filter");
+    if (!sel) return;
+    var q = box.value.trim().toLowerCase();
+    each(document.querySelectorAll(sel), function (row) {
+      row.hidden = !!q && (row.getAttribute("data-search") || row.textContent).toLowerCase().indexOf(q) === -1;
+    });
+    /* open "Advanced" when it holds a match, so a search never looks empty */
+    each(document.querySelectorAll("details.set-advanced"), function (d) {
+      if (q && d.querySelector(sel + ":not([hidden])")) d.open = true;
+    });
+  });
+
+  /* ── copy buttons ────────────────────────────────────────── */
+
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest && e.target.closest("[data-copy]");
+    if (!btn) return;
+    var src = document.querySelector(btn.getAttribute("data-copy"));
+    if (!src || !navigator.clipboard) return;
+    navigator.clipboard.writeText(src.textContent.trim()).then(function () {
+      toast("Copied", "ok");
+    });
+  });
+
+  /* ── section list follows the scroll (Settings) ──────────── */
+
+  function watchToc() {
+    var links = document.querySelectorAll(".toc-link");
+    if (!links.length || !window.IntersectionObserver) return;
+    var byId = {};
+    each(links, function (a) { byId[a.getAttribute("href").slice(1)] = a; });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting || !byId[en.target.id]) return;
+        each(links, function (a) { a.classList.remove("is-here"); });
+        byId[en.target.id].classList.add("is-here");
+      });
+    }, { rootMargin: "-20% 0px -70% 0px" });
+    Object.keys(byId).forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) io.observe(el);
+    });
+  }
+
   /* ── the side panel ──────────────────────────────────────── */
 
   function sheetOpened(root) {
@@ -298,6 +346,7 @@
       placeMarker(true);
     }
     enter(root);
+    watchToc();
     var sr = document.getElementById("sheet-root");
     if (sr && sr.firstChild) sheetOpened(sr);
   }

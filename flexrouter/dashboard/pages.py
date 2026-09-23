@@ -24,6 +24,13 @@ from flexrouter import service_keys
 from flexrouter.dashboard import (facts, keytest, overview, pending_actions,
                                   ranking, settings_write, ui)
 from flexrouter.dashboard import allowance_page as allowance_page_mod
+from dataclasses import asdict
+
+from fastapi.responses import Response
+
+from flexrouter import app_password
+from flexrouter.dashboard import prefs as dashboard_prefs
+from flexrouter.dashboard import settings_page as settings_page_mod
 from flexrouter.dashboard import brain_page as brain_page_mod
 from flexrouter.dashboard import broken_page as broken_page_mod
 from flexrouter.dashboard import requests_page as requests_page_mod
@@ -704,32 +711,6 @@ def _cast_setting(field: str, raw_value: str):
     return raw_value
 
 
-def _display_setting(value) -> str:
-    if isinstance(value, (dict, list)):
-        return json.dumps(value)
-    return "" if value is None else str(value)
-
-
-def _settings_field_row(f) -> str:
-    edit = tag(
-        "form",
-        _input(type="text", name="value", value=esc(_display_setting(f.value)))
-        + tag("button", "Save", type="submit"),
-        method="post", action=f"/settings/{quote(f.name)}",
-    )
-    clear = (
-        tag("form", tag("button", "Put it back", type="submit"),
-            method="post", action=f"/settings/{quote(f.name)}/clear")
-        if f.overridden else ""
-    )
-    return tag("tr", "".join([
-        tag("td", esc(f.name)),
-        tag("td", edit),
-        tag("td", esc("changed here" if f.overridden else "typed by you")),
-        tag("td", clear),
-    ]))
-
-
 def _service_key_row(name: str, label: str, env_var: str) -> str:
     current = service_keys.current_record(name)
     if current:
@@ -767,35 +748,12 @@ def _service_keys_section() -> str:
         for name, (label, env_var) in service_keys.SERVICES.items()
     ]
     return (
-        tag("h3", "Service keys")
-        + tag("p", "Not a chat provider - these are keys the service uses "
-                   "for its own calls: scoring a newly discovered model, "
-                   "or (once it's built) classifying an error. Typed here "
-                   "first, its environment variable second - same order "
-                   "as every other key in this app. Stored the same way a "
-                   "provider's key is: masked everywhere, never shown in "
-                   "full again.", cls="note")
-        + tag("table", "".join(rows))
-    )
-
-
-def _settings_body(router, banner: str = "") -> str:
-    header = tag("tr", "".join(tag("th", h) for h in [
-        "Setting", "Change it", "Where it's from", "",
-    ]))
-    rows = [header] + [_settings_field_row(f) for f in facts.settings_fields(router)]
-
-    return (
-        tag("h1", "Settings", cls="page-title")
-        + banner
-        + tag("p", "Everything here writes to a small file layered on top "
-                   "of your own settings file, never to the settings file "
-                   "itself - \"put it back\" removes just that one change. "
-                   "Editing a provider's address or a model's numbers, "
-                   "adding a provider, a bucket, or a model, live on "
-                   "their own pages.", cls="lede")
-        + tag("table", "".join(rows))
-        + _service_keys_section()
+        tag("div", tag("h2", "Service keys"), cls="box-head")
+        + tag("div",
+              tag("p", "Keys flexrouter uses for its own calls, not for chat: scoring a "
+                       "newly found model, and the Error brain's classifier. Masked "
+                       "everywhere, never shown in full again.", cls="set-help")
+              + tag("table", "".join(rows)), cls="box-body")
     )
 
 
@@ -1409,7 +1367,100 @@ async def provider_key_edit(provider: str, key_id: str,
 @pages.get("/settings", response_class=HTMLResponse, include_in_schema=False)
 def settings_page(ok: str = "", message: str = "") -> HTMLResponse:
     banner = _message_banner(ok, message)
-    return HTMLResponse(page("Settings", "settings", _settings_body(_live_router(), banner)))
+    return HTMLResponse(page("Settings", "settings", settings_page_mod.body(
+        _live_router(), banner, _service_keys_section())))
+
+
+# These fixed addresses are registered before `/settings/{field}` below,
+# which would otherwise catch them as a setting called "app-password".
+
+@pages.post("/settings/app-password", response_class=HTMLResponse, include_in_schema=False)
+async def settings_app_password() -> HTMLResponse:
+    """Make a new random app password and show it exactly once. Nothing in
+    the request is read: the password is never typed in (ADR 0015)."""
+    secret = app_password.generate()
+    body = settings_page_mod.body(_live_router(),
+                                  _message_banner("1", "New app password made"),
+                                  _service_keys_section(), shown_password=secret)
+    return HTMLResponse(page("Settings", "settings", body),
+                        headers={"Cache-Control": "no-store"})
+
+
+@pages.post("/settings/app-password/clear", include_in_schema=False)
+async def settings_app_password_clear() -> RedirectResponse:
+    app_password.clear()
+    return _redirect_with_message("/settings", ok=True, message="Generated app password forgotten")
+
+
+@pages.post("/settings/dashboard", include_in_schema=False)
+async def settings_dashboard(request: Request) -> RedirectResponse:
+    form = await request.form()
+    current = dashboard_prefs.load()
+    try:
+        new = dashboard_prefs.Prefs(
+            motion=str(form.get("motion", current.motion)),
+            refresh_seconds=int(form.get("refresh_seconds", current.refresh_seconds)),
+            default_range=str(form.get("default_range", current.default_range)),
+            timezone=str(form.get("timezone", current.timezone)).strip() or "local",
+        )
+        dashboard_prefs.save(new)
+    except ValueError as e:
+        return _redirect_with_message("/settings", ok=False, message=str(e))
+    return _redirect_with_message("/settings", ok=True, message="Dashboard preferences saved")
+
+
+@pages.get("/settings/backup", include_in_schema=False)
+def settings_backup() -> Response:
+    """Every dashboard change plus the dashboard's own preferences, as one
+    file. Keys are deliberately not included."""
+    data = {"flexrouter_backup": 1, "overrides": ov.load_overrides(),
+            "dashboard": asdict(dashboard_prefs.load())}
+    return Response(json.dumps(data, indent=2), media_type="application/json",
+                    headers={"Content-Disposition": 'attachment; filename="flexrouter-backup.json"'})
+
+
+@pages.post("/settings/restore", include_in_schema=False)
+async def settings_restore(request: Request) -> RedirectResponse:
+    form = await request.form()
+    upload = form.get("backup")
+    try:
+        raw = json.loads((await upload.read()).decode("utf-8")) if upload else None
+        if not isinstance(raw, dict) or raw.get("flexrouter_backup") != 1:
+            raise ValueError("that file is not a flexrouter backup")
+        overrides = raw.get("overrides") or {}
+        for section, entries in overrides.items():
+            if section == "settings":
+                ov.check_fields("settings", entries)
+            elif section in ("providers", "models"):
+                for fields in (entries or {}).values():
+                    ov.check_fields(section, {k: v for k, v in (fields or {}).items()
+                                              if k not in ("provider", "model")})
+        prefs_in = dashboard_prefs.Prefs(**{k: v for k, v in (raw.get("dashboard") or {}).items()
+                                            if k in dashboard_prefs.Prefs.__dataclass_fields__})
+        dashboard_prefs.save(prefs_in)
+        ov.save_overrides(overrides)
+    except (ValueError, TypeError, UnicodeDecodeError) as e:
+        return _redirect_with_message("/settings", ok=False, message=f"Not restored: {e}")
+    return _redirect_with_message("/settings", ok=True, message="Backup restored")
+
+
+@pages.post("/settings/reset-all", include_in_schema=False)
+async def settings_reset_all() -> RedirectResponse:
+    ov.save_overrides({})
+    return _redirect_with_message("/settings", ok=True,
+                                  message="Every dashboard change undone; your settings file applies")
+
+
+@pages.post("/settings/refresh-models", include_in_schema=False)
+async def settings_refresh_models() -> RedirectResponse:
+    import asyncio
+    from flexrouter.dashboard.api import run_refresh
+    try:
+        await asyncio.to_thread(run_refresh, _live_router()._cfg.state_dir)
+    except Exception as e:  # noqa: BLE001 - report, don't 500
+        return _redirect_with_message("/settings", ok=False, message=f"Check failed: {e}")
+    return _redirect_with_message("/models", ok=True,
+                                  message="Checked every provider; anything new is listed below")
 
 
 @pages.post("/settings/{field}/clear", include_in_schema=False)

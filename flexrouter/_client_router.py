@@ -92,7 +92,10 @@ class FlexRouter:
             cfg = None
 
         port = (cfg.port if cfg is not None else None) or home.DEFAULT_PORT
-        self._token = cfg.auth_token if cfg is not None else None
+        # Same order the server checks in (ADR 0015): a password generated
+        # from the dashboard first, the settings file's auth_token second.
+        from flexrouter import app_password
+        self._token = app_password.effective(cfg.auth_token if cfg is not None else None)
 
         self._base_url = base_url or f"http://127.0.0.1:{port}"
         self._http = httpx.AsyncClient(base_url=self._base_url, timeout=timeout)

@@ -35,6 +35,7 @@ from flexrouter.dashboard.api import (
     get_config, get_config_validation, get_health_current, get_last_refresh,
     get_logs, get_stats, get_status, get_uptime, post_config, run_refresh,
 )
+from flexrouter import app_password
 from flexrouter.dashboard.assets import STATIC_DIR
 from flexrouter.dashboard.pages import pages as dashboard_pages
 from flexrouter.exceptions import RouterBusy, RouterError
@@ -113,7 +114,9 @@ def _check_token(request: Request):
     Guards /v1 only. The dashboard and its data stay open: a browser has no
     way to carry this header, and the service binds to 127.0.0.1. ADR 0009.
     """
-    expected = get_router()._cfg.auth_token
+    # A password generated from the dashboard wins over the settings file's
+    # auth_token (ADR 0015); with neither, /v1 is open as before.
+    expected = app_password.effective(get_router()._cfg.auth_token)
     if not expected:
         return None
     header = request.headers.get("authorization") or ""
