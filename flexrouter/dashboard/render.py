@@ -112,6 +112,37 @@ def _nav(current: str, badges: dict) -> str:
     return tag("nav", _brand() + tag("div", "".join(out), cls="nav-links") + foot, cls="nav")
 
 
+_SHORTCUTS = [
+    ("Ctrl K", "Search everything"),
+    ("G then O", "Overview"), ("G then P", "Providers"), ("G then M", "Models"),
+    ("G then B", "Buckets"), ("G then R", "Requests"), ("G then A", "Allowance"),
+    ("G then S", "Settings"), ("/", "Search this page"), ("Esc", "Close"),
+    ("?", "This list"),
+]
+
+
+def _palette_shell() -> str:
+    """The Ctrl+K command bar and the ? shortcut sheet: empty and hidden until
+    app.js opens them. The index is fetched from /palette.json on first use."""
+    palette = (
+        '<div class="palette" id="palette" role="dialog" aria-modal="true" '
+        'aria-label="Search everything" hidden>'
+        '<div class="palette-box">'
+        '<input type="text" class="palette-input" placeholder="Jump to a page, provider, model, '
+        'setting or action" aria-label="Search everything" autocomplete="off" spellcheck="false">'
+        '<ul class="palette-list" role="listbox"></ul>'
+        '<div class="palette-foot"><kbd>Up</kbd><kbd>Down</kbd> move <kbd>Enter</kbd> open '
+        '<kbd>Esc</kbd> close</div>'
+        "</div></div>"
+    )
+    rows = "".join(tag("div", tag("kbd", esc(k)) + tag("span", esc(v)), cls="keys-row")
+                   for k, v in _SHORTCUTS)
+    keys = ('<div class="palette" id="shortcuts" role="dialog" aria-modal="true" '
+            'aria-label="Keyboard shortcuts" hidden><div class="palette-box keys-box">'
+            + tag("h2", "Keyboard shortcuts") + rows + "</div></div>")
+    return palette + keys
+
+
 def _live_badges() -> dict:
     """Counts for the menu: what needs the owner right now. A menu that
     cannot be counted (no router yet, a broken state file) shows no badge
@@ -158,6 +189,7 @@ def page(title: str, current: str, body: str, *, badges: dict | None = None,
         + ui.sprite()
         + tag("div", _nav(current, badges or {}) + tag("main", body, cls="main"), cls="shell")
         + tag("div", sheet, id="sheet-root")
+        + _palette_shell()
         + '<div class="toasts" id="toasts" aria-live="polite"></div>'
         + "</body></html>"
     )

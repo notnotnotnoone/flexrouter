@@ -857,6 +857,73 @@ table.log td { padding: 8px 12px; }
 .about-row { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 12px; padding: 6px 0; align-items: baseline; }
 .about-row code { color: var(--ink-2); word-break: break-all; }
 
+/* ── command bar and shortcut sheet ────────────────────── */
+
+.palette {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 14vh;
+  background: rgba(0, 0, 0, .6);
+}
+.palette[hidden] { display: none; }
+.palette-box {
+  position: relative;
+  width: min(640px, 92vw);
+  background: var(--panel);
+  border: 1px solid var(--rule-2);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .6);
+}
+.palette-box::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  width: 9px;
+  height: 9px;
+  border-top: 1px solid var(--green);
+  border-left: 1px solid var(--green);
+}
+.palette-input {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  background: transparent;
+  padding: 16px 18px;
+  font: 400 15px var(--mono);
+}
+.palette-input:focus { box-shadow: none; border-bottom-color: var(--green); }
+.palette-list { list-style: none; margin: 0; padding: 6px; max-height: 50vh; overflow-y: auto; }
+.palette-item {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 9px 12px;
+  cursor: pointer;
+}
+.palette-item.is-active { background: var(--raise); box-shadow: inset 2px 0 0 var(--green); }
+.palette-kind { font: 500 10px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--ink-4); }
+.palette-label { font: 500 13px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-hint { font: 400 11px var(--mono); color: var(--ink-4); }
+.palette-none { padding: 14px 12px; color: var(--ink-3); }
+.palette-foot {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 9px 14px;
+  border-top: 1px solid var(--rule);
+  font: 400 11px var(--mono);
+  color: var(--ink-4);
+}
+.keys-box { padding: 16px 18px 12px; width: min(420px, 92vw); }
+.keys-box h2 { margin: 0 0 12px; font: 600 13px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+.keys-row { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 5px 0; align-items: center; }
+.keys-row span { color: var(--ink-2); }
+
 /* ── the side panel ────────────────────────────────────── */
 
 .sheet-backdrop {

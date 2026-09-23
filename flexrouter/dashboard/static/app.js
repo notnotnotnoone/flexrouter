@@ -273,6 +273,157 @@
     });
   }
 
+  /* ── Ctrl+K command bar ──────────────────────────────────── */
+
+  var index = null, hits = [], active = 0;
+
+  function score(label, q) {
+    /* In-order letters, rewarding a match at a word start or run. */
+    label = label.toLowerCase();
+    var i = 0, s = 0, run = 0;
+    for (var j = 0; j < q.length; j++) {
+      var at = label.indexOf(q[j], i);
+      if (at === -1) return -1;
+      run = at === i ? run + 1 : 0;
+      s += 1 + run * 2 + (at === 0 || /[\s/_-]/.test(label[at - 1]) ? 3 : 0);
+      i = at + 1;
+    }
+    return s - label.length * 0.01;
+  }
+
+  function render() {
+    var box = document.getElementById("palette"), list = box.querySelector(".palette-list");
+    var q = box.querySelector(".palette-input").value.trim().toLowerCase();
+    hits = (index || []).map(function (it) {
+      return { it: it, s: q ? Math.max(score(it.label, q), it.hint ? score(it.hint, q) - 1 : -1) : 0 };
+    }).filter(function (h) { return h.s >= 0; })
+      .sort(function (a, b) { return b.s - a.s; }).slice(0, 12);
+    active = Math.min(active, Math.max(hits.length - 1, 0));
+    list.innerHTML = "";
+    if (!hits.length) {
+      var none = document.createElement("li");
+      none.className = "palette-none";
+      none.textContent = index ? "Nothing matches." : "Loading...";
+      list.appendChild(none);
+      return;
+    }
+    hits.forEach(function (h, n) {
+      var li = document.createElement("li");
+      li.className = "palette-item" + (n === active ? " is-active" : "");
+      li.setAttribute("role", "option");
+      var kind = document.createElement("span");
+      kind.className = "palette-kind";
+      kind.textContent = h.it.kind;
+      var label = document.createElement("span");
+      label.className = "palette-label";
+      label.textContent = h.it.label;
+      li.appendChild(kind);
+      li.appendChild(label);
+      if (h.it.hint) {
+        var hint = document.createElement("span");
+        hint.className = "palette-hint";
+        hint.textContent = h.it.hint;
+        li.appendChild(hint);
+      }
+      li.addEventListener("mousemove", function () { if (active !== n) { active = n; render(); } });
+      li.addEventListener("click", function () { go(h.it); });
+      list.appendChild(li);
+    });
+  }
+
+  function openDialog(id) {
+    var box = document.getElementById(id);
+    if (!box) return;
+    box.hidden = false;
+    if (M && motion() !== "off") {
+      M.animate(box.querySelector(".palette-box"),
+        { opacity: [0, 1], transform: ["translateY(-8px) scale(.98)", "none"] },
+        { duration: 0.18, ease: EASE });
+    }
+  }
+
+  function openPalette() {
+    var box = document.getElementById("palette");
+    if (!box) return;
+    openDialog("palette");
+    var input = box.querySelector(".palette-input");
+    input.value = "";
+    active = 0;
+    input.focus();
+    render();
+    if (!index) {
+      fetch("/palette.json").then(function (r) { return r.json(); })
+        .then(function (data) { index = data; render(); });
+    }
+  }
+
+  function closeDialogs() {
+    var open = false;
+    each(document.querySelectorAll(".palette:not([hidden])"), function (b) { b.hidden = true; open = true; });
+    return open;
+  }
+
+  function go(item) {
+    closeDialogs();
+    if (item.download) { location.href = item.href; return; }
+    if (window.htmx && item.href.indexOf("#") === -1) {
+      htmx.ajax("GET", item.href, { target: "body", swap: "innerHTML" }).then(function () {
+        history.pushState({}, "", item.href);
+        boot(document, true);
+      });
+    } else {
+      location.href = item.href;
+    }
+  }
+
+  document.addEventListener("input", function (e) {
+    if (e.target.classList && e.target.classList.contains("palette-input")) { active = 0; render(); }
+  });
+  document.addEventListener("click", function (e) {
+    if (e.target.classList && e.target.classList.contains("palette")) closeDialogs();
+  });
+
+  /* ── keyboard shortcuts ──────────────────────────────────── */
+
+  var GO = { o: "/", p: "/providers", m: "/models", b: "/buckets", r: "/requests",
+             a: "/allowance", s: "/settings", l: "/playground" };
+  var pendingG = 0;
+
+  function typing(el) {
+    return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" ||
+                  el.tagName === "SELECT" || el.isContentEditable);
+  }
+
+  document.addEventListener("keydown", function (e) {
+    var paletteOpen = !document.getElementById("palette") ? false : !document.getElementById("palette").hidden;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      if (paletteOpen) closeDialogs(); else openPalette();
+      return;
+    }
+    if (paletteOpen) {
+      if (e.key === "ArrowDown") { e.preventDefault(); active = Math.min(active + 1, hits.length - 1); render(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); active = Math.max(active - 1, 0); render(); }
+      else if (e.key === "Enter" && hits[active]) { e.preventDefault(); go(hits[active].it); }
+      else if (e.key === "Escape") { e.preventDefault(); closeDialogs(); }
+      return;
+    }
+    if (e.key === "Escape" && closeDialogs()) { e.preventDefault(); return; }
+    if (typing(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === "?") { e.preventDefault(); openDialog("shortcuts"); return; }
+    if (e.key === "/") {
+      var s = document.querySelector("[data-page-search]");
+      if (s) { e.preventDefault(); s.focus(); }
+      return;
+    }
+    var k = e.key.toLowerCase();
+    if (k === "g") { pendingG = Date.now(); return; }
+    if (pendingG && Date.now() - pendingG < 1200 && GO[k]) {
+      pendingG = 0;
+      go({ href: GO[k] });
+    }
+  });
+
   /* ── the side panel ──────────────────────────────────────── */
 
   function sheetOpened(root) {

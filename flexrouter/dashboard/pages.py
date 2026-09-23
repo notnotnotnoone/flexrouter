@@ -757,6 +757,13 @@ def _service_keys_section() -> str:
     )
 
 
+@pages.get("/palette.json", include_in_schema=False)
+def palette_index() -> Response:
+    """Everything the Ctrl+K command bar can jump to."""
+    from flexrouter.dashboard import palette
+    return Response(json.dumps(palette.items(_live_router())), media_type="application/json")
+
+
 @pages.get("/", response_class=HTMLResponse, include_in_schema=False)
 def overview_page(range: str = DEFAULT_RANGE, fragment: str = "") -> HTMLResponse:
     """The Overview, or - with `fragment=1` - only the part that changes.
