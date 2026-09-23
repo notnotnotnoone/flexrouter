@@ -13,10 +13,16 @@ of the file, the same way they always have.
 """
 from pathlib import Path
 
+import pytest
+
 from flexrouter.config import load_config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SHIPPED_CONFIG = REPO_ROOT / "flexrouter.yaml"
+
+pytestmark = pytest.mark.skipif(
+    not SHIPPED_CONFIG.exists(),
+    reason="needs the local, gitignored flexrouter.yaml (it holds live keys)")
 
 
 def test_shipped_config_default_tier_scores_are_not_all_identical():

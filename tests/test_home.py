@@ -5,6 +5,21 @@ import yaml
 from flexrouter import home
 
 
+class _FakeOS:
+    """The `os` module as `home` sees it, with a different `os.name`.
+
+    Setting the real `os.name` would fake the platform for the whole process:
+    pathlib picks WindowsPath or PosixPath from it on every `Path(...)`, so on
+    Linux a faked "nt" makes every Path construction raise.
+    """
+
+    def __init__(self, name):
+        self.name = name
+
+    def __getattr__(self, attr):
+        return getattr(os, attr)
+
+
 def test_flexrouter_home_env_var_wins(tmp_path, monkeypatch):
     monkeypatch.setenv("FLEXROUTER_HOME", str(tmp_path / "custom"))
     assert home.home_dir() == tmp_path / "custom"
@@ -12,7 +27,7 @@ def test_flexrouter_home_env_var_wins(tmp_path, monkeypatch):
 
 def test_falls_back_to_localappdata_on_windows(tmp_path, monkeypatch):
     monkeypatch.delenv("FLEXROUTER_HOME", raising=False)
-    monkeypatch.setattr(home.os, "name", "nt")
+    monkeypatch.setattr(home, "os", _FakeOS("nt"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     assert home.home_dir() == tmp_path / "Local" / "flexrouter"
 
@@ -20,7 +35,7 @@ def test_falls_back_to_localappdata_on_windows(tmp_path, monkeypatch):
 def test_falls_back_to_config_dir_elsewhere(tmp_path, monkeypatch):
     monkeypatch.delenv("FLEXROUTER_HOME", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    monkeypatch.setattr(home.os, "name", "posix")
+    monkeypatch.setattr(home, "os", _FakeOS("posix"))
     monkeypatch.setattr(home.Path, "home", staticmethod(lambda: tmp_path))
     assert home.home_dir() == tmp_path / ".config" / "flexrouter"
 
@@ -64,14 +79,14 @@ def test_an_empty_home_variable_counts_as_not_set(tmp_path, monkeypatch):
     put the home wherever the process happened to be standing — exactly the
     per-project layout this module abolishes."""
     monkeypatch.setenv("FLEXROUTER_HOME", "")
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(home, "os", _FakeOS("nt"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     assert home.home_dir() == tmp_path / "flexrouter"
 
 
 def test_a_whitespace_only_home_variable_counts_as_not_set(tmp_path, monkeypatch):
     monkeypatch.setenv("FLEXROUTER_HOME", "   ")
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(home, "os", _FakeOS("nt"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     assert home.home_dir() == tmp_path / "flexrouter"
 
