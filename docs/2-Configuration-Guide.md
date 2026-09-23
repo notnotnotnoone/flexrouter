@@ -2,6 +2,13 @@
 
 **Goal:** Understand every setting in your flexrouter settings file, and configure flexrouter for your multi-provider, multi-tier needs.
 
+> **Three ways to work with your configuration:** the **dashboard**
+> (`flexrouter dashboard`) lets you view and edit settings from your browser
+> and shows the effect live; the **TUI** (`flexrouter tui`) manages keys and
+> shows status from your terminal; and the settings file itself is there when
+> you want to edit by hand. This page describes the file — the dashboard and
+> TUI read and write the same configuration.
+
 ---
 
 ## Where Your Settings Live
@@ -180,6 +187,10 @@ providers:
 
 Keys rotate in order with each request. If one hits a 429, it's skipped immediately.
 
+> Saved keys (`flexrouter keys add <provider>`) can also be managed without the
+> command line: the **TUI's Keys tab** adds, removes, and disables keys, and
+> the dashboard shows key status on its **Account Status** tab.
+
 ### OpenAI-Compatible Requirement
 
 All providers must expose an OpenAI-compatible chat completions endpoint:
@@ -349,7 +360,7 @@ Check your settings for common mistakes:
 flexrouter doctor
 ```
 
-This reads your settings the same way flexrouter itself does and tells you what it found, including anything it could not make sense of. The dashboard shows the same check on its Settings tab.
+This reads your settings the same way flexrouter itself does and tells you what it found, including anything it could not make sense of. The dashboard shows the same check on its **Settings** tab, and the TUI's **Doctor** tab shows it in your terminal.
 
 Or check programmatically. `FlexRouter` is a client of the service, so this
 only proves your settings file can be read and that the service answered — the

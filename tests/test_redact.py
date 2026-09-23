@@ -338,3 +338,60 @@ def test_the_carve_out_is_one_sided_and_prose_stays_readable():
     assert "sk-abc123XYZ" not in out
     for word in ("provided", "rejected", "upstream", "please", "billing"):
         assert word in out
+
+
+import pytest
+
+
+@pytest.fixture
+def known_ids():
+    from flexrouter import redact
+    redact.set_known_identifiers(["nvidia", "nvidia/adept/fuyu-8b", "adept/fuyu-8b",
+                                  "mistral/labs-leanstral-1-5", "labs-leanstral-1-5"])
+    yield
+    redact.set_known_identifiers([])
+
+
+def test_configured_model_ids_and_request_fields_stay_readable(known_ids):
+    # Rule A cut these to "…u-8b" and "…alty", which made the Error brain
+    # and every quarantine reason unreadable.
+    from flexrouter.redact import scrub
+    assert scrub("404 from nvidia/adept/fuyu-8b: Not found") == "404 from nvidia/adept/fuyu-8b: Not found"
+    assert scrub("403 from mistral/labs-leanstral-1-5: Model labs-leanstral-1-5 is a Labs model.") \
+        == "403 from mistral/labs-leanstral-1-5: Model labs-leanstral-1-5 is a Labs model."
+    assert scrub('Unknown name "frequency_penalty": Cannot find field.') \
+        == 'Unknown name "frequency_penalty": Cannot find field.'
+
+
+def test_a_secret_beside_a_known_id_is_still_scrubbed(known_ids):
+    from flexrouter.redact import scrub
+    out = scrub("api key sk-proj-abcdefghijklmnopqrstuvwxyz123456 rejected for nvidia/adept/fuyu-8b")
+    assert "abcdefghijklmnop" not in out
+    assert out.endswith("rejected for nvidia/adept/fuyu-8b")
+
+
+def test_a_secret_that_merely_contains_a_known_id_is_still_scrubbed(known_ids):
+    from flexrouter.redact import scrub
+    out = scrub("token: xQ9nvidia/adept/fuyu-8bZZ81kd")
+    assert "nvidia/adept/fuyu-8b" not in out
+
+
+def test_a_provider_body_keeps_its_error_codes_but_never_a_stored_key():
+    from flexrouter import redact
+    body = ('{"error": {"code": 400, "status": "INVALID_ARGUMENT", "type": "labs_not_enabled", '
+            '"@type": "type.googleapis.com/google.rpc.BadRequest", '
+            '"message": "Incorrect API key provided: gsk_LiveSecretValue0123456789abcdef"}}')
+    redact.set_known_secrets(["gsk_LiveSecretValue0123456789abcdef"])
+    try:
+        out = redact.scrub_body(body)
+    finally:
+        redact.set_known_secrets([])
+    assert "gsk_LiveSecretValue" not in out and "…cdef" in out
+    for code in ("INVALID_ARGUMENT", "labs_not_enabled", "type.googleapis.com/google.rpc.BadRequest"):
+        assert code in out
+
+
+def test_a_body_still_loses_a_value_right_after_a_cue_word():
+    # Belt and braces for a credential that is not one of ours.
+    from flexrouter import redact
+    assert "Zx81Qq99Lm" not in redact.scrub_body('{"detail": "token Zx81Qq99Lm rejected"}')

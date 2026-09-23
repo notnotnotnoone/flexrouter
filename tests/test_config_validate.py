@@ -101,6 +101,11 @@ def test_is_probably_chat_model():
     assert is_probably_chat_model("whisper-large-v3") is False
     assert is_probably_chat_model("models/gemini-2.5-flash-image") is False
     assert is_probably_chat_model("google/lyria-3-pro-preview") is False
+    assert is_probably_chat_model("codestral-embed-2505") is False
+    assert is_probably_chat_model("mistral-ocr-latest") is False
+    assert is_probably_chat_model("mistral-moderation-2603") is False
+    assert is_probably_chat_model("google/deplot") is False
+    assert is_probably_chat_model("codestral-latest") is True
 
 def test_collects_multiple_errors():
     raw = _base()

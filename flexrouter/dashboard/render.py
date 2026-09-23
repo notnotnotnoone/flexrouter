@@ -33,6 +33,17 @@ AREAS: list[tuple[str, str, str, str]] = [
     ("settings", "Settings", "System", "settings"),
 ]
 
+# The Logs page exists only when the server was started with --log, so it
+# is appended here rather than living in AREAS: without the flag the menu
+# and the command palette must look exactly as they always did.
+LOGS_AREA = ("logs", "Logs", "System", "scroll")
+
+
+def areas() -> list[tuple[str, str, str, str]]:
+    """The menu's areas, plus Logs when file logging is on."""
+    from flexrouter import log_setup
+    return AREAS + ([LOGS_AREA] if log_setup.enabled() else [])
+
 
 def esc(value: object) -> str:
     """HTML-escape any value, quotes included. `None` becomes empty."""
@@ -102,7 +113,7 @@ def _nav(current: str, badges: dict) -> str:
     from flexrouter.dashboard import ui  # ui imports this module
     out = []
     seen_group = None
-    for slug, label, group, icon in AREAS:
+    for slug, label, group, icon in areas():
         if group != seen_group:
             out.append(tag("h2", esc(group), cls="nav-group"))
             seen_group = group

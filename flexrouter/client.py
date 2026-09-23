@@ -18,12 +18,10 @@ class RateLimitError(Exception):
 # Statuses that mean "this route will never work again", as opposed to "try
 # again later". A model the provider has deleted answers 404 forever, so
 # backing off 30s and retrying it is an infinite loop, not a recovery.
-PERMANENT_STATUSES = frozenset({404, 410})
-
-# Failures that are true of the whole account, not one model: 402 means the
-# billing tab needs attention, and every model on that provider will answer
-# the same way. Retrying each of them in turn just multiplies the wait.
-PROVIDER_WIDE_STATUSES = frozenset({402})
+# 402 and 403 belong here too, as refusals of this one model: llm7 answers
+# 402 for its paid models and Mistral 403 for its Labs models, while the
+# same key keeps serving everything else. Only 401 says the key is bad.
+PERMANENT_STATUSES = frozenset({402, 403, 404, 410})
 
 
 class ProviderError(Exception):
@@ -43,9 +41,14 @@ class ProviderError(Exception):
     def is_permanent(self) -> bool:
         return self.status_code in PERMANENT_STATUSES
 
-    @property
-    def is_provider_wide(self) -> bool:
-        return self.status_code in PROVIDER_WIDE_STATUSES
+
+def _with_body(exc: BaseException, body) -> BaseException:
+    """Attach the provider's whole response body, for the Error brain. The
+    message stays one clipped line; the body is everything the provider said."""
+    if isinstance(body, bytes):
+        body = body.decode("utf-8", errors="replace")
+    exc.body = body or ""
+    return exc
 
 
 @dataclass
@@ -82,17 +85,14 @@ class AsyncClient:
             raise ProviderError(f"{route.provider}/{route.model}: {exc}") from exc
 
         if resp.status_code == 429:
-            raise RateLimitError(f"429 from {route.provider}/{route.model}")
-        if resp.status_code in (401, 403):
-            raise RouterError(f"Auth failure for provider {route.provider!r}: {resp.status_code}")
-        if resp.status_code >= 500:
-            raise ProviderError(
-                describe_http_error(resp.status_code, route.provider, route.model, resp.text),
-                status_code=resp.status_code)
+            raise _with_body(RateLimitError(f"429 from {route.provider}/{route.model}"), resp.text)
+        if resp.status_code == 401:
+            raise _with_body(RouterError(
+                f"Auth failure for provider {route.provider!r}: {resp.status_code}"), resp.text)
         if resp.status_code >= 400:
-            raise ProviderError(
+            raise _with_body(ProviderError(
                 describe_http_error(resp.status_code, route.provider, route.model, resp.text),
-                status_code=resp.status_code)
+                status_code=resp.status_code), resp.text)
 
         if self._rate_limit_store is not None:
             parsed = parse_headers(route.header_parser, resp.headers)
@@ -154,18 +154,19 @@ class AsyncClient:
             raise ProviderError(f"{route.provider}/{route.model}: {exc}") from exc
 
         try:
-            if resp.status_code == 429:
-                raise RateLimitError(f"429 from {route.provider}/{route.model}")
-            if resp.status_code in (401, 403):
-                raise RouterError(f"Auth failure for provider {route.provider!r}: {resp.status_code}")
             if resp.status_code >= 400:
-                # Read the body for 5xx too: a streamed 500 often carries the
-                # only explanation we will ever get about why this model is
-                # failing, and it used to be discarded.
+                # Read the body for every failure: a streamed 500 or 429 often
+                # carries the only explanation we will ever get about why this
+                # model is failing, and it used to be discarded.
                 body = await resp.aread()
-                raise ProviderError(
+                if resp.status_code == 429:
+                    raise _with_body(RateLimitError(f"429 from {route.provider}/{route.model}"), body)
+                if resp.status_code == 401:
+                    raise _with_body(RouterError(
+                        f"Auth failure for provider {route.provider!r}: {resp.status_code}"), body)
+                raise _with_body(ProviderError(
                     describe_http_error(resp.status_code, route.provider, route.model, body),
-                    status_code=resp.status_code)
+                    status_code=resp.status_code), body)
 
             if self._rate_limit_store is not None:
                 parsed = parse_headers(route.header_parser, resp.headers)

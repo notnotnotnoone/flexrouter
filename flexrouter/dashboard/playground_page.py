@@ -15,15 +15,32 @@ from flexrouter.dashboard.render import esc, tag
 
 def _targets(router) -> str:
     opts = '<option value="auto">auto (best bucket)</option>'
-    opts += "".join(f'<option value="{esc(b)}">bucket: {esc(b)}</option>'
-                    for b in router._cfg.tiers)
+    bucket_opts = "".join(f'<option value="{esc(b)}">{esc(b)}</option>'
+                          for b in router._cfg.tiers)
+    if bucket_opts:
+        opts += f'<optgroup label="Buckets">{bucket_opts}</optgroup>'
+
+    by_provider: dict[str, list[str]] = {}
     seen = set()
     for models in router._cfg.tiers.values():
         for mc in models:
             ident = f"{mc.provider}/{mc.model}"
             if ident not in seen:
                 seen.add(ident)
-                opts += f'<option value="{esc(ident)}">model: {esc(ident)}</option>'
+                by_provider.setdefault(mc.provider, []).append(ident)
+    for provider in sorted(by_provider):
+        model_opts = "".join(f'<option value="{esc(ident)}">{esc(ident)}</option>'
+                             for ident in by_provider[provider])
+        opts += f'<optgroup label="{esc(provider)}">{model_opts}</optgroup>'
+
+    compare_opts = '<option value="compare:all">All models</option>'
+    compare_opts += "".join(
+        f'<option value="compare:bucket:{esc(b)}">All in bucket: {esc(b)}</option>'
+        for b in router._cfg.tiers)
+    compare_opts += "".join(
+        f'<option value="compare:provider:{esc(p)}">All from provider: {esc(p)}</option>'
+        for p in sorted(by_provider))
+    opts += f'<optgroup label="Compare">{compare_opts}</optgroup>'
     return f'<select name="target" id="pg-target" data-remember>{opts}</select>'
 
 
@@ -41,7 +58,8 @@ def body(router) -> str:
                cls="page-head")
     settings = tag("form",
                    _field("Send to", _targets(router),
-                          "A bucket tries its models in order; a model is tried alone.")
+                          "A bucket tries its models in order; a model is tried alone; "
+                          "a Compare option sends to every matching model at once.")
                    + _field("System prompt",
                             '<textarea name="system" id="pg-system" rows="5" data-remember '
                             'placeholder="Describe how the model should behave"></textarea>')
@@ -51,7 +69,23 @@ def body(router) -> str:
                             '<output for="pg-temp" id="pg-temp-out">0.7</output></div>')
                    + _field("Max tokens",
                             '<input type="number" name="max_tokens" id="pg-max" min="1" '
-                            'max="32768" value="1024" data-remember>'),
+                            'max="32768" value="1024" data-remember>')
+                   + _field("Top P",
+                            '<div class="pg-range"><input type="range" name="top_p" '
+                            'id="pg-top-p" min="0" max="1" step="0.05" value="1" data-remember>'
+                            '<output for="pg-top-p" id="pg-top-p-out">1</output></div>')
+                   + _field("Frequency penalty",
+                            '<div class="pg-range"><input type="range" name="frequency_penalty" '
+                            'id="pg-freq" min="-2" max="2" step="0.1" value="0" data-remember>'
+                            '<output for="pg-freq" id="pg-freq-out">0</output></div>')
+                   + _field("Presence penalty",
+                            '<div class="pg-range"><input type="range" name="presence_penalty" '
+                            'id="pg-pres" min="-2" max="2" step="0.1" value="0" data-remember>'
+                            '<output for="pg-pres" id="pg-pres-out">0</output></div>')
+                   + _field("Stop sequences",
+                            '<input type="text" name="stop" id="pg-stop" data-remember '
+                            'placeholder="comma-separated, optional">',
+                            "The model stops as soon as it produces any of these."),
                    cls="pg-settings", id="pg-settings", onsubmit="return false",
                    **{"hx-boost": "false"})
     chat = tag("div",

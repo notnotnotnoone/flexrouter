@@ -85,8 +85,29 @@ def _parse_google(headers) -> ParsedHeaders:
     return _parse_openai_compatible(norm)
 
 
+def _parse_groq(headers) -> ParsedHeaders:
+    # Groq's x-ratelimit-limit-requests is requests per DAY (console.groq.com/
+    # docs/rate-limits), so it is not an rpm. Remaining/reset still hold: at
+    # zero remaining the model is out until that reset, whatever the window.
+    parsed = _parse_openai_compatible(headers)
+    parsed.limit_requests = None
+    return parsed
+
+
+def _parse_mistral(headers) -> ParsedHeaders:
+    norm = {str(k).lower(): v for k, v in dict(headers).items()}
+    return ParsedHeaders(
+        limit_requests=_parse_int(norm, "x-ratelimit-limit-req-minute"),
+        limit_tokens=_parse_int(norm, "x-ratelimit-limit-tokens-minute"),
+        remaining_requests=_parse_int(norm, "x-ratelimit-remaining-req-minute"),
+        remaining_tokens=_parse_int(norm, "x-ratelimit-remaining-tokens-minute"),
+    )
+
+
 PARSERS: dict[str, Callable[[dict], ParsedHeaders]] = {
     "openai_compatible": _parse_openai_compatible,
+    "groq": _parse_groq,
+    "mistral": _parse_mistral,
     "cerebras": _parse_openai_compatible,
     "openrouter": _parse_openai_compatible,
     "siliconflow": _parse_openai_compatible,

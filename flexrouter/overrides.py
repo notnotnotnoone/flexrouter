@@ -212,6 +212,22 @@ def apply_overrides(raw: dict, ov: dict) -> dict:
     for name in (ov.get("new_buckets") or []):
         merged.setdefault(bkey, {}).setdefault(name, [])
 
+    # A brand-new model is folded in before the per-model override loop
+    # below runs, not after: config.yaml's `buckets:` stays empty forever
+    # (spec §1), so every model this app has ever added arrived through
+    # `new_models`, and a later override targeting that same model - a
+    # score AA just matched, a rate limit learned from traffic, "disable" -
+    # has to reach an entry that already exists when the loop below walks
+    # the bucket. Splicing new_models in afterwards, as this used to do,
+    # meant no override could ever take effect on a model added this way,
+    # silently, forever - the fields changed in overrides.json, the live
+    # config never did.
+    for bucket_name, new_entries in (ov.get("new_models") or {}).items():
+        merged.setdefault(bkey, {}).setdefault(bucket_name, [])
+        merged[bkey][bucket_name] = [
+            *merged[bkey][bucket_name], *copy.deepcopy(new_entries),
+        ]
+
     model_ov = ov.get("models") or {}
     if model_ov:
         for bucket_name, models in list((merged.get(bkey) or {}).items()):
@@ -224,15 +240,5 @@ def apply_overrides(raw: dict, ov: dict) -> dict:
                 entry.update(fields)
                 kept.append(entry)
             merged[bkey][bucket_name] = kept
-
-    # A brand-new model is appended after the loop above, not folded into
-    # it: that loop patches and can drop entries that already exist, and a
-    # new model has nothing to patch and must never be droppable by an
-    # `enabled` override it was never given.
-    for bucket_name, new_entries in (ov.get("new_models") or {}).items():
-        merged.setdefault(bkey, {}).setdefault(bucket_name, [])
-        merged[bkey][bucket_name] = [
-            *merged[bkey][bucket_name], *copy.deepcopy(new_entries),
-        ]
 
     return merged

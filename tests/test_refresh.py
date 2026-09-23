@@ -6,7 +6,20 @@ import yaml
 import flexrouter.refresh as refresh
 from flexrouter import home
 from flexrouter.keys import add_key
+from flexrouter.overrides import add_provider
 from flexrouter.refresh import refresh_config
+
+# A provider that exists only because the dashboard added it - config.yaml's
+# `providers:` block has never heard of it, exactly like a fresh install
+# where every provider was added through the dashboard's "add provider" flow
+# rather than hand-written into the settings file.
+NO_PROVIDERS = """\
+providers: {}
+buckets:
+  default: []
+settings:
+  state_dir: STATE
+"""
 
 # The shape a correct installation has: `buckets:`, and no credential
 # anywhere near the settings file. Every test below uses this unless it is
@@ -123,6 +136,21 @@ def test_still_reads_the_legacy_shape(tmp_path, monkeypatch):
     result = refresh_config(cfg, state)
     assert "groq/new-model" in result.added
     assert "groq/old-model" in result.removed
+
+
+def test_finds_models_for_a_provider_known_only_through_overrides(tmp_path, monkeypatch):
+    """The shape a real installation has: every provider was added through
+    the dashboard (config.yaml's `providers:` stays `{}` forever), so the
+    provider only exists in overrides.json's `new_providers`. Before the
+    fix, refresh read config.yaml's raw `providers:` block directly and
+    never merged overrides.json, so it saw zero providers - no matter how
+    many credentials were saved - and always reported nothing to import."""
+    cfg, state = _write(tmp_path, NO_PROVIDERS)
+    add_key("groq", "gsk-saved-key")
+    add_provider("groq", {"base_url": "https://api.groq.com/openai/v1"})
+    _stub_discovery(monkeypatch, {"groq": [{"id": "new-model", "context_length": 8192}]})
+    result = refresh_config(cfg, state)
+    assert "groq/new-model" in result.added
 
 
 def test_a_provider_with_no_credential_at_all_is_not_checked(tmp_path, monkeypatch):
@@ -254,6 +282,26 @@ def test_earlier_findings_survive_a_run_that_could_not_reach_the_provider(
     pending = json.loads((Path(state) / "catalog_pending.json").read_text())
     assert pending["groq"]["vanished"] == ["old-model"]
     assert pending["groq"]["checked_at"] == first.timestamp
+
+
+def test_a_real_failed_lookup_is_reported_not_read_as_an_empty_catalogue(tmp_path, monkeypatch):
+    """The tests above stub discover_models to raise, but the real one used
+    to swallow every failure and return [], so a provider outage reported
+    every configured model as vanished."""
+    import httpx
+    import respx
+    from flexrouter.catalogue import discover_models
+
+    cfg, state = _setup(tmp_path, monkeypatch, {})
+    monkeypatch.setattr(refresh, "discover_models", discover_models)
+    with respx.mock:
+        respx.get("https://api.groq.com/openai/v1/models").mock(
+            return_value=httpx.Response(503, text="upstream unavailable"))
+        result = refresh_config(cfg, state)
+
+    assert result.removed == []
+    [err] = result.provider_errors
+    assert err["provider"] == "groq" and "503" in err["error"]
 
 
 def test_provider_error_text_never_carries_a_credential(tmp_path, monkeypatch):

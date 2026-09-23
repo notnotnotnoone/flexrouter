@@ -3,7 +3,8 @@
 Separate from model_facts.py's capability facts - a score is not a learned
 capability, it is a ranking decision, and this file only ever records two
 things about it: who set it last (`manual`, from the dashboard's own model
-edit form; or `ai-ranked`, from Stage 8's copy-paste ranking flow) and when.
+edit form; `ai-ranked`, from Stage 8's copy-paste ranking flow; or `aa`,
+from the Settings page's re-score-every-models button) and when.
 A model with no entry here has a score that came from config.yaml or an
 `add_model()` call and has never been touched by either of those.
 
@@ -24,7 +25,7 @@ from flexrouter.store import harden, read_json, write_json
 
 @dataclass
 class ScoreSource:
-    source: str  # manual | ai-ranked
+    source: str  # manual | ai-ranked | aa
     at: str
 
 

@@ -99,3 +99,59 @@ def test_reset_all_clears_every_dashboard_change(client):
 def test_the_settings_file_view_hides_keys(client, config_file):
     body = client.get("/settings").text
     assert "Your settings file" in body
+
+
+def test_settings_offer_the_rescore_button(client):
+    body = client.get("/settings").text
+    assert "Re-score every model with Artificial Analysis" in body
+    assert "/settings/rescore-models" in body
+
+
+def test_rescore_rewrites_scores_from_artificial_analysis(client):
+    import httpx
+    import respx
+
+    from flexrouter.catalogue import AA_MODELS_URL
+    client.post("/settings/keys/aa", data={"secret": "aa-secretvalue1234"})
+    aa = {"data": [{"name": "Llama 3.1 8B Instant",
+                    "evaluations": {"artificial_analysis_intelligence_index": 30}}]}
+    with respx.mock:
+        respx.get(AA_MODELS_URL).mock(return_value=httpx.Response(200, json=aa))
+        r = client.post("/settings/rescore-models", follow_redirects=False)
+    assert r.status_code == 303 and "ok=1" in r.headers["location"]
+    assert ov.load_overrides()["models"]["groq/llama-3.1-8b-instant"]["score"] == 30
+
+
+def test_rescore_without_an_aa_key_reports_instead(client, monkeypatch):
+    monkeypatch.delenv("AA_API_KEY", raising=False)
+    r = client.post("/settings/rescore-models", follow_redirects=False)
+    assert r.status_code == 303 and "ok=0" in r.headers["location"]
+    assert "models" not in ov.load_overrides()
+
+
+def test_rescore_leaves_models_aa_does_not_know_alone(client):
+    import httpx
+    import respx
+
+    from flexrouter.catalogue import AA_MODELS_URL
+    client.post("/settings/keys/aa", data={"secret": "aa-secretvalue1234"})
+    aa = {"data": [{"name": "Some Other Model",
+                    "evaluations": {"artificial_analysis_intelligence_index": 40}}]}
+    with respx.mock:
+        respx.get(AA_MODELS_URL).mock(return_value=httpx.Response(200, json=aa))
+        r = client.post("/settings/rescore-models", follow_redirects=False)
+    assert r.status_code == 303 and "ok=1" in r.headers["location"]
+    assert "models" not in ov.load_overrides()
+
+
+def test_rescore_reports_a_failing_aa_call(client):
+    import httpx
+    import respx
+
+    from flexrouter.catalogue import AA_MODELS_URL
+    client.post("/settings/keys/aa", data={"secret": "aa-secretvalue1234"})
+    with respx.mock:
+        respx.get(AA_MODELS_URL).mock(return_value=httpx.Response(500, text="error"))
+        r = client.post("/settings/rescore-models", follow_redirects=False)
+    assert r.status_code == 303 and "ok=0" in r.headers["location"]
+    assert "models" not in ov.load_overrides()

@@ -128,6 +128,7 @@ def get_last_refresh(state_dir: str) -> dict:
 def run_refresh(state_dir: str) -> dict:
     from dataclasses import asdict
 
-    from flexrouter import home
+    from flexrouter import home, service_keys
     from flexrouter.refresh import refresh_config
-    return asdict(refresh_config(str(home.config_path()), state_dir))
+    return asdict(refresh_config(str(home.config_path()), state_dir,
+                                 aa_key=service_keys.resolve("aa")))

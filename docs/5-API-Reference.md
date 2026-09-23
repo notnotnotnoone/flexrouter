@@ -377,7 +377,7 @@ flexrouter keys import <old_file>   # copy keys out of an old settings file into
 ### `flexrouter serve`
 
 ```bash
-flexrouter serve [--port PORT]
+flexrouter serve [--port PORT] [--log]
 ```
 
 Starts flexrouter as a service: an OpenAI-compatible API and the dashboard, together, on one port.
@@ -391,6 +391,7 @@ Starts flexrouter as a service: an OpenAI-compatible API and the dashboard, toge
 
 **Options:**
 - `--port`: Override the port (default: 4891, or whatever `port` is set to in your settings file)
+- `--log`: Write a server activity log to `flexrouter.log` in the state directory and add a **Logs** page to the dashboard that tails it live (see [Logging and the Logs page](4-Advanced-Usage.md#logging-and-the-logs-page))
 
 **Example:**
 ```bash
@@ -527,7 +528,7 @@ curl http://localhost:4891/v1/chat/completions \
 ### `flexrouter dashboard`
 
 ```bash
-flexrouter dashboard
+flexrouter dashboard [--port PORT] [--log]
 ```
 
 Same as `flexrouter serve`, but also opens the dashboard in your browser for you.
@@ -536,6 +537,7 @@ Same as `flexrouter serve`, but also opens the dashboard in your browser for you
 - Starts the service at `http://localhost:4891` (or whatever `port` is set to in your settings file)
 - Opens your browser to live telemetry
 - Provides `/api/*` endpoints for the dashboard's own use
+- With `--log`: writes a server activity log (`flexrouter.log` in the state directory) and adds a **Logs** page to the dashboard, under *System*, that tails it live (see [Logging and the Logs page](4-Advanced-Usage.md#logging-and-the-logs-page))
 
 **Tabs:**
 - Live Telemetry
@@ -544,6 +546,28 @@ Same as `flexrouter serve`, but also opens the dashboard in your browser for you
 - Account Status
 - Settings
 - Setup
+
+---
+
+### `flexrouter tui`
+
+```bash
+flexrouter tui
+```
+
+Opens the live terminal UI — the dashboard's monitoring picture, in your
+terminal, with no browser and no port.
+
+**What it does:**
+- Reads your flexrouter home directly, so it works whether or not the service
+  is running
+- Shows four tabs: **Overview** (totals and today's spend per provider),
+  **Keys** (add, remove, or disable saved keys), **Requests** (recent
+  requests, newest first), and **Doctor** (where your settings, keys, and
+  records live)
+- Refreshes on its own every couple of seconds
+
+**Keys:** `a` add a key · `d` remove the selected key · `r` refresh · `q` quit
 
 ---
 
@@ -845,7 +869,14 @@ All `generate()` and `agenerate()` responses follow OpenAI's chat completions fo
 
 | Task | Code |
 |------|------|
-| Start the service (do this first) | `flexrouter serve` |
+| Start everything + open the dashboard | `flexrouter dashboard` |
+| Start the service only (no browser) | `flexrouter serve` |
+| Monitor from the terminal | `flexrouter tui` |
+| One-shot status print | `flexrouter status` |
+| Where are my settings? | `flexrouter doctor` |
+| Undo a dashboard change | `flexrouter config reset` |
+| Save a key | `flexrouter keys add <provider>` |
+| List saved keys | `flexrouter keys list` |
 | Create the client | `router = FlexRouter()` |
 | Make request | `router.generate(messages=[...], tier="low")` |
 | Sticky session | `router.generate(..., session_id="user-123")` |
@@ -855,13 +886,6 @@ All `generate()` and `agenerate()` responses follow OpenAI's chat completions fo
 | Catch error | `except RouterError as e: ...` |
 | Catch warning | `except ContextWindowWarning: ...` |
 | Reload config | Nothing to do — the service picks up changes itself (`router.reload()` is kept, and does nothing) |
-| Dashboard | `flexrouter dashboard` |
-| API server | `flexrouter serve` |
-| View status | `flexrouter status` |
-| Where are my settings? | `flexrouter doctor` |
-| Undo a dashboard change | `flexrouter config reset` |
-| Save a key | `flexrouter keys add <provider>` |
-| List saved keys | `flexrouter keys list` |
 
 ---
 

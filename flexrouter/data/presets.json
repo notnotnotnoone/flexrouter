@@ -4,8 +4,8 @@
     "base_url": "https://api.groq.com/openai/v1",
     "signup_url": "https://console.groq.com/keys",
     "models_path": "/models",
-    "header_parser": "openai_compatible",
-    "free": true, "seed_rpm": 30, "seed_tpm": 6000, "free_filter": "all"
+    "header_parser": "groq",
+    "free": true, "seed_rpm": 30, "seed_tpm": 6000, "free_filter": "groq_chat"
   },
   "cerebras": {
     "label": "Cerebras",
@@ -28,8 +28,8 @@
     "base_url": "https://api.mistral.ai/v1",
     "signup_url": "https://console.mistral.ai/api-keys",
     "models_path": "/models",
-    "header_parser": "openai_compatible",
-    "free": true, "seed_rpm": 60, "seed_tpm": 500000, "free_filter": "all"
+    "header_parser": "mistral",
+    "free": true, "seed_rpm": 60, "seed_tpm": 500000, "free_filter": "mistral_chat"
   },
   "nvidia": {
     "label": "NVIDIA NIM",
@@ -45,7 +45,7 @@
     "signup_url": "https://aistudio.google.com/apikey",
     "models_path": "/models",
     "header_parser": "google",
-    "free": true, "seed_rpm": 15, "seed_tpm": 1000000, "free_filter": "flash_only"
+    "free": true, "seed_rpm": 15, "seed_tpm": 1000000, "free_filter": "googleai_free"
   },
   "deepseek": {
     "label": "DeepSeek",
@@ -70,6 +70,14 @@
     "models_path": "/models",
     "header_parser": "openai_compatible",
     "free": false, "seed_rpm": 20, "seed_tpm": 50000, "free_filter": "all"
+  },
+  "llm7": {
+    "label": "LLM7.io",
+    "base_url": "https://api.llm7.io/v1",
+    "signup_url": "https://dash.llm7.io",
+    "models_path": "/models",
+    "header_parser": "openai_compatible",
+    "free": true, "seed_rpm": 40, "seed_tpm": 30000, "free_filter": "llm7_free"
   },
   "ollama": {
     "label": "Ollama (local)",

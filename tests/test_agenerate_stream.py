@@ -101,7 +101,7 @@ async def test_failed_attempts_then_success_interleaves_events(config_file, monk
     # bypass real per-key state (Stage 4) so a RateLimitError's key-cooling
     # doesn't sideline config_file's single real key and stall the retry
     # loop. Key-selection behavior has its own dedicated test file.
-    monkeypatch.setattr(router, "_pick_key", lambda route: (route, None))
+    monkeypatch.setattr(router, "_pick_key", lambda route: (route, None, False))
     monkeypatch.setattr(
         router._client,
         "stream_chat",
@@ -138,7 +138,7 @@ async def test_total_exhaustion_raises_router_busy(config_file, monkeypatch):
     # See the comment in test_failed_attempts_then_success_interleaves_events:
     # bypass real per-key state so repeated RateLimitErrors on config_file's
     # single real key don't cool it down and stall the retry loop.
-    monkeypatch.setattr(router, "_pick_key", lambda route: (route, None))
+    monkeypatch.setattr(router, "_pick_key", lambda route: (route, None, False))
     monkeypatch.setattr(
         router._client,
         "stream_chat",

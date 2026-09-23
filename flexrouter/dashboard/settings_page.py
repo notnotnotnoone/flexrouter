@@ -226,8 +226,19 @@ def _about(router) -> str:
     table = "".join(tag("div", tag("span", esc(k), cls="stat-label") + tag("code", esc(v)),
                         cls="about-row") for k, v in rows)
     check = tag("form", tag("button", "Check for new models now", type="submit"),
-                method="post", action="/settings/refresh-models")
-    return ui.box("About", table + tag("div", check, cls="set-actions"),
+                method="post", action="/settings/refresh-models",
+                **{"data-busy": "Checking every provider with a valid key..."})
+    test_limits = tag("form",
+                      tag("button", "Test rate limits for every model", type="submit"),
+                      method="post", action="/settings/test-rate-limits", cls="set-actions",
+                      **{"data-busy": "Sending one test message to every model..."})
+    return ui.box("About", table + tag("div", check, cls="set-actions")
+                  + test_limits
+                  + tag("p", "Sends one short test message to every configured model and saves "
+                             "whatever rate-limit numbers the provider hands back - the same "
+                             "numbers a real request would teach it over time, just immediately "
+                             "instead of waiting for traffic. Costs a little quota per model.",
+                        cls="note"),
                   sub="new models found go to the Models page to accept",
                   id="g-about", **{"data-enter": ""})
 

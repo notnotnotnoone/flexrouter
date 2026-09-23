@@ -199,6 +199,37 @@ def test_a_new_model_can_land_in_a_new_bucket():
     assert [m["model"] for m in merged["buckets"]["experimental"]] == ["brand-new"]
 
 
+def test_an_override_on_a_brand_new_model_actually_applies():
+    """The bug this stage closes: config.yaml's `buckets:` never gets
+    rewritten, so every model this app has added arrived through
+    `add_model()`/`new_models`. Before the fix, `new_models` was spliced
+    into the bucket *after* the per-model override loop already ran, so a
+    later override that targeted that same model - a rescored AA match, a
+    rate limit correction - was written to overrides.json and never once
+    reached the live config."""
+    add_model("smart", {
+        "provider": "openrouter", "model": "brand-new",
+        "score": 50, "rpm": 20, "tpm": 10000,
+    })
+    ov = load_overrides()
+    ov.setdefault("models", {})["openrouter/brand-new"] = {"score": 15}
+    merged = apply_overrides(BASE, ov)
+    [entry] = [m for m in merged["buckets"]["smart"] if m["model"] == "brand-new"]
+    assert entry["score"] == 15
+
+
+def test_disabling_a_brand_new_model_actually_drops_it():
+    add_model("smart", {
+        "provider": "openrouter", "model": "brand-new",
+        "score": 50, "rpm": 20, "tpm": 10000,
+    })
+    ov = load_overrides()
+    ov.setdefault("models", {})["openrouter/brand-new"] = {"enabled": False}
+    merged = apply_overrides(BASE, ov)
+    models = [m["model"] for m in merged["buckets"]["smart"]]
+    assert "brand-new" not in models
+
+
 def test_a_new_model_is_not_droppable_by_an_enabled_override_it_never_had():
     add_model("smart", {
         "provider": "openrouter", "model": "brand-new",

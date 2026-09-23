@@ -268,7 +268,7 @@ Budgets reset at **00:00 UTC** each day. If you have multiple time zones, use UT
 
 ### View Remaining Budget
 
-Check the dashboard **Account Status** tab, or read `.flexrouter/health.json`:
+Check the dashboard **Account Status** tab (or the TUI's **Overview** tab), or read `.flexrouter/health.json`:
 
 ```json
 {
@@ -411,6 +411,10 @@ This gives you full visibility into:
 - Cost per request
 - Success vs. failure rates
 - Latency trends
+
+You don't have to open the CSV to see any of this: the dashboard's **Request
+Logs** and **Live Telemetry** tabs and the TUI's **Requests** and **Overview**
+tabs present the same data live.
 
 Use this for:
 - Cost analysis and budgeting

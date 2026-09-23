@@ -23,7 +23,7 @@ def test_a_preset_carries_everything_the_add_form_needs():
     assert groq.base_url == "https://api.groq.com/openai/v1"
     assert groq.signup_url.startswith("https://")
     assert groq.models_path == "/models"
-    assert groq.header_parser == "openai_compatible"
+    assert groq.header_parser == "groq"
     assert groq.seed_rpm > 0 and groq.seed_tpm > 0
 
 

@@ -490,7 +490,7 @@ def test_a_penalized_route_does_not_record_the_key_in_its_event(
         exc = ProviderError(
             f"500 from groq: upstream said key {SIDELINE_KEY} blew up",
             status_code=500)
-        assert not exc.is_permanent and not exc.is_provider_wide
+        assert not exc.is_permanent
         router._handle_provider_error(
             SimpleNamespace(provider="groq", model="m1"), exc)
         assert SIDELINE_KEY not in _state_dir_text(tmp_path)

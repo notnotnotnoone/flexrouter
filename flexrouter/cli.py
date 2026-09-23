@@ -36,16 +36,42 @@ def _resolve_port(config_path, override):
     return home.DEFAULT_PORT
 
 
-def _run_daemon(port, config_path, open_browser):
+def _state_dir(config_path):
+    """Where the server keeps its state - the log file lives there too.
+
+    Falls back to the shared home's state directory when the settings file
+    cannot be read; `create_app` will report that properly a moment later.
+    """
+    path = Path(config_path) if config_path else home.config_path()
+    if path:
+        try:
+            return load_config(path).state_dir
+        except ConfigError:
+            pass
+    return str(home.state_dir())
+
+
+def _run_daemon(port, config_path, open_browser, log=False):
     import uvicorn
     from flexrouter.app import create_app
 
     tui_render.console().print(tui_render.banner(port, str(home.config_path())))
 
+    run_kwargs = {}
+    if log:
+        from flexrouter import log_setup
+
+        log_path = log_setup.enable(_state_dir(config_path))
+        run_kwargs["log_config"] = log_setup.uvicorn_log_config()
+        tui_render.console().print(
+            f"Logging to [bold]{tui_render.esc(str(log_path))}[/bold] "
+            "- see it live on the Logs page in the dashboard.")
+
     url = f"http://localhost:{port}"
     if open_browser:
         webbrowser.open(url)
-    uvicorn.run(create_app(config_path), host="127.0.0.1", port=port, log_level="info")
+    uvicorn.run(create_app(config_path), host="127.0.0.1", port=port,
+                log_level="info", **run_kwargs)
 
 
 _config_option = click.option(
@@ -55,21 +81,30 @@ _config_option = click.option(
 )
 
 
+_log_option = click.option(
+    "--log", "log", is_flag=True,
+    help="Write a server activity log (flexrouter.log in the state directory) "
+         "and show it on a Logs page in the dashboard.",
+)
+
+
 @cli.command()
 @click.option("--port", default=None, type=int,
               help="Port for everything (default: the settings file's port, else 4891)")
 @_config_option
-def serve(port, config_path):
+@_log_option
+def serve(port, config_path, log):
     """Start the flexrouter server: API and dashboard on one port."""
-    _run_daemon(_resolve_port(config_path, port), config_path, open_browser=False)
+    _run_daemon(_resolve_port(config_path, port), config_path, open_browser=False, log=log)
 
 
 @cli.command()
 @click.option("--port", default=None, type=int, help="Port to serve on")
 @_config_option
-def dashboard(port, config_path):
+@_log_option
+def dashboard(port, config_path, log):
     """Start the server and open the dashboard in a browser."""
-    _run_daemon(_resolve_port(config_path, port), config_path, open_browser=True)
+    _run_daemon(_resolve_port(config_path, port), config_path, open_browser=True, log=log)
 
 
 @cli.command()

@@ -9,6 +9,7 @@ import yaml
 from flexrouter.catalogue import PROVIDERS, discover_models, score_with_aa, _context_window
 from flexrouter.config import is_probably_chat_model, resolve_keys
 from flexrouter.keys import load_keys, mask
+from flexrouter.overrides import apply_overrides, load_overrides
 from flexrouter.rate_limits import RateLimitStore
 from flexrouter.store import read_json, write_json
 
@@ -36,9 +37,16 @@ class RefreshResult:
 
 
 def _existing(config_path: Path) -> dict:
+    """config.yaml as `load_config` actually sees it: with overrides.json
+    layered on top. A provider or model added purely through the dashboard
+    never appears in config.yaml itself (spec §1 - that file is never
+    rewritten), so reading it raw here found zero providers on any
+    installation where onboarding, not hand-editing, added them all - no
+    credential resolved, and refresh always reported nothing to check."""
     if not config_path.exists():
         return {}
-    return yaml.safe_load(config_path.read_text()) or {}
+    raw = yaml.safe_load(config_path.read_text()) or {}
+    return apply_overrides(raw, load_overrides())
 
 
 def _provider_keys(raw: dict, config_path: Path | None = None) -> dict:

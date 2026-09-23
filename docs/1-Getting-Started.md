@@ -12,6 +12,8 @@ By the end of this tutorial, you'll have:
 - ✅ flexrouter installed
 - ✅ One provider set up, with its key saved safely
 - ✅ The flexrouter service running on your machine — the one process that does the routing for everything on it
+- ✅ Your first routed request, made from the **dashboard** in your browser
+- ✅ The **terminal UI** open, watching the same service from your terminal
 - ✅ A working Python script that asks that service to route a request to the cheapest available model
 
 ---
@@ -86,71 +88,76 @@ You never need to create or find this file yourself for a fresh setup — `flexr
 
 ---
 
-## Step 4: Start the Service
+## Step 4: Start the Service and Open the Dashboard
 
 flexrouter does all of its routing in **one background service** on your
 computer, so every project and every app on the machine shares the same
 settings, the same keys, and the same running total of what each provider has
-left. Nothing routes until it is running. Start it:
+left. Nothing routes until it is running. The easiest way to start it is
+through the dashboard — it starts the service *and* opens your browser:
 
 ```bash
-flexrouter serve
+flexrouter dashboard
 ```
 
-Leave that running in its own terminal. It listens on
-`http://127.0.0.1:4891`.
+This opens `http://localhost:4891`. Leave that terminal running. The dashboard
+is the main way to see what flexrouter is doing:
 
-> If you skip this step, the next one fails with
-> *"flexrouter isn't running. Start it with: flexrouter serve"*. That message
-> is telling you the truth — come back here and run it.
+- **Live Telemetry**: Your model's RPM and TPM usage, with cooldown countdowns
+- **Chat**: Send a request through the router and watch it answer
+- **Request Logs**: Every call, newest first
+- **Account Status**: Spending per provider and budget tracking
+- **Settings**: View and edit your config without touching the file
+
+> Prefer no browser? `flexrouter serve` starts the exact same service without
+> opening one. And if something fails later with *"flexrouter isn't running.
+> Start it with: flexrouter serve"* — that message is telling you the truth:
+> come back here and start it.
+
+> Want the server's own diary? `flexrouter dashboard --log` also writes an
+> activity log (startup, warnings, provider errors) and adds a **Logs** page
+> under *System* that tails it live — see
+> [Logging and the Logs page](4-Advanced-Usage.md#logging-and-the-logs-page).
 
 ---
 
-## Step 5: Make Your First Call
+## Step 5: Make Your First Call — From the Dashboard
 
-Open a **second** terminal (leave the service running in the first one) and
-create a file `hello_flexrouter.py`:
+With the dashboard open, go to the **Chat** tab:
 
-```python
-from flexrouter import FlexRouter
+1. Pick your tier (`cheap`) from the dropdown
+2. Type: `Say hello and tell me a one-sentence joke.`
+3. Send it
 
-# Connect to the service running on this machine.
-# This reads your shared settings only to find the port -- all the routing
-# happens in the service, not here.
-router = FlexRouter()
-
-# Make a request
-response = router.generate(
-    messages=[
-        {"role": "user", "content": "Say hello and tell me a one-sentence joke."}
-    ],
-    tier="cheap",
-)
-
-# Print the response
-text = response["choices"][0]["message"]["content"]
-print("Model response:")
-print(text)
-
-# Check usage
-usage = response["usage"]
-print(f"
-Tokens used: {usage['total_tokens']}")
-
-router.close()
-```
-
-Run it:
-
-```bash
-python hello_flexrouter.py
-```
-
-You should see the model's response and token count.
+The response appears with the model that served it and the token count. Flip
+to **Request Logs** and you'll see that call recorded, and **Live Telemetry**
+shows your usage against the model's per-minute limits. That's routing working
+end to end — no code yet.
 
 ---
 
-## Step 6: Use Any OpenAI-Compatible App
+## Step 6: Watch It From the Terminal — the TUI
+
+If you live in your terminal, `flexrouter tui` gives you the same picture
+without a browser:
+
+```bash
+flexrouter tui
+```
+
+Open it in a **second** terminal (leave the service running in the first). It
+has four tabs — **Overview** (totals and today's spend), **Keys** (add,
+remove, or disable keys without leaving the screen), **Requests** (your recent
+calls), and **Doctor** (where everything lives) — and refreshes on its own
+every couple of seconds. Press `a` to add a key, `d` to remove the selected
+one, `r` to refresh, `q` to quit.
+
+It reads your flexrouter home directly, so it works whether or not the service
+is currently running.
+
+---
+
+## Step 7: Use Any OpenAI-Compatible App
 
 Because the service speaks the OpenAI shape, any OpenAI SDK — or any chat app
 that lets you change the base URL — works by pointing at it:
@@ -180,19 +187,47 @@ List available models: `GET http://localhost:4891/v1/models`
 
 ---
 
-## Step 7: Explore the Dashboard
+## Step 8: Call It From Python
 
-If you'd rather watch things happen in a browser, use this instead of `flexrouter serve` in Step 4 — it starts the same service and opens the dashboard for you:
+Last, the library itself — for Python code that wants to skip the web address
+and call flexrouter in-process. Create a file `hello_flexrouter.py`:
 
-```bash
-flexrouter dashboard
+```python
+from flexrouter import FlexRouter
+
+# Connect to the service running on this machine.
+# This reads your shared settings only to find the port -- all the routing
+# happens in the service, not here.
+router = FlexRouter()
+
+# Make a request
+response = router.generate(
+    messages=[
+        {"role": "user", "content": "Say hello and tell me a one-sentence joke."}
+    ],
+    tier="cheap",
+)
+
+# Print the response
+text = response["choices"][0]["message"]["content"]
+print("Model response:")
+print(text)
+
+# Check usage
+usage = response["usage"]
+print(f"\nTokens used: {usage['total_tokens']}")
+
+router.close()
 ```
 
-This opens `http://localhost:4891` in your browser. You'll see:
-- **Live Telemetry**: Your model's RPM and TPM usage
-- **Chat**: Test the router interactively
-- **Request Logs**: Every call you just made
-- **Account Status**: API key usage and budget tracking
+Run it:
+
+```bash
+python hello_flexrouter.py
+```
+
+You should see the model's response and token count — and the same call
+appears in the dashboard's Request Logs and the TUI's Requests tab.
 
 ---
 
@@ -220,9 +255,7 @@ flexrouter keys list
 If it's missing, save it again with `flexrouter keys add groq`.
 
 ### "flexrouter isn't running"
-The service isn't up. Start it with `flexrouter serve` and leave it running in
-its own terminal. The message names the address it tried, so if that address
-looks wrong, check the `port` in your settings file.
+The service isn't up. Start it with `flexrouter dashboard` (or `flexrouter serve` if you don't want a browser) and leave it running in its own terminal. The message names the address it tried, so if that address looks wrong, check the `port` in your settings file.
 
 ### "No models available in tier"
 Run `flexrouter doctor` — it checks your settings file for problems and tells you plainly what's wrong, rather than a raw error.
@@ -241,7 +274,9 @@ Run `flexrouter doctor` — it checks your settings file for problems and tells 
 | `flexrouter doctor` | Shows where your settings and keys live, and which key each provider will use |
 | `flexrouter keys add/list/rm` | Save, view, or remove a provider's key |
 | **The service** | The one background process that does all the routing for your machine |
-| `flexrouter serve` | Starts the service (API + dashboard) on port 4891 — nothing routes until it's running |
+| `flexrouter dashboard` | Starts the service and opens the dashboard in your browser — the main way to watch and drive flexrouter |
+| `flexrouter tui` | The same picture in your terminal — overview, keys, requests, doctor |
+| `flexrouter serve` | Starts the service (API + dashboard) on port 4891 without opening a browser — nothing routes until it's running |
 
 ---
 

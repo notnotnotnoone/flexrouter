@@ -387,6 +387,7 @@ A key that gets rejected (rate-limited) is skipped immediately in favor of the n
 | `flexrouter tui` | Open the live terminal UI — overview, keys, requests, paths (see [Terminal UI](#terminal-ui)) |
 | `flexrouter serve` | Start the server (API + dashboard) without opening a browser |
 | `flexrouter dashboard` | Start the server and open the dashboard in your browser |
+| `flexrouter dashboard --log` | As above, plus a server activity log and a live **Logs** page in the dashboard (also works with `serve`) |
 | `flexrouter status` | Print current spending/health to the terminal |
 | `flexrouter doctor` | Show where your settings, keys, and data live |
 | `flexrouter keys add <name>` | Save a key for a provider |

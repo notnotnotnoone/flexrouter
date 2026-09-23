@@ -6,13 +6,13 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from flexrouter.dashboard.render import AREAS
+from flexrouter.dashboard.render import areas
 from flexrouter.dashboard.settings_page import META
 
 
 def items(router) -> list[dict]:
     out: list[dict] = []
-    for slug, label, _group, _icon in AREAS:
+    for slug, label, _group, _icon in areas():
         out.append({"kind": "page", "label": label,
                     "href": "/" if slug == "overview" else f"/{slug}"})
     for name in sorted(router._cfg.providers):

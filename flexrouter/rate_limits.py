@@ -38,6 +38,17 @@ class RateLimitStore:
     def get_tpm(self, provider: str, model: str, default: int) -> int:
         return self._data.get(f"{provider}/{model}", {}).get("tpm", default)
 
+    def has_limits(self, provider: str, model: str) -> bool:
+        """Whether a real rpm or tpm has ever been observed for this model.
+
+        Used by the dashboard's bulk rate-limit test to tell "this provider
+        just doesn't send limit headers" apart from "the request failed" -
+        both look like nothing changed, but only one of them means the
+        owner still needs to read the docs by hand.
+        """
+        entry = self._data.get(f"{provider}/{model}", {})
+        return "rpm" in entry or "tpm" in entry
+
     def _persist(self) -> None:
         if self._path is None:
             return

@@ -54,6 +54,62 @@ def build_prompt(rows, notes: str) -> str:
     return "\n".join(lines)
 
 
+def build_rate_limit_prompt(idents: list[str], docs_text: str) -> str:
+    """Same shape as `build_prompt`, for the rate-limits page: a ready-made
+    prompt built from the current model list plus whatever docs text the
+    owner pasted in, meant to be copied into whichever model they actually
+    use - not sent anywhere by this service."""
+    lines = [
+        "Read the rate-limit documentation pasted below and report the "
+        "requests-per-minute (rpm) and tokens-per-minute (tpm) limit for "
+        "each of these models:",
+        "",
+    ]
+    lines += [f"- {ident}" for ident in idents]
+    lines += [
+        "",
+        "Documentation:",
+        docs_text.strip(),
+        "",
+        "Reply with exactly one line per model you found a number for, in "
+        "this form and nothing else - no headers, no commentary, no extra "
+        "lines:",
+        "provider | model | rpm | tpm",
+        "Use the exact same provider and model text shown above for each "
+        "line, so the answer can be matched back up automatically. Write "
+        "none for whichever of rpm/tpm the docs don't give for that model, "
+        "and leave a model out entirely if the docs don't mention it at "
+        "all - don't guess.",
+    ]
+    return "\n".join(lines)
+
+
+def parse_rate_limit_answer(text: str, known_idents: set) -> dict:
+    """Parse a pasted-back answer into `{"provider/model": (rpm, tpm)}`.
+
+    Same tolerance rules as `parse_answer`: a line that doesn't fit, names a
+    model this router doesn't have, or gives `none` for both numbers is
+    dropped rather than raising.
+    """
+    proposed = {}
+    for line in text.splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) != 4:
+            continue
+        provider, model, raw_rpm, raw_tpm = parts
+        if not provider or not model:
+            continue
+        ident = f"{provider}/{model}"
+        if ident not in known_idents:
+            continue
+        rpm = int(raw_rpm) if raw_rpm.isdigit() else None
+        tpm = int(raw_tpm) if raw_tpm.isdigit() else None
+        if rpm is None and tpm is None:
+            continue
+        proposed[ident] = (rpm, tpm)
+    return proposed
+
+
 def parse_answer(text: str, known_idents: set) -> dict:
     """Parse a pasted-back answer into `{"provider/model": score}`.
 

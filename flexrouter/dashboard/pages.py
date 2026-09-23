@@ -7,6 +7,7 @@ areas are built as of sub-plan 7.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -16,8 +17,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from flexrouter import keys as keystore
+from flexrouter import log_setup
 from flexrouter import overrides as ov
 from flexrouter import presets
+from flexrouter import rate_limit_facts
+from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.probe import probe_key
 from flexrouter import score_facts
 from flexrouter import service_keys
@@ -33,6 +37,7 @@ from flexrouter.dashboard import prefs as dashboard_prefs
 from flexrouter.dashboard import settings_page as settings_page_mod
 from flexrouter.dashboard import brain_page as brain_page_mod
 from flexrouter.dashboard import broken_page as broken_page_mod
+from flexrouter.dashboard import logs_page as logs_page_mod
 from flexrouter.dashboard import requests_page as requests_page_mod
 from flexrouter.dashboard.render import attrs, esc, page, tag
 
@@ -542,11 +547,11 @@ def _models_body(router, banner: str = "") -> str:
                      cls="m-detail-inner")
         rows.append(tag("tr", tag("td", detail, colspan="6"), cls="m-detail", id=f"m-{n}",
                         hidden=True))
-    provider_opts = "".join(f'<option value="{esc(p)}">{esc(p)}</option>' for p in providers)
     if not rows:
         rows.append(tag("tr", tag("td", "No models yet. Add a provider key on Providers & keys "
                                         "and its models show up here.", colspan="6"),
                         cls="models-empty"))
+    provider_opts = "".join(f'<option value="{esc(p)}">{esc(p)}</option>' for p in providers)
     filters = tag("div",
                   ui.icon("search")
                   + '<input type="search" placeholder="Find a model" aria-label="Find a model" '
@@ -586,7 +591,9 @@ def _models_body(router, banner: str = "") -> str:
                tag("div", tag("h1", "Models", cls="page-title")
                    + tag("p", esc(status), cls="page-status"), cls="page-head-text")
                + tag("div", ui.button("Rank models with an AI", href="/models/rank",
-                                      icon_name="brain"), cls="page-actions"),
+                                      icon_name="brain")
+                     + ui.button("Get rate limits with an AI", href="/models/rate-limits",
+                                icon_name="gauge"), cls="page-actions"),
                cls="page-head")
     legend = tag("div", tag("span", "Tag styles say where a fact came from:")
                  + "".join(tag("span", tag("span", label, cls=f"cap cap-{kind}") + esc(meaning),
@@ -606,9 +613,26 @@ def _models_body(router, banner: str = "") -> str:
                  tag("p", "What the last catalogue check found. Accepting a new model adds it "
                           "to the bucket you choose; accepting a vanished one disables it; "
                           "accepting a changed field applies the provider's new value.",
-                     cls="note") + _pending_body(pending, bucket_names),
+                     cls="note")
+                 + _import_all_form(bucket_names)
+                 + _pending_body(pending, bucket_names),
                  cls="tray" + (" has-items" if n_pending else ""),
                  id="pending", **{"data-enter": ""})
+    )
+
+
+def _import_all_form(bucket_names: list) -> str:
+    if not bucket_names:
+        return ""
+    bucket_options = "".join(tag("option", esc(b), value=esc(b)) for b in bucket_names)
+    return tag(
+        "form",
+        tag("label", "Discover and import every model from every provider with a valid "
+                     "key, straight into ")
+        + f"<select{attrs({'name': 'bucket'})}>{bucket_options}</select>"
+        + " " + tag("button", "Discover and import everything", type="submit"),
+        method="post", action="/models/import-all", cls="set-actions",
+        **{"data-busy": "Checking every provider and scoring what it finds..."},
     )
 
 
@@ -637,6 +661,12 @@ def _rank_body(prompt: str, notes: str) -> str:
                    "Nothing is applied until you say so on the next page, "
                    "and a score you've set by hand here is never "
                    "proposed a new value.", cls="lede")
+        + tag("p", 'Need benchmark material to paste in as notes? '
+                   '<a href="https://artificialanalysis.ai/leaderboards/models" '
+                   'target="_blank" rel="noopener">Artificial Analysis\' leaderboard</a> '
+                   "is a reasonable source - handy if the automatic AA "
+                   "scoring on the Settings page isn't giving you what you expect.",
+              cls="note")
         + tag("h3", "1. Add benchmark material (optional)")
         + notes_form
         + tag("h3", "2. The prompt - copy this")
@@ -682,6 +712,93 @@ def _rank_proposal_body(changes: list, skipped_manual: list) -> str:
 
     return (
         tag("h1", "Proposed scores", cls="page-title")
+        + tag("p", "Nothing here is applied until you press the button "
+                   "below. Uncheck any row you don't want changed.",
+              cls="lede")
+        + skipped_note
+        + body
+    )
+
+
+def _rate_limits_body(prompt: str, docs: str) -> str:
+    docs_form = tag(
+        "form",
+        _textarea(esc(docs), name="docs", rows="10",
+                 placeholder="paste the provider's rate-limit documentation here")
+        + " " + tag("button", "Build prompt", type="submit"),
+        method="post", action="/models/rate-limits/build",
+    )
+    body = (
+        tag("h1", "Get rate limits with an AI", cls="page-title")
+        + tag("p", "Same idea as ranking models: builds a ready-made prompt "
+                   "from the current model list plus whatever docs text you "
+                   "paste in. Send it to whichever model you actually use, "
+                   "and paste the answer back below. Nothing is applied "
+                   "until you say so on the next page, and a limit you've "
+                   "set by hand here is never proposed a new value.",
+              cls="lede")
+        + tag("h3", "1. Paste the provider's rate-limit docs")
+        + docs_form
+    )
+    if prompt:
+        paste_form = tag(
+            "form",
+            _textarea("", name="answer", rows="10",
+                      placeholder="paste the AI's reply here, one line per "
+                                  "model: provider | model | rpm | tpm")
+            + " " + tag("button", "Show proposed changes", type="submit"),
+            method="post", action="/models/rate-limits/proposal",
+        )
+        body += (
+            tag("h3", "2. The prompt - copy this")
+            + _textarea(esc(prompt), rows="16", readonly=True)
+            + tag("h3", "3. Paste the answer back")
+            + paste_form
+        )
+    return body
+
+
+def _rate_limits_proposal_body(changes: list, skipped_manual: list) -> str:
+    if not changes:
+        body = tag("p", "Nothing to propose - either the docs didn't mention "
+                        "any configured model, or every model it found is "
+                        "pinned by hand.", cls="note")
+    else:
+        rows_html = [tag("tr", "".join(tag("th", h) for h in [
+            "Apply", "Provider", "Model", "Current rpm", "Proposed rpm",
+            "Current tpm", "Proposed tpm",
+        ]))]
+        for row, proposed_rpm, proposed_tpm in changes:
+            ident = f"{row.provider}/{row.model}"
+            cell = (
+                _input(type="checkbox", name=f"apply:{ident}", checked=True)
+                + _input(type="hidden", name=f"rpm:{ident}", value=str(proposed_rpm))
+                + _input(type="hidden", name=f"tpm:{ident}", value=str(proposed_tpm))
+            )
+            rows_html.append(tag("tr", "".join([
+                tag("td", cell),
+                tag("td", esc(row.provider)),
+                tag("td", esc(row.model)),
+                tag("td", esc(row.rpm)),
+                tag("td", esc(proposed_rpm)),
+                tag("td", esc(row.tpm)),
+                tag("td", esc(proposed_tpm)),
+            ])))
+        body = tag(
+            "form", tag("table", "".join(rows_html))
+            + tag("button", "Apply checked limits", type="submit"),
+            method="post", action="/models/rate-limits/apply",
+        )
+
+    skipped_note = (
+        tag("p", esc(f"{len(skipped_manual)} model(s) skipped - their rate "
+                     f"limit is pinned by hand: {', '.join(skipped_manual)}"),
+            cls="note")
+        if skipped_manual else ""
+    )
+
+    return (
+        tag("h1", "Proposed rate limits", cls="page-title")
         + tag("p", "Nothing here is applied until you press the button "
                    "below. Uncheck any row you don't want changed.",
               cls="lede")
@@ -772,13 +889,22 @@ def _service_keys_section() -> str:
         _service_key_row(name, label, env_var)
         for name, (label, env_var) in service_keys.SERVICES.items()
     ]
+    rescore = tag("form",
+                  tag("button", "Re-score every model with Artificial Analysis", type="submit"),
+                  method="post", action="/settings/rescore-models", cls="set-actions",
+                  **{"data-busy": "Fetching Artificial Analysis' latest scores..."})
     return (
         tag("div", tag("h2", "Service keys"), cls="box-head")
         + tag("div",
               tag("p", "Keys flexrouter uses for its own calls, not for chat: scoring a "
                        "newly found model, and the Error brain's classifier. Masked "
                        "everywhere, never shown in full again.", cls="set-help")
-              + tag("table", "".join(rows)), cls="box-body")
+              + tag("table", "".join(rows))
+              + rescore
+              + tag("p", "Re-scoring asks Artificial Analysis about every model you have "
+                         "configured and saves the new scores as dashboard changes, so any "
+                         "of them can be put back from the Models page.", cls="note"),
+              cls="box-body")
     )
 
 
@@ -788,6 +914,46 @@ def playground_page() -> HTMLResponse:
     return HTMLResponse(page("Playground", "playground", pg.body(_live_router())))
 
 
+def _compare_targets(router, target: str) -> list[str]:
+    """The distinct `provider/model` pins a `compare:...` target expands to.
+
+    Raises KeyError (message forwarded to the client) if it names a bucket
+    or provider that does not exist, or resolves to nothing.
+    """
+    all_models: list[str] = []
+    seen = set()
+    for models in router._cfg.tiers.values():
+        for mc in models:
+            ident = f"{mc.provider}/{mc.model}"
+            if ident not in seen:
+                seen.add(ident)
+                all_models.append(ident)
+
+    if target == "compare:all":
+        pins = all_models
+    elif target.startswith("compare:bucket:"):
+        name = target[len("compare:bucket:"):]
+        if name not in router._cfg.tiers:
+            raise KeyError(f"There is no bucket named {name!r}.")
+        seen = set()
+        pins = []
+        for mc in router._cfg.tiers[name]:
+            ident = f"{mc.provider}/{mc.model}"
+            if ident not in seen:
+                seen.add(ident)
+                pins.append(ident)
+    elif target.startswith("compare:provider:"):
+        name = target[len("compare:provider:"):]
+        pins = [ident for ident in all_models if ident.split("/", 1)[0] == name]
+        if not pins:
+            raise KeyError(f"There is no provider named {name!r} with any models.")
+    else:
+        raise KeyError(f"Unknown compare target {target!r}.")
+    if not pins:
+        raise KeyError("Nothing to compare: that group has no models.")
+    return pins
+
+
 @pages.post("/playground/chat", include_in_schema=False)
 async def playground_chat(request: Request):
     """Stream one Playground turn through the same in-process path /v1 uses.
@@ -795,7 +961,10 @@ async def playground_chat(request: Request):
     Not behind the app password: the dashboard is local and open by design
     (ADR 0009), and a browser has no way to hold that password anyway.
     After the model's stream ends, one `event: flexrouter` says who answered,
-    read from the trace the router just wrote.
+    read from the trace the router just wrote. A `compare:...` target runs
+    every matching model concurrently and merges their streams into one
+    response; the client tells them apart by each chunk's own `model` field,
+    and by `event: targets` sent up front.
     """
     from fastapi.responses import StreamingResponse
 
@@ -811,8 +980,13 @@ async def playground_chat(request: Request):
                         media_type="application/json")
     router = _live_router()
     target = str(body.get("target") or "auto")
+    compare_pins: list[str] | None = None
+    tier = ""
     try:
-        tier = resolve(parse_model(target), list(router._cfg.tiers.keys()), _best_bucket(router))
+        if target.startswith("compare:"):
+            compare_pins = _compare_targets(router, target)
+        else:
+            tier = resolve(parse_model(target), list(router._cfg.tiers.keys()), _best_bucket(router))
     except KeyError as exc:
         return Response(json.dumps({"error": str(exc.args[0])}), status_code=404,
                         media_type="application/json")
@@ -822,11 +996,33 @@ async def playground_chat(request: Request):
             kwargs["temperature"] = max(0.0, min(float(body["temperature"]), 2.0))
         if body.get("max_tokens") not in (None, ""):
             kwargs["max_tokens"] = max(1, min(int(body["max_tokens"]), 32768))
+        if body.get("top_p") not in (None, ""):
+            kwargs["top_p"] = max(0.0, min(float(body["top_p"]), 1.0))
+        # A penalty at 0 is every provider's default, and Gemini rejects the
+        # whole request if the field is present at all, so only send one
+        # somebody actually moved.
+        for name in ("frequency_penalty", "presence_penalty"):
+            if body.get(name) not in (None, ""):
+                value = max(-2.0, min(float(body[name]), 2.0))
+                if value:
+                    kwargs[name] = value
     except (TypeError, ValueError):
-        return Response(json.dumps({"error": "temperature and max tokens must be numbers"}),
+        return Response(json.dumps({"error": "settings must be numbers"}),
                         status_code=400, media_type="application/json")
+    stop = [s.strip() for s in str(body.get("stop") or "").split(",") if s.strip()]
+    if stop:
+        kwargs["stop"] = stop
 
-    async def stream():
+    async def one_target_trace(pin: str) -> dict:
+        for r in facts.recent_requests(router, limit=200):
+            if r.bucket == pin:
+                return {"target": pin, "id": r.id, "ok": r.ok, "outcome": r.outcome,
+                        "ms": r.ms_total, "tokens_in": r.tokens_in, "tokens_out": r.tokens_out,
+                        "answered_by": (f"{r.answered_by['provider']}/{r.answered_by['model']}"
+                                        if r.answered_by else None)}
+        return {"target": pin, "ok": False, "outcome": "failed", "answered_by": None}
+
+    async def stream_single():
         async for piece in _stream_chat(router, messages, tier, target, kwargs):
             yield piece
         last = facts.recent_requests(router, limit=1)
@@ -838,7 +1034,33 @@ async def playground_chat(request: Request):
                                     if r.answered_by else None)}
             yield f"event: flexrouter\ndata: {json.dumps(info)}\n\n"
 
-    return StreamingResponse(stream(), media_type="text/event-stream",
+    async def stream_compare(pins: list[str]):
+        yield f"event: targets\ndata: {json.dumps({'targets': pins})}\n\n"
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def run_one(pin: str) -> None:
+            async for piece in _stream_chat(router, messages, pin, pin, kwargs):
+                await queue.put(piece)
+            info = await one_target_trace(pin)
+            await queue.put(f"event: flexrouter\ndata: {json.dumps(info)}\n\n")
+            await queue.put(None)
+
+        tasks = [asyncio.create_task(run_one(pin)) for pin in pins]
+        remaining = len(tasks)
+        try:
+            while remaining:
+                piece = await queue.get()
+                if piece is None:
+                    remaining -= 1
+                    continue
+                yield piece
+        finally:
+            for t in tasks:
+                t.cancel()
+
+    stream = stream_compare(compare_pins) if compare_pins is not None else stream_single()
+
+    return StreamingResponse(stream, media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
@@ -997,6 +1219,107 @@ async def models_rank_apply(request: Request) -> RedirectResponse:
     return _redirect_with_message("/models", ok=bool(applied), message=message)
 
 
+@pages.get("/models/rate-limits", response_class=HTMLResponse, include_in_schema=False)
+def models_rate_limits_page() -> HTMLResponse:
+    return HTMLResponse(page("Rate limits with an AI", "models", _rate_limits_body("", "")))
+
+
+@pages.post("/models/rate-limits/build", response_class=HTMLResponse, include_in_schema=False)
+async def models_rate_limits_build(request: Request) -> HTMLResponse:
+    form = await request.form()
+    docs = form.get("docs") or ""
+    idents = [f"{r.provider}/{r.model}" for r in facts.models(_live_router())]
+    prompt = ranking.build_rate_limit_prompt(idents, docs) if docs.strip() else ""
+    return HTMLResponse(page("Rate limits with an AI", "models", _rate_limits_body(prompt, docs)))
+
+
+@pages.post("/models/rate-limits/proposal", response_class=HTMLResponse, include_in_schema=False)
+async def models_rate_limits_proposal(request: Request) -> HTMLResponse:
+    form = await request.form()
+    answer = form.get("answer") or ""
+    router = _live_router()
+    rows = facts.models(router)
+    by_ident = {f"{r.provider}/{r.model}": r for r in rows}
+    parsed = ranking.parse_rate_limit_answer(answer, set(by_ident))
+
+    state_dir = router._cfg.state_dir
+    skipped_manual = []
+    changes = []
+    for ident, (proposed_rpm, proposed_tpm) in parsed.items():
+        provider, _, model = ident.partition("/")
+        if rate_limit_facts.is_manual(state_dir, provider, model):
+            skipped_manual.append(ident)
+            continue
+        row = by_ident[ident]
+        rpm = proposed_rpm if proposed_rpm is not None else row.rpm
+        tpm = proposed_tpm if proposed_tpm is not None else row.tpm
+        if rpm == row.rpm and tpm == row.tpm:
+            continue
+        changes.append((row, rpm, tpm))
+
+    return HTMLResponse(page("Rate limits with an AI", "models",
+                             _rate_limits_proposal_body(changes, skipped_manual)))
+
+
+@pages.post("/models/rate-limits/apply", include_in_schema=False)
+async def models_rate_limits_apply(request: Request) -> RedirectResponse:
+    form = await request.form()
+    router = _live_router()
+    state_dir = router._cfg.state_dir
+    applied = []
+    for key in form.keys():
+        if not key.startswith("apply:"):
+            continue
+        ident = key[len("apply:"):]
+        rpm_raw = form.get(f"rpm:{ident}")
+        tpm_raw = form.get(f"tpm:{ident}")
+        if rpm_raw is None or tpm_raw is None:
+            continue
+        provider, _, model = ident.partition("/")
+        try:
+            settings_write.set_model_fields(
+                provider, model, {"rpm": int(rpm_raw), "tpm": int(tpm_raw)})
+        except ValueError:
+            continue
+        rate_limit_facts.record(state_dir, provider, model, "ai-doc")
+        applied.append(ident)
+
+    message = f"{len(applied)} rate limit(s) applied" if applied else "nothing was checked"
+    return _redirect_with_message("/models", ok=bool(applied), message=message)
+
+
+@pages.post("/models/import-all", include_in_schema=False)
+async def models_import_all(request: Request) -> RedirectResponse:
+    """Check every provider with a valid key and add everything it lists.
+
+    Runs the same catalogue check "Check for new models now" does, then
+    immediately accepts every resulting `appeared` entry into one bucket -
+    the one-at-a-time review in the Pending tray still happens for anyone
+    who wants it, this is the "just import all of it" shortcut for a first
+    run or a provider that just shipped a dozen new models at once.
+
+    Registered before `/models/{ident:path}` below on purpose: that catch-all
+    would otherwise swallow this POST first (route matching is registration
+    order, not specificity) and read "import-all" as a provider name.
+    """
+    from flexrouter.dashboard.api import run_refresh
+    form = await request.form()
+    bucket = (form.get("bucket") or "").strip()
+    if not bucket:
+        return _redirect_with_message("/models", ok=False, message="Pick a bucket to import into")
+    router = _live_router()
+    state_dir = router._cfg.state_dir
+    try:
+        await asyncio.to_thread(run_refresh, state_dir)
+    except Exception as e:  # noqa: BLE001 - report, don't 500
+        return _redirect_with_message("/models", ok=False, message=f"Discovery failed: {e}")
+    count = pending_actions.accept_all_appeared(state_dir, bucket)
+    message = (f"Checked every provider with a valid key and imported {count} new "
+              f"model(s) into {bucket!r}" if count else
+              "Checked every provider with a valid key - nothing new to import")
+    return _redirect_with_message("/models", ok=True, message=message)
+
+
 @pages.post("/models/{ident:path}", include_in_schema=False)
 async def model_write(ident: str, request: Request) -> RedirectResponse:
     provider, _, model = ident.partition("/")
@@ -1015,8 +1338,11 @@ async def model_write(ident: str, request: Request) -> RedirectResponse:
                     fields[name] = int(raw_value)
             fields["vision"] = "vision" in form
             settings_write.set_model_fields(provider, model, fields)
+            state_dir = _live_router()._cfg.state_dir
             if "score" in fields:
-                score_facts.record(_live_router()._cfg.state_dir, provider, model, "manual")
+                score_facts.record(state_dir, provider, model, "manual")
+            if "rpm" in fields or "tpm" in fields:
+                rate_limit_facts.record(state_dir, provider, model, "manual")
         else:
             raise ValueError(f"unknown action {action!r}")
     except ValueError as e:
@@ -1053,6 +1379,21 @@ def request_journey(request_id: str) -> HTMLResponse:
     if journey is None:
         return HTMLResponse(ui.empty("No request with that id on record."), status_code=404)
     return HTMLResponse(requests_page_mod.journey_panel(journey))
+
+
+@pages.get("/logs", response_class=HTMLResponse, include_in_schema=False)
+def logs_page(fragment: str = "", limit: int = logs_page_mod.PAGE) -> HTMLResponse:
+    """The server's activity log. Only here when started with --log:
+    without it the route answers 404 and the menu shows no link."""
+    if not log_setup.enabled():
+        return HTMLResponse(
+            ui.empty("The server was started without logging. Restart it with "
+                     "--log to get an activity log and this page."),
+            status_code=404)
+    limit = max(10, min(int(limit or 0), 2000))
+    if fragment:
+        return HTMLResponse(logs_page_mod.rows(limit))
+    return HTMLResponse(page("Logs", "logs", logs_page_mod.body(limit)))
 
 
 @pages.get("/brain", response_class=HTMLResponse, include_in_schema=False)
@@ -1568,6 +1909,96 @@ async def settings_refresh_models() -> RedirectResponse:
         return _redirect_with_message("/settings", ok=False, message=f"Check failed: {e}")
     return _redirect_with_message("/models", ok=True,
                                   message="Checked every provider; anything new is listed below")
+
+
+@pages.post("/settings/rescore-models", include_in_schema=False)
+async def settings_rescore_models() -> RedirectResponse:
+    """Re-score every configured model against Artificial Analysis.
+
+    Uses the saved AA key (service_keys' "aa") and writes new scores to
+    overrides.json like every other settings write, so a score can always
+    be put back. A model AA's data does not cover keeps the score it has:
+    the median placeholder score_with_aa would give it says nothing about
+    that model, while the owner's existing number says something.
+    """
+    from flexrouter.catalogue import _best_score, fetch_aa_lookup
+    aa_key = service_keys.resolve("aa")
+    if not aa_key:
+        return _redirect_with_message(
+            "/settings", ok=False,
+            message="No Artificial Analysis key - save one under Service keys first")
+    router = _live_router()
+    try:
+        aa_lookup = await fetch_aa_lookup(aa_key)
+    except Exception as e:  # noqa: BLE001 - report, don't 500
+        return _redirect_with_message("/settings", ok=False,
+                                      message=f"Artificial Analysis call failed: {e}")
+    state_dir = router._cfg.state_dir
+    matched = changed = unmatched = 0
+    seen: set[tuple[str, str]] = set()
+    for bucket in router._cfg.tiers.values():
+        for m in bucket:
+            if (m.provider, m.model) in seen:
+                continue
+            seen.add((m.provider, m.model))
+            score = _best_score(m.model, aa_lookup, fallback=-1)
+            if score < 0:
+                unmatched += 1
+                continue
+            matched += 1
+            if score == m.score:
+                continue
+            settings_write.set_model_fields(m.provider, m.model, {"score": score})
+            score_facts.record(state_dir, m.provider, m.model, "aa")
+            changed += 1
+    return _redirect_with_message(
+        "/settings", ok=True,
+        message=f"Artificial Analysis matched {matched} of {len(seen)} models; "
+                f"{changed} score(s) updated, {unmatched} kept their old score")
+
+
+@pages.post("/settings/test-rate-limits", include_in_schema=False)
+async def settings_test_rate_limits() -> RedirectResponse:
+    """Send one minimal test message to every configured model.
+
+    This adds nothing to how rate limits get learned - `AsyncClient.chat`
+    already parses and saves them off every real call (flexrouter/client.py).
+    All this does is manufacture one of those calls per model right now,
+    pinned the same way `compare:` pins one (`provider/model` as the tier),
+    instead of waiting for organic traffic to happen to hit each one.
+    A model that fails (no key, quarantined, deleted, out of quota) just
+    contributes nothing - it is not reported as broken, only counted.
+    """
+    router = _live_router()
+    store = router._rate_limit_store
+    seen: set[tuple[str, str]] = set()
+    pins: list[str] = []
+    for bucket in router._cfg.tiers.values():
+        for m in bucket:
+            if (m.provider, m.model) not in seen:
+                seen.add((m.provider, m.model))
+                pins.append(f"{m.provider}/{m.model}")
+
+    async def probe_one(pin: str) -> str:
+        provider, _, model = pin.partition("/")
+        try:
+            await router.agenerate([{"role": "user", "content": "hi"}], pin,
+                                   wait=False, max_tokens=1)
+        except (RouterBusy, RouterError):
+            return "failed"
+        return "learned" if store.has_limits(provider, model) else "silent"
+
+    results = await asyncio.gather(*(probe_one(p) for p in pins))
+    failed = sum(1 for r in results if r == "failed")
+    silent = [pin for pin, r in zip(pins, results) if r == "silent"]
+    message = (f"Sent a test message to {len(pins)} model(s); "
+              f"{len(pins) - failed - len(silent)} returned rate-limit numbers, "
+              f"{failed} could not be reached right now")
+    if silent:
+        message += (f". These answered but sent no rate-limit headers at all - "
+                    f"their limit isn't learnable this way, read the docs for "
+                    f"them instead: {', '.join(silent)}")
+    return _redirect_with_message("/settings", ok=True, message=message)
 
 
 @pages.post("/settings/{field}/clear", include_in_schema=False)

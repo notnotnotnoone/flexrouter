@@ -107,8 +107,12 @@ Accepted costs, stated here rather than engineered around:
   - The retained last-four tail is the same form the dashboard's `mask()`
     shows, so a caller can correlate which of their own configured keys was
     rejected. A small, known, accepted disclosure.
-  - Neither rule has a model-name exception, and none will be added: a rule
-    with a carve-out is a rule with a hole a credential can fit through.
+  - Neither rule has a model-name *pattern* exception, and none will be
+    added: a rule with a carve-out is a rule with a hole a credential can
+    fit through. What exists instead is an exact-match list of strings
+    flexrouter itself wrote - configured provider and model ids, and its own
+    request field names (`set_known_identifiers`, ADR 0017). A run is spared
+    only when it is one of them whole.
 """
 from __future__ import annotations
 
@@ -267,10 +271,89 @@ def _scrub_long(m: re.Match[str]) -> str:
     return run[:lead] + _tail(core) + run[len(run) - trail:]
 
 
+# Names that are known not to be credentials because flexrouter itself wrote
+# them: the providers and model ids in the owner's own settings, and the
+# request fields flexrouter sends. This is not a pattern exemption. A run is
+# spared only when the *whole* run, after the usual edge trim, is exactly one
+# of these strings - so a credential gets through only by being character
+# for character a public model id, and one that merely contains an id is
+# still one run and is still scrubbed whole. See ADR 0017.
+_REQUEST_FIELDS = frozenset({
+    "frequency_penalty", "presence_penalty", "max_tokens", "max_completion_tokens",
+    "response_format", "stream_options", "include_usage", "tool_choice",
+    "parallel_tool_calls", "reasoning_effort", "context_length_exceeded",
+})
+_known: frozenset[str] = _REQUEST_FIELDS
+_WHOLE_RUN = re.compile(_TOKEN_CHARS + r"+")
+_PLACEHOLDER_BASE = 0xE000  # private-use code points: never token characters
+
+
+def set_known_identifiers(names) -> None:
+    """Replace the owner-configured identifiers scrub() leaves readable.
+
+    Process-wide, like errors.MAX_LENGTH: called at router startup and on
+    reload with the providers and model ids from the loaded settings.
+    """
+    global _known
+    _known = _REQUEST_FIELDS | frozenset(n for n in names if n)
+
+
+_secrets: tuple[str, ...] = ()
+
+
+def set_known_secrets(secrets) -> None:
+    """Every credential flexrouter holds, for scrub_body. Longest first, so a
+    key that is a prefix of another does not scrub the wrong span."""
+    global _secrets
+    _secrets = tuple(sorted({s for s in secrets if s}, key=len, reverse=True))
+
+
+def scrub_body(text: str) -> str:
+    """A provider's whole response body, readable, minus every credential.
+
+    A provider can only echo back a key flexrouter sent it, and every key
+    flexrouter sends is one of `_secrets`, so those are masked exactly. Rule
+    B still runs as a backstop for a value right after a cue word. Rule A's
+    blind cut of every 16-character run does not: in a response body it
+    mostly destroys error codes ("INVALID_ARGUMENT", "labs_not_enabled"),
+    which are the part worth reading. ADR 0017.
+    """
+    if not text:
+        return text
+    for secret in _secrets:
+        if secret in text:
+            text = text.replace(secret, _tail(secret))
+    text, kept = _shield(text)
+    return _unshield(_scrub_cued(text), kept)
+
+
+def _shield(text: str) -> tuple[str, list[str]]:
+    """Swap every whole run that is a known identifier for a placeholder."""
+    kept: list[str] = []
+
+    def swap(m: re.Match[str]) -> str:
+        run = m.group(0)
+        lead, trail = _trim(run)
+        core = run[lead:len(run) - trail]
+        if core not in _known:
+            return run
+        kept.append(core)
+        return run[:lead] + chr(_PLACEHOLDER_BASE + len(kept) - 1) + run[len(run) - trail:]
+
+    return _WHOLE_RUN.sub(swap, text), kept
+
+
+def _unshield(text: str, kept: list[str]) -> str:
+    for i, core in enumerate(kept):
+        text = text.replace(chr(_PLACEHOLDER_BASE + i), core)
+    return text
+
+
 def scrub(text: str) -> str:
     """The same text with anything that could be a credential cut to a tail."""
     if not text:
         return text
+    text, kept = _shield(text)
 
     # Rule B first: it needs the cue words intact, and Rule A running
     # first could swallow one into its own replacement and destroy the
@@ -279,4 +362,4 @@ def scrub(text: str) -> str:
     # cannot be re-matched into anything that exposes more of it.
     text = _scrub_cued(text)
     text = _LONG_RUN.sub(_scrub_long, text)
-    return text
+    return _unshield(text, kept)

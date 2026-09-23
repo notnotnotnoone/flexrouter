@@ -45,8 +45,13 @@
     each(root.querySelectorAll(".meter[data-value]"), function (m, i) {
       var on = m.querySelectorAll("i.on");
       if (!on.length) return;
-      M.animate(on, { opacity: [0, 1], transform: ["scaleY(.3)", "none"] },
-        { duration: 0.14, delay: M.stagger(0.02, { startDelay: 0.18 + i * 0.04 }), ease: EASE });
+      // An explicit scaleY(1), not "none": Motion interpolates toward "none"
+      // as scaleY(0) and leaves every lit cell flattened to nothing.
+      // The start is capped so a page with hundreds of meters (the Error
+      // brain's probability tables) does not keep the last ones dark for
+      // tens of seconds.
+      M.animate(on, { opacity: [0, 1], transform: ["scaleY(.3)", "scaleY(1)"] },
+        { duration: 0.14, delay: M.stagger(0.02, { startDelay: 0.18 + Math.min(i, 24) * 0.04 }), ease: EASE });
     });
 
     each(root.querySelectorAll(".strip"), function (s, i) {
@@ -394,25 +399,65 @@
     if (window.htmx) htmx.process(s);
   }
 
+  /* One card per model in a Compare turn; keyed by the `model` field every
+     chunk for that model carries, so late-arriving chunks find their card. */
+  function compareGrid(targets) {
+    var log = document.getElementById("pg-log");
+    var empty = log.querySelector(".empty");
+    if (empty) empty.remove();
+    var wrap = document.createElement("div");
+    wrap.className = "pg-msg pg-assistant pg-compare-msg";
+    var who = document.createElement("span");
+    who.className = "pg-who";
+    who.textContent = "flexrouter · comparing " + targets.length + " models";
+    wrap.appendChild(who);
+    var grid = document.createElement("div");
+    grid.className = "pg-compare-grid";
+    var cards = {};
+    targets.forEach(function (t) {
+      var card = document.createElement("div");
+      card.className = "pg-compare-card";
+      var head = document.createElement("div");
+      head.className = "pg-compare-head";
+      head.textContent = t;
+      var body = document.createElement("div");
+      body.className = "pg-text shimmer";
+      card.appendChild(head);
+      card.appendChild(body);
+      grid.appendChild(card);
+      cards[t] = { body: body, text: "" };
+    });
+    wrap.appendChild(grid);
+    log.appendChild(wrap);
+    log.scrollTop = log.scrollHeight;
+    return cards;
+  }
+
   async function send() {
     var input = document.getElementById("pg-input"), btn = document.getElementById("pg-send");
     var text = input.value.trim();
     if (!text || btn.disabled) return;
+    var targetValue = document.getElementById("pg-target").value;
+    var compare = targetValue.indexOf("compare:") === 0;
     input.value = "";
     convo.push({ role: "user", content: text });
     bubble("user", text);
-    var out = bubble("assistant", "");
-    out.classList.add("shimmer");
+    var out = compare ? null : bubble("assistant", "");
+    if (out) out.classList.add("shimmer");
     btn.disabled = true;
     var sys = document.getElementById("pg-system").value.trim();
     var msgs = (sys ? [{ role: "system", content: sys }] : []).concat(convo);
-    var answer = "";
+    var answer = "", cards = null;
     try {
       var r = await fetch("/playground/chat", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target: document.getElementById("pg-target").value,
+        body: JSON.stringify({ target: targetValue,
                                temperature: document.getElementById("pg-temp").value,
                                max_tokens: document.getElementById("pg-max").value,
+                               top_p: document.getElementById("pg-top-p").value,
+                               frequency_penalty: document.getElementById("pg-freq").value,
+                               presence_penalty: document.getElementById("pg-pres").value,
+                               stop: document.getElementById("pg-stop").value,
                                messages: msgs })
       });
       if (!r.ok) {
@@ -435,23 +480,48 @@
             if (data === "[DONE]") return;
             var payload;
             try { payload = JSON.parse(data); } catch (e2) { return; }
-            if (evName === "flexrouter") { strip(out, payload); return; }
-            if (payload.error) { answer += (answer ? "\n\n" : "") + "[" + payload.error.message + "]"; }
+            if (evName === "targets") { cards = compareGrid(payload.targets || []); return; }
+            if (evName === "flexrouter") {
+              if (payload.target && cards && cards[payload.target]) strip(cards[payload.target].body, payload);
+              else if (out) strip(out, payload);
+              return;
+            }
+            var card = cards && payload.model ? cards[payload.model] : null;
+            if (compare && !card) return;
+            if (payload.error) {
+              var msg = "[" + payload.error.message + "]";
+              if (card) { card.text += (card.text ? "\n\n" : "") + msg; }
+              else { answer += (answer ? "\n\n" : "") + msg; }
+            }
             var c = payload.choices && payload.choices[0];
-            if (c && c.delta && c.delta.content) answer += c.delta.content;
-            out.classList.remove("shimmer");
-            out.textContent = answer;
+            var delta = (c && c.delta && c.delta.content) || "";
+            if (card) {
+              card.text += delta;
+              card.body.classList.remove("shimmer");
+              card.body.textContent = card.text;
+            } else {
+              answer += delta;
+              if (out) { out.classList.remove("shimmer"); out.textContent = answer; }
+            }
             document.getElementById("pg-log").scrollTop = 1e9;
           });
         });
       }
-      convo.push({ role: "assistant", content: answer });
+      if (!compare) convo.push({ role: "assistant", content: answer });
     } catch (e) {
-      out.textContent = "Not sent: " + e.message;
-      out.parentNode.classList.add("pg-error");
+      if (out) {
+        out.textContent = "Not sent: " + e.message;
+        out.parentNode.classList.add("pg-error");
+      } else if (cards) {
+        Object.keys(cards).forEach(function (t) {
+          cards[t].body.classList.remove("shimmer");
+          if (!cards[t].text) cards[t].body.textContent = "Not sent: " + e.message;
+        });
+      }
       convo.pop();
     } finally {
-      out.classList.remove("shimmer");
+      if (out) out.classList.remove("shimmer");
+      if (cards) Object.keys(cards).forEach(function (t) { cards[t].body.classList.remove("shimmer"); });
       btn.disabled = false;
       input.focus();
     }
@@ -460,11 +530,13 @@
   function bootPlayground() {
     if (!document.getElementById("pg-composer")) return;
     each(document.querySelectorAll("[data-remember]"), remember);
-    var temp = document.getElementById("pg-temp"), out = document.getElementById("pg-temp-out");
-    if (temp && out) {
-      out.textContent = temp.value;
-      temp.addEventListener("input", function () { out.textContent = temp.value; });
-    }
+    [["pg-temp", "pg-temp-out"], ["pg-top-p", "pg-top-p-out"],
+     ["pg-freq", "pg-freq-out"], ["pg-pres", "pg-pres-out"]].forEach(function (pair) {
+      var range = document.getElementById(pair[0]), out = document.getElementById(pair[1]);
+      if (!range || !out) return;
+      out.textContent = range.value;
+      range.addEventListener("input", function () { out.textContent = range.value; });
+    });
   }
 
   document.addEventListener("submit", function (e) {
@@ -734,12 +806,6 @@
     if (link) link.click();
   });
 
-  /* ── boot ────────────────────────────────────────────────── */
-
-  function boot(root, navigated) {
-    each(document.querySelectorAll(".toast-seed"), function (s) {
-      toast(s.textContent, s.getAttribute("data-kind"));
-      s.remove();
   /* ── tooltips ────────────────────────────────────────────── */
   /* title="" would show the OS bubble. Move the text into data-tip on the
      way in, show our own box, and never put the title back. */
@@ -805,6 +871,12 @@
     box.querySelector("[data-no]").focus();
   }, true);
 
+  /* ── boot ────────────────────────────────────────────────── */
+
+  function boot(root, navigated) {
+    each(document.querySelectorAll(".toast-seed"), function (s) {
+      toast(s.textContent, s.getAttribute("data-kind"));
+      s.remove();
     });
     var mk = document.querySelector(".nav-marker");
     if (navigated && mk && lastMarker) {

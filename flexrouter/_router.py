@@ -12,7 +12,7 @@ from typing import AsyncIterator, Literal, Optional
 from flexrouter.audit import AuditLogger
 from flexrouter.client import AsyncClient, RateLimitError, ProviderError
 from flexrouter.config import FlexConfig, load_config
-from flexrouter import errors
+from flexrouter import errors, redact
 from flexrouter.decider import NullDecider, build_decider
 from flexrouter.engine import RoutingEngine, RouteResult
 from flexrouter.error_brain import ErrorBrain
@@ -21,6 +21,7 @@ from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.health_history import HealthHistory
 from flexrouter.hooks import HookRunner, HookContext
 from flexrouter.key_state import KeyStateStore
+from flexrouter.keys import allows
 from flexrouter.model_facts import ModelFactsStore
 from flexrouter.quota import QuotaTracker
 from flexrouter.rate_limits import RateLimitStore
@@ -32,6 +33,8 @@ from flexrouter.scheduler import RoundRobinCounters, pick_key
 from flexrouter.traces import TraceWriter, new_trace_id
 
 logger = logging.getLogger(__name__)
+
+KEY_BUSY_POLL_SECONDS = 0.05
 
 
 @dataclass
@@ -95,6 +98,7 @@ class LocalRouter:
         self._cfg: FlexConfig = load_config(path if config_path else None)
         self._rate_limit_store = RateLimitStore(self._cfg.state_dir)
         errors.set_max_length(self._cfg.error_max_length)
+        self._register_known_identifiers()
         self._quota_tracker = QuotaTracker(self._cfg.state_dir)
         self._events = EventLogger(self._cfg.state_dir)
         self._penalties = PenaltyBox(
@@ -158,6 +162,25 @@ class LocalRouter:
         return (f"Every model in tier {tier!r} is quarantined - this will "
                 f"not clear on its own:\n  {joined}")
 
+    def _register_known_identifiers(self) -> None:
+        """Let error text keep the provider and model names these settings use."""
+        names: set[str] = set(self._cfg.providers)
+        for models in self._cfg.tiers.values():
+            for m in models:
+                names.update({m.provider, m.model, f"{m.provider}/{m.model}"})
+        redact.set_known_identifiers(names)
+        from flexrouter import service_keys
+        secrets = {r.secret for p in self._cfg.providers.values() for r in p.keys}
+        secrets.update(service_keys.resolve(name) for name in service_keys.SERVICES)
+        redact.set_known_secrets(secrets)
+
+    async def _classify(self, text: str, status: Optional[int], route, trace_id: str,
+                        exc: Optional[BaseException] = None):
+        return await asyncio.to_thread(
+            self._error_brain.classify, text, status,
+            provider=route.provider, model=route.model, trace_id=trace_id,
+            body=getattr(exc, "body", None))
+
     def _handle_auth_failure(self, route, exc, key_id: Optional[str]) -> None:
         """Sideline the key that was rejected, not the whole provider.
 
@@ -207,12 +230,6 @@ class LocalRouter:
         and this reason is persisted and then served unauthenticated.
         """
         reason = scrub(str(exc))
-        if exc.is_provider_wide:
-            self._penalties.quarantine_provider(route.provider, reason)
-            self._events.record(
-                route.provider, route.model, "server_error",
-                detail=f"provider quarantined: {reason}")
-            return
         if exc.is_permanent:
             self._penalties.quarantine(route.provider, route.model, reason)
             self._events.record(
@@ -269,8 +286,12 @@ class LocalRouter:
         ]
         attempts: list[dict] = []
 
+        trace_written = False
+
         def _write_trace(ok: bool, answered_by: Optional[dict] = None,
                          tokens: Optional[dict] = None) -> None:
+            nonlocal trace_written
+            trace_written = True
             self._traces.write({
                 "id": trace_id,
                 "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds") + "Z",
@@ -294,155 +315,158 @@ class LocalRouter:
         # problem they must fix, the other resolves itself in 30 seconds.
         last_auth_error: RouterError | None = None
 
-        for attempt in range(retries + 1):
-            route = self._engine_for(tier).select(tier, estimated_tokens, vision, session_id)
-            key_id: Optional[str] = None
-            if route is not None:
-                route, key_id = self._pick_key(route)
+        try:
+            for attempt in range(retries + 1):
+                route, key_id = await self._route_with_key(tier, estimated_tokens, vision, session_id)
 
-            if route is None:
-                if last_auth_error is not None:
-                    _write_trace(ok=False)
-                    raise last_auth_error
-                blocked = self._quarantine_block_reason(tier)
-                if blocked:
-                    _write_trace(ok=False)
-                    raise RouterBusy(blocked)
-                if not wait:
-                    _write_trace(ok=False)
-                    raise RouterBusy(f"All models in tier {tier!r} are unavailable")
-                secs = self._engine_for(tier).seconds_until_available(tier)
-                await asyncio.sleep(max(secs, 1.0))
-                continue
+                if route is None:
+                    if last_auth_error is not None:
+                        _write_trace(ok=False)
+                        raise last_auth_error
+                    blocked = self._quarantine_block_reason(tier)
+                    if blocked:
+                        _write_trace(ok=False)
+                        raise RouterBusy(blocked)
+                    if not wait:
+                        _write_trace(ok=False)
+                        raise RouterBusy(f"All models in tier {tier!r} are unavailable")
+                    secs = self._engine_for(tier).seconds_until_available(tier)
+                    await asyncio.sleep(max(secs, 1.0))
+                    continue
 
-            start = time.monotonic()
-            if key_id is not None:
-                self._key_states.begin_request(route.provider, key_id)
-            try:
-                result = await self._client.chat(route, messages, **kwargs)
-            except RateLimitError as exc:
-                self._engine.penalize(route.provider, route.model)
+                start = time.monotonic()
                 if key_id is not None:
-                    self._key_states.mark_cooling(
-                        route.provider, key_id,
-                        self._penalties.penalty_seconds(route.provider, route.model),
-                        "too_fast")
-                self._events.record(
-                    route.provider, route.model, "rate_limited",
-                    detail=scrub(str(exc)),
-                    penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
-                self._audit.log(
-                    tier=tier, provider=route.provider, model=route.model,
-                    prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
-                    latency_ms=int((time.monotonic() - start) * 1000),
-                    status="rate_limited",
-                    request_id=trace_id,
-                )
-                self._history.record(self._engine.health_snapshot())
-                verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), 429)
-                if vision and verdict.verdict in ("bad_request", "model_gone") and \
-                        verdict.confidence >= self._error_brain.confidence_threshold:
-                    self._model_facts.record_contradicting_failure(
-                        route.provider, route.model, "vision", trace_id)
-                attempts.append({"n": attempt + 1, "provider": route.provider,
-                                 "model": route.model, "status": 429,
-                                 "provider_message": str(exc), "key_id": key_id,
-                                 "verdict": verdict.verdict,
-                                 "ms": int((time.monotonic() - start) * 1000)})
-                if attempt == retries:
-                    _write_trace(ok=False)
-                    raise RouterBusy(f"All retries exhausted for tier {tier!r}")
-                await asyncio.sleep(backoff)
-                continue
-            except RouterError as exc:
-                self._handle_auth_failure(route, exc, key_id)
-                last_auth_error = exc
-                self._audit.log(
-                    tier=tier, provider=route.provider, model=route.model,
-                    prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
-                    latency_ms=int((time.monotonic() - start) * 1000),
-                    status="auth_error",
-                    request_id=trace_id,
-                )
-                self._history.record(self._engine.health_snapshot())
-                verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), 401)
-                if vision and verdict.verdict in ("bad_request", "model_gone") and \
-                        verdict.confidence >= self._error_brain.confidence_threshold:
-                    self._model_facts.record_contradicting_failure(
-                        route.provider, route.model, "vision", trace_id)
-                attempts.append({"n": attempt + 1, "provider": route.provider,
-                                 "model": route.model, "status": None,
-                                 "provider_message": str(exc), "key_id": key_id,
-                                 "verdict": verdict.verdict,
-                                 "ms": int((time.monotonic() - start) * 1000)})
-                # No backoff: a rejected key won't un-reject in two seconds.
-                if attempt == retries:
-                    _write_trace(ok=False)
-                    raise
-                continue
-            except ProviderError as exc:
-                self._handle_provider_error(route, exc)
-                self._audit.log(
-                    tier=tier, provider=route.provider, model=route.model,
-                    prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
-                    latency_ms=int((time.monotonic() - start) * 1000),
-                    status="error",
-                    request_id=trace_id,
-                )
-                self._history.record(self._engine.health_snapshot())
-                verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), exc.status_code)
-                if vision and verdict.verdict in ("bad_request", "model_gone") and \
-                        verdict.confidence >= self._error_brain.confidence_threshold:
-                    self._model_facts.record_contradicting_failure(
-                        route.provider, route.model, "vision", trace_id)
-                attempts.append({"n": attempt + 1, "provider": route.provider,
-                                 "model": route.model, "status": exc.status_code,
-                                 "provider_message": str(exc), "key_id": key_id,
-                                 "verdict": verdict.verdict,
-                                 "ms": int((time.monotonic() - start) * 1000)})
-                if attempt == retries:
-                    _write_trace(ok=False)
-                    raise RouterBusy(f"All retries exhausted for tier {tier!r}")
-                await asyncio.sleep(backoff)
-                continue
-            finally:
+                    self._key_states.begin_request(route.provider, key_id)
+                try:
+                    result = await self._client.chat(route, messages, **kwargs)
+                except RateLimitError as exc:
+                    self._engine.penalize(route.provider, route.model)
+                    if key_id is not None:
+                        self._key_states.mark_cooling(
+                            route.provider, key_id,
+                            self._penalties.penalty_seconds(route.provider, route.model),
+                            "too_fast")
+                    self._events.record(
+                        route.provider, route.model, "rate_limited",
+                        detail=scrub(str(exc)),
+                        penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                    self._audit.log(
+                        tier=tier, provider=route.provider, model=route.model,
+                        prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
+                        latency_ms=int((time.monotonic() - start) * 1000),
+                        status="rate_limited",
+                        request_id=trace_id,
+                    )
+                    self._history.record(self._engine.health_snapshot())
+                    verdict = await self._classify(str(exc), 429, route, trace_id, exc)
+                    if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                            verdict.confidence >= self._error_brain.confidence_threshold:
+                        self._model_facts.record_contradicting_failure(
+                            route.provider, route.model, "vision", trace_id)
+                    attempts.append({"n": attempt + 1, "provider": route.provider,
+                                     "model": route.model, "status": 429,
+                                     "provider_message": str(exc), "key_id": key_id,
+                                     "verdict": verdict.verdict,
+                                     "ms": int((time.monotonic() - start) * 1000)})
+                    if attempt == retries:
+                        _write_trace(ok=False)
+                        raise RouterBusy(f"All retries exhausted for tier {tier!r}")
+                    await asyncio.sleep(backoff)
+                    continue
+                except RouterError as exc:
+                    self._handle_auth_failure(route, exc, key_id)
+                    last_auth_error = exc
+                    self._audit.log(
+                        tier=tier, provider=route.provider, model=route.model,
+                        prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
+                        latency_ms=int((time.monotonic() - start) * 1000),
+                        status="auth_error",
+                        request_id=trace_id,
+                    )
+                    self._history.record(self._engine.health_snapshot())
+                    verdict = await self._classify(str(exc), 401, route, trace_id, exc)
+                    if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                            verdict.confidence >= self._error_brain.confidence_threshold:
+                        self._model_facts.record_contradicting_failure(
+                            route.provider, route.model, "vision", trace_id)
+                    attempts.append({"n": attempt + 1, "provider": route.provider,
+                                     "model": route.model, "status": None,
+                                     "provider_message": str(exc), "key_id": key_id,
+                                     "verdict": verdict.verdict,
+                                     "ms": int((time.monotonic() - start) * 1000)})
+                    # No backoff: a rejected key won't un-reject in two seconds.
+                    if attempt == retries:
+                        _write_trace(ok=False)
+                        raise
+                    continue
+                except ProviderError as exc:
+                    self._handle_provider_error(route, exc)
+                    self._audit.log(
+                        tier=tier, provider=route.provider, model=route.model,
+                        prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
+                        latency_ms=int((time.monotonic() - start) * 1000),
+                        status="error",
+                        request_id=trace_id,
+                    )
+                    self._history.record(self._engine.health_snapshot())
+                    verdict = await self._classify(str(exc), exc.status_code, route, trace_id, exc)
+                    if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                            verdict.confidence >= self._error_brain.confidence_threshold:
+                        self._model_facts.record_contradicting_failure(
+                            route.provider, route.model, "vision", trace_id)
+                    attempts.append({"n": attempt + 1, "provider": route.provider,
+                                     "model": route.model, "status": exc.status_code,
+                                     "provider_message": str(exc), "key_id": key_id,
+                                     "verdict": verdict.verdict,
+                                     "ms": int((time.monotonic() - start) * 1000)})
+                    if attempt == retries:
+                        _write_trace(ok=False)
+                        raise RouterBusy(f"All retries exhausted for tier {tier!r}")
+                    await asyncio.sleep(backoff)
+                    continue
+                finally:
+                    if key_id is not None:
+                        self._key_states.end_request(route.provider, key_id)
+
+                latency_ms = int((time.monotonic() - start) * 1000)
+                usage = result.get("usage", {})
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                total_tokens = usage.get("total_tokens", 0)
+
+                self._engine.record_request(route.provider, route.model, total_tokens)
+                self._quota_tracker.record(route.provider, route.model)
                 if key_id is not None:
-                    self._key_states.end_request(route.provider, key_id)
+                    self._key_states.mark_success(route.provider, key_id, total_tokens, latency_ms)
+                self._audit.log(
+                    tier=tier,
+                    provider=route.provider,
+                    model=route.model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost_usd=self._cost_of(route.provider, route.model,
+                                           prompt_tokens, completion_tokens),
+                    latency_ms=latency_ms,
+                    status="ok",
+                    request_id=trace_id,
+                )
+                self._history.record(self._engine.health_snapshot())
+                if vision:
+                    self._model_facts.record_success(route.provider, route.model, "vision")
+                _write_trace(
+                    ok=True,
+                    answered_by={"provider": route.provider, "model": route.model, "key_id": key_id},
+                    tokens={"in": prompt_tokens, "out": completion_tokens},
+                )
+                return result
 
-            latency_ms = int((time.monotonic() - start) * 1000)
-            usage = result.get("usage", {})
-            prompt_tokens = usage.get("prompt_tokens", 0)
-            completion_tokens = usage.get("completion_tokens", 0)
-            total_tokens = usage.get("total_tokens", 0)
-
-            self._engine.record_request(route.provider, route.model, total_tokens)
-            self._quota_tracker.record(route.provider, route.model)
-            if key_id is not None:
-                self._key_states.mark_success(route.provider, key_id, total_tokens, latency_ms)
-            self._audit.log(
-                tier=tier,
-                provider=route.provider,
-                model=route.model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cost_usd=self._cost_of(route.provider, route.model,
-                                       prompt_tokens, completion_tokens),
-                latency_ms=latency_ms,
-                status="ok",
-                request_id=trace_id,
-            )
-            self._history.record(self._engine.health_snapshot())
-            if vision:
-                self._model_facts.record_success(route.provider, route.model, "vision")
-            _write_trace(
-                ok=True,
-                answered_by={"provider": route.provider, "model": route.model, "key_id": key_id},
-                tokens={"in": prompt_tokens, "out": completion_tokens},
-            )
-            return result
-
-        _write_trace(ok=False)
-        raise RouterBusy(f"All models in tier {tier!r} are unavailable after {retries} retries")
+            _write_trace(ok=False)
+            raise RouterBusy(f"All models in tier {tier!r} are unavailable after {retries} retries")
+        finally:
+            # A caller that gives up (a deadline, a closed connection) cancels
+            # this mid-wait; the request must still show up as failed.
+            if not trace_written:
+                _write_trace(ok=False)
 
     async def agenerate_stream(
         self,
@@ -474,9 +498,13 @@ class LocalRouter:
         ]
         attempts: list[dict] = []
 
+        trace_written = False
+
         def _write_trace(ok: bool, answered_by: Optional[dict] = None,
                          tokens: Optional[dict] = None,
                          ms_to_first_token: Optional[int] = None) -> None:
+            nonlocal trace_written
+            trace_written = True
             self._traces.write({
                 "id": trace_id,
                 "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds") + "Z",
@@ -495,340 +523,372 @@ class LocalRouter:
                 "ok": ok,
             })
 
-        for attempt in range(retries + 1):
-            route = self._engine_for(tier).select(tier, estimated_tokens, vision, session_id)
-            key_id: Optional[str] = None
-            if route is not None:
-                route, key_id = self._pick_key(route)
+        try:
+            for attempt in range(retries + 1):
+                route, key_id = await self._route_with_key(tier, estimated_tokens, vision, session_id)
 
-            if route is None:
-                # Unlike the sync path this loop has no wait=False escape, so
-                # without the quarantine check it sleeps forever on a tier
-                # that can never come back — the reported hang, via the
-                # streaming route a chat client actually uses.
-                blocked = self._quarantine_block_reason(tier)
-                if blocked:
-                    _write_trace(ok=False)
-                    raise RouterBusy(blocked)
-                secs = self._engine_for(tier).seconds_until_available(tier)
-                await asyncio.sleep(max(secs, 1.0))
-                continue
+                if route is None:
+                    # Unlike the sync path this loop has no wait=False escape, so
+                    # without the quarantine check it sleeps forever on a tier
+                    # that can never come back — the reported hang, via the
+                    # streaming route a chat client actually uses.
+                    blocked = self._quarantine_block_reason(tier)
+                    if blocked:
+                        _write_trace(ok=False)
+                        raise RouterBusy(blocked)
+                    secs = self._engine_for(tier).seconds_until_available(tier)
+                    await asyncio.sleep(max(secs, 1.0))
+                    continue
 
-            yield AttemptEvent(
-                attempt=attempt + 1, max_attempts=max_attempts,
-                provider=route.provider, model=route.model,
-            )
-
-            start = time.monotonic()
-            stream = self._client.stream_chat(route, messages, **kwargs)
-
-            # Pull the first chunk under the same try/except agenerate() uses
-            # for its whole request, since stream_chat() only raises
-            # RateLimitError/ProviderError/RouterError before its first
-            # yield. Once we're past this point without an exception, no
-            # further failure may trigger a retry (no retry after commit).
-            if key_id is not None:
-                self._key_states.begin_request(route.provider, key_id)
-            try:
-                first_chunk = await stream.__anext__()
-            except StopAsyncIteration:
-                # Empty stream — no content at all. Treat as a provider
-                # error so the retry loop rotates to the next model.
-                self._engine.penalize(route.provider, route.model)
-                self._events.record(
-                    route.provider, route.model, "server_error",
-                    detail="empty stream response",
-                    penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
-                self._audit.log(
-                    tier=tier, provider=route.provider, model=route.model,
-                    prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
-                    latency_ms=int((time.monotonic() - start) * 1000),
-                    status="empty_response",
-                    request_id=trace_id,
-                )
-                self._history.record(self._engine.health_snapshot())
-                verdict = await asyncio.to_thread(self._error_brain.classify, "empty stream response", None)
-                if vision and verdict.verdict in ("bad_request", "model_gone") and \
-                        verdict.confidence >= self._error_brain.confidence_threshold:
-                    self._model_facts.record_contradicting_failure(
-                        route.provider, route.model, "vision", trace_id)
-                attempts.append({"n": attempt + 1, "provider": route.provider,
-                                 "model": route.model, "status": None,
-                                 "provider_message": "empty stream response",
-                                 "key_id": key_id,
-                                 "verdict": verdict.verdict,
-                                 "ms": int((time.monotonic() - start) * 1000)})
-                yield AttemptFailedEvent(
-                    attempt=attempt + 1, max_attempts=max_attempts,
-                    provider=route.provider, model=route.model, reason="provider_error",
-                    detail="empty stream response",
-                )
-                if attempt == retries:
-                    _write_trace(ok=False)
-                    raise RouterBusy(f"All retries exhausted for tier {tier!r}")
-                await asyncio.sleep(backoff)
-                continue
-            except RateLimitError as exc:
-                self._engine.penalize(route.provider, route.model)
-                if key_id is not None:
-                    self._key_states.mark_cooling(
-                        route.provider, key_id,
-                        self._penalties.penalty_seconds(route.provider, route.model),
-                        "too_fast")
-                self._events.record(
-                    route.provider, route.model, "rate_limited",
-                    detail=scrub(str(exc)),
-                    penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
-                self._audit.log(
-                    tier=tier, provider=route.provider, model=route.model,
-                    prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
-                    latency_ms=int((time.monotonic() - start) * 1000),
-                    status="rate_limited",
-                    request_id=trace_id,
-                )
-                self._history.record(self._engine.health_snapshot())
-                verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), 429)
-                if vision and verdict.verdict in ("bad_request", "model_gone") and \
-                        verdict.confidence >= self._error_brain.confidence_threshold:
-                    self._model_facts.record_contradicting_failure(
-                        route.provider, route.model, "vision", trace_id)
-                attempts.append({"n": attempt + 1, "provider": route.provider,
-                                 "model": route.model, "status": 429,
-                                 "provider_message": str(exc), "key_id": key_id,
-                                 "verdict": verdict.verdict,
-                                 "ms": int((time.monotonic() - start) * 1000)})
-                yield AttemptFailedEvent(
-                    attempt=attempt + 1, max_attempts=max_attempts,
-                    provider=route.provider, model=route.model, reason="rate_limited",
-                    detail=str(exc),
-                )
-                if attempt == retries:
-                    _write_trace(ok=False)
-                    raise RouterBusy(f"All retries exhausted for tier {tier!r}")
-                await asyncio.sleep(backoff)
-                continue
-            except RouterError as exc:
-                self._handle_auth_failure(route, exc, key_id)
-                self._audit.log(
-                    tier=tier, provider=route.provider, model=route.model,
-                    prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
-                    latency_ms=int((time.monotonic() - start) * 1000),
-                    status="auth_error",
-                    request_id=trace_id,
-                )
-                self._history.record(self._engine.health_snapshot())
-                verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), 401)
-                if vision and verdict.verdict in ("bad_request", "model_gone") and \
-                        verdict.confidence >= self._error_brain.confidence_threshold:
-                    self._model_facts.record_contradicting_failure(
-                        route.provider, route.model, "vision", trace_id)
-                attempts.append({"n": attempt + 1, "provider": route.provider,
-                                 "model": route.model, "status": None,
-                                 "provider_message": str(exc), "key_id": key_id,
-                                 "verdict": verdict.verdict,
-                                 "ms": int((time.monotonic() - start) * 1000)})
-                yield AttemptFailedEvent(
+                yield AttemptEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
                     provider=route.provider, model=route.model,
-                    reason="provider_error", detail=str(exc),
                 )
-                if attempt == retries:
-                    _write_trace(ok=False)
-                    raise
-                continue
-            except ProviderError as exc:
-                self._handle_provider_error(route, exc)
-                self._audit.log(
-                    tier=tier, provider=route.provider, model=route.model,
-                    prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
-                    latency_ms=int((time.monotonic() - start) * 1000),
-                    status="error",
-                    request_id=trace_id,
-                )
-                self._history.record(self._engine.health_snapshot())
-                verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), exc.status_code)
-                if vision and verdict.verdict in ("bad_request", "model_gone") and \
-                        verdict.confidence >= self._error_brain.confidence_threshold:
-                    self._model_facts.record_contradicting_failure(
-                        route.provider, route.model, "vision", trace_id)
-                attempts.append({"n": attempt + 1, "provider": route.provider,
-                                 "model": route.model, "status": exc.status_code,
-                                 "provider_message": str(exc), "key_id": key_id,
-                                 "verdict": verdict.verdict,
-                                 "ms": int((time.monotonic() - start) * 1000)})
-                yield AttemptFailedEvent(
-                    attempt=attempt + 1, max_attempts=max_attempts,
-                    provider=route.provider, model=route.model, reason="provider_error",
-                    detail=str(exc),
-                )
-                if attempt == retries:
-                    _write_trace(ok=False)
-                    raise RouterBusy(f"All retries exhausted for tier {tier!r}")
-                await asyncio.sleep(backoff)
-                continue
-            finally:
+
+                start = time.monotonic()
+                stream = self._client.stream_chat(route, messages, **kwargs)
+
+                # Pull the first chunk under the same try/except agenerate() uses
+                # for its whole request, since stream_chat() only raises
+                # RateLimitError/ProviderError/RouterError before its first
+                # yield. Once we're past this point without an exception, no
+                # further failure may trigger a retry (no retry after commit).
                 if key_id is not None:
-                    self._key_states.end_request(route.provider, key_id)
+                    self._key_states.begin_request(route.provider, key_id)
+                try:
+                    first_chunk = await stream.__anext__()
+                except StopAsyncIteration:
+                    # Empty stream — no content at all. Treat as a provider
+                    # error so the retry loop rotates to the next model.
+                    self._engine.penalize(route.provider, route.model)
+                    self._events.record(
+                        route.provider, route.model, "server_error",
+                        detail="empty stream response",
+                        penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                    self._audit.log(
+                        tier=tier, provider=route.provider, model=route.model,
+                        prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
+                        latency_ms=int((time.monotonic() - start) * 1000),
+                        status="empty_response",
+                        request_id=trace_id,
+                    )
+                    self._history.record(self._engine.health_snapshot())
+                    verdict = await self._classify("empty stream response", None, route, trace_id)
+                    if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                            verdict.confidence >= self._error_brain.confidence_threshold:
+                        self._model_facts.record_contradicting_failure(
+                            route.provider, route.model, "vision", trace_id)
+                    attempts.append({"n": attempt + 1, "provider": route.provider,
+                                     "model": route.model, "status": None,
+                                     "provider_message": "empty stream response",
+                                     "key_id": key_id,
+                                     "verdict": verdict.verdict,
+                                     "ms": int((time.monotonic() - start) * 1000)})
+                    yield AttemptFailedEvent(
+                        attempt=attempt + 1, max_attempts=max_attempts,
+                        provider=route.provider, model=route.model, reason="provider_error",
+                        detail="empty stream response",
+                    )
+                    if attempt == retries:
+                        _write_trace(ok=False)
+                        raise RouterBusy(f"All retries exhausted for tier {tier!r}")
+                    await asyncio.sleep(backoff)
+                    continue
+                except RateLimitError as exc:
+                    self._engine.penalize(route.provider, route.model)
+                    if key_id is not None:
+                        self._key_states.mark_cooling(
+                            route.provider, key_id,
+                            self._penalties.penalty_seconds(route.provider, route.model),
+                            "too_fast")
+                    self._events.record(
+                        route.provider, route.model, "rate_limited",
+                        detail=scrub(str(exc)),
+                        penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                    self._audit.log(
+                        tier=tier, provider=route.provider, model=route.model,
+                        prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
+                        latency_ms=int((time.monotonic() - start) * 1000),
+                        status="rate_limited",
+                        request_id=trace_id,
+                    )
+                    self._history.record(self._engine.health_snapshot())
+                    verdict = await self._classify(str(exc), 429, route, trace_id, exc)
+                    if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                            verdict.confidence >= self._error_brain.confidence_threshold:
+                        self._model_facts.record_contradicting_failure(
+                            route.provider, route.model, "vision", trace_id)
+                    attempts.append({"n": attempt + 1, "provider": route.provider,
+                                     "model": route.model, "status": 429,
+                                     "provider_message": str(exc), "key_id": key_id,
+                                     "verdict": verdict.verdict,
+                                     "ms": int((time.monotonic() - start) * 1000)})
+                    yield AttemptFailedEvent(
+                        attempt=attempt + 1, max_attempts=max_attempts,
+                        provider=route.provider, model=route.model, reason="rate_limited",
+                        detail=str(exc),
+                    )
+                    if attempt == retries:
+                        _write_trace(ok=False)
+                        raise RouterBusy(f"All retries exhausted for tier {tier!r}")
+                    await asyncio.sleep(backoff)
+                    continue
+                except RouterError as exc:
+                    self._handle_auth_failure(route, exc, key_id)
+                    self._audit.log(
+                        tier=tier, provider=route.provider, model=route.model,
+                        prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
+                        latency_ms=int((time.monotonic() - start) * 1000),
+                        status="auth_error",
+                        request_id=trace_id,
+                    )
+                    self._history.record(self._engine.health_snapshot())
+                    verdict = await self._classify(str(exc), 401, route, trace_id, exc)
+                    if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                            verdict.confidence >= self._error_brain.confidence_threshold:
+                        self._model_facts.record_contradicting_failure(
+                            route.provider, route.model, "vision", trace_id)
+                    attempts.append({"n": attempt + 1, "provider": route.provider,
+                                     "model": route.model, "status": None,
+                                     "provider_message": str(exc), "key_id": key_id,
+                                     "verdict": verdict.verdict,
+                                     "ms": int((time.monotonic() - start) * 1000)})
+                    yield AttemptFailedEvent(
+                        attempt=attempt + 1, max_attempts=max_attempts,
+                        provider=route.provider, model=route.model,
+                        reason="provider_error", detail=str(exc),
+                    )
+                    if attempt == retries:
+                        _write_trace(ok=False)
+                        raise
+                    continue
+                except ProviderError as exc:
+                    self._handle_provider_error(route, exc)
+                    self._audit.log(
+                        tier=tier, provider=route.provider, model=route.model,
+                        prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
+                        latency_ms=int((time.monotonic() - start) * 1000),
+                        status="error",
+                        request_id=trace_id,
+                    )
+                    self._history.record(self._engine.health_snapshot())
+                    verdict = await self._classify(str(exc), exc.status_code, route, trace_id, exc)
+                    if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                            verdict.confidence >= self._error_brain.confidence_threshold:
+                        self._model_facts.record_contradicting_failure(
+                            route.provider, route.model, "vision", trace_id)
+                    attempts.append({"n": attempt + 1, "provider": route.provider,
+                                     "model": route.model, "status": exc.status_code,
+                                     "provider_message": str(exc), "key_id": key_id,
+                                     "verdict": verdict.verdict,
+                                     "ms": int((time.monotonic() - start) * 1000)})
+                    yield AttemptFailedEvent(
+                        attempt=attempt + 1, max_attempts=max_attempts,
+                        provider=route.provider, model=route.model, reason="provider_error",
+                        detail=str(exc),
+                    )
+                    if attempt == retries:
+                        _write_trace(ok=False)
+                        raise RouterBusy(f"All retries exhausted for tier {tier!r}")
+                    await asyncio.sleep(backoff)
+                    continue
+                finally:
+                    if key_id is not None:
+                        self._key_states.end_request(route.provider, key_id)
 
-            # Committed: a delta (or a clean empty stream) arrived with no
-            # error. From here on, any failure propagates as a plain
-            # exception out of this generator — no except clause below, so
-            # nothing here can turn it into a retry.
-            accumulated: list[str] = []
-            final_usage: dict = {}
-            has_tool_calls = False
-            # key -> {"id": ..., "name": ..., "arguments": ...}. Keyed on the
-            # chunk's own "id" rather than "index": per the OpenAI streaming
-            # tool_calls spec, a non-empty id always marks the *start* of a
-            # new logical call (continuation chunks omit it), which holds
-            # even for providers that don't bump "index" per call. Gemini's
-            # OpenAI-compat endpoint (live-verified) sends every call in a
-            # multi-call turn at index 0, each with a unique id and its
-            # *complete* arguments in one chunk — keying on index alone
-            # merged them into one entry and concatenated their JSON into an
-            # unparseable blob.
-            tool_calls_by_key: dict[str, dict] = {}
-            tool_call_order: list[str] = []
-            last_key_by_index: dict[int, str] = {}
-            first_token_at: Optional[float] = None
+                # Committed: a delta (or a clean empty stream) arrived with no
+                # error. From here on, any failure propagates as a plain
+                # exception out of this generator — no except clause below, so
+                # nothing here can turn it into a retry.
+                accumulated: list[str] = []
+                final_usage: dict = {}
+                has_tool_calls = False
+                # key -> {"id": ..., "name": ..., "arguments": ...}. Keyed on the
+                # chunk's own "id" rather than "index": per the OpenAI streaming
+                # tool_calls spec, a non-empty id always marks the *start* of a
+                # new logical call (continuation chunks omit it), which holds
+                # even for providers that don't bump "index" per call. Gemini's
+                # OpenAI-compat endpoint (live-verified) sends every call in a
+                # multi-call turn at index 0, each with a unique id and its
+                # *complete* arguments in one chunk — keying on index alone
+                # merged them into one entry and concatenated their JSON into an
+                # unparseable blob.
+                tool_calls_by_key: dict[str, dict] = {}
+                tool_call_order: list[str] = []
+                last_key_by_index: dict[int, str] = {}
+                first_token_at: Optional[float] = None
 
-            def _events_for(sc) -> list:
-                nonlocal has_tool_calls, first_token_at
-                events: list = []
-                if first_token_at is None and (sc.content or sc.reasoning or sc.tool_call_delta):
-                    first_token_at = time.monotonic()
-                if sc.content:
-                    accumulated.append(sc.content)
-                    events.append(DeltaEvent(text=sc.content))
-                if sc.reasoning:
-                    events.append(ReasoningDeltaEvent(text=sc.reasoning))
-                if sc.tool_call_delta:
-                    has_tool_calls = True
-                    tc = sc.tool_call_delta
-                    idx = tc.get("index", 0)
-                    call_id = tc.get("id")
-                    if call_id:
-                        key = call_id
-                        if key not in tool_calls_by_key:
-                            tool_calls_by_key[key] = {"id": call_id, "name": "", "arguments": ""}
-                            tool_call_order.append(key)
-                        last_key_by_index[idx] = key
-                    else:
-                        key = last_key_by_index.get(idx)
-                        if key is None:
-                            # No id and no prior chunk at this index — start
-                            # a fresh entry rather than dropping the chunk.
-                            key = f"idx:{idx}"
-                            tool_calls_by_key[key] = {"id": "", "name": "", "arguments": ""}
-                            tool_call_order.append(key)
+                def _events_for(sc) -> list:
+                    nonlocal has_tool_calls, first_token_at
+                    events: list = []
+                    if first_token_at is None and (sc.content or sc.reasoning or sc.tool_call_delta):
+                        first_token_at = time.monotonic()
+                    if sc.content:
+                        accumulated.append(sc.content)
+                        events.append(DeltaEvent(text=sc.content))
+                    if sc.reasoning:
+                        events.append(ReasoningDeltaEvent(text=sc.reasoning))
+                    if sc.tool_call_delta:
+                        has_tool_calls = True
+                        tc = sc.tool_call_delta
+                        idx = tc.get("index", 0)
+                        call_id = tc.get("id")
+                        if call_id:
+                            key = call_id
+                            if key not in tool_calls_by_key:
+                                tool_calls_by_key[key] = {"id": call_id, "name": "", "arguments": ""}
+                                tool_call_order.append(key)
                             last_key_by_index[idx] = key
-                    entry = tool_calls_by_key[key]
-                    fn = tc.get("function") or {}
-                    if fn.get("name"):
-                        entry["name"] = fn["name"]
-                    if fn.get("arguments"):
-                        entry["arguments"] += fn["arguments"]
-                    events.append(ToolCallDeltaEvent(
-                        index=idx,
-                        id=tc.get("id"),
-                        name=fn.get("name"),
-                        arguments=fn.get("arguments"),
-                        raw=tc,
-                    ))
-                if sc.usage:
-                    final_usage.update(sc.usage)
-                return events
+                        else:
+                            key = last_key_by_index.get(idx)
+                            if key is None:
+                                # No id and no prior chunk at this index — start
+                                # a fresh entry rather than dropping the chunk.
+                                key = f"idx:{idx}"
+                                tool_calls_by_key[key] = {"id": "", "name": "", "arguments": ""}
+                                tool_call_order.append(key)
+                                last_key_by_index[idx] = key
+                        entry = tool_calls_by_key[key]
+                        fn = tc.get("function") or {}
+                        if fn.get("name"):
+                            entry["name"] = fn["name"]
+                        if fn.get("arguments"):
+                            entry["arguments"] += fn["arguments"]
+                        events.append(ToolCallDeltaEvent(
+                            index=idx,
+                            id=tc.get("id"),
+                            name=fn.get("name"),
+                            arguments=fn.get("arguments"),
+                            raw=tc,
+                        ))
+                    if sc.usage:
+                        final_usage.update(sc.usage)
+                    return events
 
-            # Whether *anything* — content, reasoning, or a tool-call
-            # fragment — has already reached the consumer on this attempt.
-            # Once true, this attempt is committed: an empty completion from
-            # here on is a failed answer, not a reason to try another
-            # provider, because the caller's screen may already be showing
-            # what was sent.
-            any_yielded = False
+                # Whether *anything* — content, reasoning, or a tool-call
+                # fragment — has already reached the consumer on this attempt.
+                # Once true, this attempt is committed: an empty completion from
+                # here on is a failed answer, not a reason to try another
+                # provider, because the caller's screen may already be showing
+                # what was sent.
+                any_yielded = False
 
-            try:
-                if first_chunk is not None:
-                    for ev in _events_for(first_chunk):
-                        any_yielded = True
-                        yield ev
+                try:
+                    if first_chunk is not None:
+                        for ev in _events_for(first_chunk):
+                            any_yielded = True
+                            yield ev
 
-                async for sc in stream:
-                    for ev in _events_for(sc):
-                        any_yielded = True
-                        yield ev
-            except BaseException as exc:
-                verdict = await asyncio.to_thread(self._error_brain.classify, str(exc), getattr(exc, "status_code", None))
-                if vision and verdict.verdict in ("bad_request", "model_gone") and \
-                        verdict.confidence >= self._error_brain.confidence_threshold:
-                    self._model_facts.record_contradicting_failure(
-                        route.provider, route.model, "vision", trace_id)
-                attempts.append({"n": attempt + 1, "provider": route.provider,
-                                 "model": route.model,
-                                 "status": getattr(exc, "status_code", None),
-                                 "provider_message": str(exc), "key_id": key_id,
-                                 "verdict": verdict.verdict,
-                                 "ms": int((time.monotonic() - start) * 1000)})
-                _write_trace(
-                    ok=False,
-                    ms_to_first_token=(
-                        int((first_token_at - start) * 1000) if first_token_at else None),
+                    async for sc in stream:
+                        for ev in _events_for(sc):
+                            any_yielded = True
+                            yield ev
+                except BaseException as exc:
+                    verdict = await self._classify(str(exc), getattr(exc, "status_code", None), route, trace_id, exc)
+                    if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                            verdict.confidence >= self._error_brain.confidence_threshold:
+                        self._model_facts.record_contradicting_failure(
+                            route.provider, route.model, "vision", trace_id)
+                    attempts.append({"n": attempt + 1, "provider": route.provider,
+                                     "model": route.model,
+                                     "status": getattr(exc, "status_code", None),
+                                     "provider_message": str(exc), "key_id": key_id,
+                                     "verdict": verdict.verdict,
+                                     "ms": int((time.monotonic() - start) * 1000)})
+                    _write_trace(
+                        ok=False,
+                        ms_to_first_token=(
+                            int((first_token_at - start) * 1000) if first_token_at else None),
+                    )
+                    raise
+
+                latency_ms = int((time.monotonic() - start) * 1000)
+                full_text = "".join(accumulated)
+
+                logger.info(
+                    "stream accumulation complete",
+                    extra={
+                        "event": "router.stream.accumulated",
+                        "provider": route.provider, "model": route.model,
+                        "attempt": attempt + 1, "max_attempts": max_attempts,
+                        "full_text_len": len(full_text),
+                        "has_tool_calls": has_tool_calls,
+                        "tool_call_count": len(tool_calls_by_key),
+                        "tool_calls_raw": tool_calls_by_key,
+                    },
                 )
-                raise
 
-            latency_ms = int((time.monotonic() - start) * 1000)
-            full_text = "".join(accumulated)
+                # A stream that ends with no content and no tool calls has shown
+                # the consumer nothing *usable*. If it also never yielded a
+                # single event (no DeltaEvent, no ReasoningDeltaEvent, no
+                # ToolCallDeltaEvent — `any_yielded` is False), it's safe to
+                # retry against the next provider exactly like the
+                # pre-first-chunk failures above, instead of treating "we
+                # received at least one chunk" as an irreversible commit.
+                # Without this, a model that spends its whole token budget on
+                # reasoning (nothing usable back) looks identical to a real
+                # success and the caller is left with a silent empty reply.
+                #
+                # But if something *was* already yielded — reasoning text is the
+                # live case — the caller may already be showing it, and
+                # switching providers now would be exactly the silent mid-answer
+                # model swap streaming is not allowed to do. That case falls
+                # through to the `any_yielded` branch below instead of retrying.
+                if not full_text and not has_tool_calls:
+                    if any_yielded:
+                        logger.warning(
+                            "empty completion after partial output, failing "
+                            "without retry",
+                            extra={
+                                "event": "router.stream.empty_completion_after_partial",
+                                "provider": route.provider, "model": route.model,
+                                "attempt": attempt + 1, "max_attempts": max_attempts,
+                            },
+                        )
+                        # Declining to retry this request is not the same as
+                        # declining to remember: the penalty box is what keeps
+                        # this model from being picked first on the *next*
+                        # request, and that isn't conditional on retrying within
+                        # this one. Same penalize/record calls as the retry path
+                        # below, just without the retry.
+                        self._engine.penalize(route.provider, route.model)
+                        self._events.record(
+                            route.provider, route.model, "server_error",
+                            detail="empty response after partial output (no content, no tool calls)",
+                            penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                        self._audit.log(
+                            tier=tier, provider=route.provider, model=route.model,
+                            prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
+                            latency_ms=latency_ms, status="empty_response",
+                            request_id=trace_id,
+                        )
+                        self._history.record(self._engine.health_snapshot())
+                        # No except clause below catches this — it propagates
+                        # straight out of the generator, same as any other
+                        # post-commit failure. app.py renders it as the
+                        # well-formed failure chunk, not a bare error object,
+                        # because content/reasoning already went out.
+                        _write_trace(
+                            ok=False,
+                            ms_to_first_token=(
+                                int((first_token_at - start) * 1000) if first_token_at else None),
+                        )
+                        raise RouterError(
+                            f"{route.provider}/{route.model}: empty completion "
+                            "after partial output (no content, no tool calls)")
 
-            logger.info(
-                "stream accumulation complete",
-                extra={
-                    "event": "router.stream.accumulated",
-                    "provider": route.provider, "model": route.model,
-                    "attempt": attempt + 1, "max_attempts": max_attempts,
-                    "full_text_len": len(full_text),
-                    "has_tool_calls": has_tool_calls,
-                    "tool_call_count": len(tool_calls_by_key),
-                    "tool_calls_raw": tool_calls_by_key,
-                },
-            )
-
-            # A stream that ends with no content and no tool calls has shown
-            # the consumer nothing *usable*. If it also never yielded a
-            # single event (no DeltaEvent, no ReasoningDeltaEvent, no
-            # ToolCallDeltaEvent — `any_yielded` is False), it's safe to
-            # retry against the next provider exactly like the
-            # pre-first-chunk failures above, instead of treating "we
-            # received at least one chunk" as an irreversible commit.
-            # Without this, a model that spends its whole token budget on
-            # reasoning (nothing usable back) looks identical to a real
-            # success and the caller is left with a silent empty reply.
-            #
-            # But if something *was* already yielded — reasoning text is the
-            # live case — the caller may already be showing it, and
-            # switching providers now would be exactly the silent mid-answer
-            # model swap streaming is not allowed to do. That case falls
-            # through to the `any_yielded` branch below instead of retrying.
-            if not full_text and not has_tool_calls:
-                if any_yielded:
                     logger.warning(
-                        "empty completion after partial output, failing "
-                        "without retry",
+                        "empty completion, retrying next provider",
                         extra={
-                            "event": "router.stream.empty_completion_after_partial",
+                            "event": "router.stream.empty_completion",
                             "provider": route.provider, "model": route.model,
                             "attempt": attempt + 1, "max_attempts": max_attempts,
                         },
                     )
-                    # Declining to retry this request is not the same as
-                    # declining to remember: the penalty box is what keeps
-                    # this model from being picked first on the *next*
-                    # request, and that isn't conditional on retrying within
-                    # this one. Same penalize/record calls as the retry path
-                    # below, just without the retry.
                     self._engine.penalize(route.provider, route.model)
                     self._events.record(
                         route.provider, route.model, "server_error",
-                        detail="empty response after partial output (no content, no tool calls)",
+                        detail="empty response (no content, no tool calls)",
                         penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
                     self._audit.log(
                         tier=tier, provider=route.provider, model=route.model,
@@ -837,135 +897,105 @@ class LocalRouter:
                         request_id=trace_id,
                     )
                     self._history.record(self._engine.health_snapshot())
-                    # No except clause below catches this — it propagates
-                    # straight out of the generator, same as any other
-                    # post-commit failure. app.py renders it as the
-                    # well-formed failure chunk, not a bare error object,
-                    # because content/reasoning already went out.
-                    _write_trace(
-                        ok=False,
-                        ms_to_first_token=(
-                            int((first_token_at - start) * 1000) if first_token_at else None),
+                    verdict = await self._classify("empty response (no content, no tool calls)", None, route, trace_id)
+                    if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                            verdict.confidence >= self._error_brain.confidence_threshold:
+                        self._model_facts.record_contradicting_failure(
+                            route.provider, route.model, "vision", trace_id)
+                    attempts.append({"n": attempt + 1, "provider": route.provider,
+                                     "model": route.model, "status": None,
+                                     "provider_message": "empty response (no content, no tool calls)",
+                                     "key_id": key_id,
+                                     "verdict": verdict.verdict,
+                                     "ms": int((time.monotonic() - start) * 1000)})
+                    yield AttemptFailedEvent(
+                        attempt=attempt + 1, max_attempts=max_attempts,
+                        provider=route.provider, model=route.model, reason="provider_error",
+                        detail="empty response (no content, no tool calls)",
                     )
-                    raise RouterError(
-                        f"{route.provider}/{route.model}: empty completion "
-                        "after partial output (no content, no tool calls)")
+                    if attempt == retries:
+                        _write_trace(ok=False)
+                        raise RouterBusy(f"All retries exhausted for tier {tier!r}")
+                    await asyncio.sleep(backoff)
+                    continue
 
-                logger.warning(
-                    "empty completion, retrying next provider",
-                    extra={
-                        "event": "router.stream.empty_completion",
-                        "provider": route.provider, "model": route.model,
-                        "attempt": attempt + 1, "max_attempts": max_attempts,
-                    },
-                )
-                self._engine.penalize(route.provider, route.model)
-                self._events.record(
-                    route.provider, route.model, "server_error",
-                    detail="empty response (no content, no tool calls)",
-                    penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                # Assemble tool calls in first-seen order
+                assembled_tool_calls = []
+                for key in tool_call_order:
+                    tc = tool_calls_by_key[key]
+                    assembled_tool_calls.append({
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": tc["arguments"],
+                        },
+                    })
+
+                if assembled_tool_calls:
+                    logger.info(
+                        "committing stream with tool calls",
+                        extra={
+                            "event": "router.stream.tool_calls_committed",
+                            "provider": route.provider, "model": route.model,
+                            "attempt": attempt + 1, "max_attempts": max_attempts,
+                            "tool_calls": [
+                                {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}
+                                for tc in assembled_tool_calls
+                            ],
+                        },
+                    )
+
+                # Build result with content + tool_calls
+                msg: dict = {"role": "assistant", "content": full_text}
+                if assembled_tool_calls:
+                    msg["tool_calls"] = assembled_tool_calls
+
+                result = {
+                    "choices": [{"message": msg}],
+                    "usage": final_usage,
+                }
+                usage = result.get("usage", {})
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                total_tokens = usage.get("total_tokens", 0)
+
+                self._engine.record_request(route.provider, route.model, total_tokens)
+                self._quota_tracker.record(route.provider, route.model)
+                if key_id is not None:
+                    self._key_states.mark_success(route.provider, key_id, total_tokens, latency_ms)
                 self._audit.log(
-                    tier=tier, provider=route.provider, model=route.model,
-                    prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
-                    latency_ms=latency_ms, status="empty_response",
+                    tier=tier,
+                    provider=route.provider,
+                    model=route.model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost_usd=self._cost_of(route.provider, route.model,
+                                           prompt_tokens, completion_tokens),
+                    latency_ms=latency_ms,
+                    status="ok",
                     request_id=trace_id,
                 )
                 self._history.record(self._engine.health_snapshot())
-                verdict = await asyncio.to_thread(self._error_brain.classify, 
-                    "empty response (no content, no tool calls)", None)
-                if vision and verdict.verdict in ("bad_request", "model_gone") and \
-                        verdict.confidence >= self._error_brain.confidence_threshold:
-                    self._model_facts.record_contradicting_failure(
-                        route.provider, route.model, "vision", trace_id)
-                attempts.append({"n": attempt + 1, "provider": route.provider,
-                                 "model": route.model, "status": None,
-                                 "provider_message": "empty response (no content, no tool calls)",
-                                 "key_id": key_id,
-                                 "verdict": verdict.verdict,
-                                 "ms": int((time.monotonic() - start) * 1000)})
-                yield AttemptFailedEvent(
-                    attempt=attempt + 1, max_attempts=max_attempts,
-                    provider=route.provider, model=route.model, reason="provider_error",
-                    detail="empty response (no content, no tool calls)",
+                if vision:
+                    self._model_facts.record_success(route.provider, route.model, "vision")
+                _write_trace(
+                    ok=True,
+                    answered_by={"provider": route.provider, "model": route.model, "key_id": key_id},
+                    tokens={"in": prompt_tokens, "out": completion_tokens},
+                    ms_to_first_token=(
+                        int((first_token_at - start) * 1000) if first_token_at else None),
                 )
-                if attempt == retries:
-                    _write_trace(ok=False)
-                    raise RouterBusy(f"All retries exhausted for tier {tier!r}")
-                await asyncio.sleep(backoff)
-                continue
+                yield DoneEvent(result=result)
+                return
 
-            # Assemble tool calls in first-seen order
-            assembled_tool_calls = []
-            for key in tool_call_order:
-                tc = tool_calls_by_key[key]
-                assembled_tool_calls.append({
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {
-                        "name": tc["name"],
-                        "arguments": tc["arguments"],
-                    },
-                })
-
-            if assembled_tool_calls:
-                logger.info(
-                    "committing stream with tool calls",
-                    extra={
-                        "event": "router.stream.tool_calls_committed",
-                        "provider": route.provider, "model": route.model,
-                        "attempt": attempt + 1, "max_attempts": max_attempts,
-                        "tool_calls": [
-                            {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}
-                            for tc in assembled_tool_calls
-                        ],
-                    },
-                )
-
-            # Build result with content + tool_calls
-            msg: dict = {"role": "assistant", "content": full_text}
-            if assembled_tool_calls:
-                msg["tool_calls"] = assembled_tool_calls
-
-            result = {
-                "choices": [{"message": msg}],
-                "usage": final_usage,
-            }
-            usage = result.get("usage", {})
-            prompt_tokens = usage.get("prompt_tokens", 0)
-            completion_tokens = usage.get("completion_tokens", 0)
-            total_tokens = usage.get("total_tokens", 0)
-
-            self._engine.record_request(route.provider, route.model, total_tokens)
-            self._quota_tracker.record(route.provider, route.model)
-            if key_id is not None:
-                self._key_states.mark_success(route.provider, key_id, total_tokens, latency_ms)
-            self._audit.log(
-                tier=tier,
-                provider=route.provider,
-                model=route.model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cost_usd=self._cost_of(route.provider, route.model,
-                                       prompt_tokens, completion_tokens),
-                latency_ms=latency_ms,
-                status="ok",
-                request_id=trace_id,
-            )
-            self._history.record(self._engine.health_snapshot())
-            if vision:
-                self._model_facts.record_success(route.provider, route.model, "vision")
-            _write_trace(
-                ok=True,
-                answered_by={"provider": route.provider, "model": route.model, "key_id": key_id},
-                tokens={"in": prompt_tokens, "out": completion_tokens},
-                ms_to_first_token=(
-                    int((first_token_at - start) * 1000) if first_token_at else None),
-            )
-            yield DoneEvent(result=result)
-            return
-
-        _write_trace(ok=False)
-        raise RouterBusy(f"All models in tier {tier!r} are unavailable after {retries} retries")
+            _write_trace(ok=False)
+            raise RouterBusy(f"All models in tier {tier!r} are unavailable after {retries} retries")
+        finally:
+            # A caller that gives up (a deadline, a closed connection) cancels
+            # this mid-wait; the request must still show up as failed.
+            if not trace_written:
+                _write_trace(ok=False)
 
     def _build_pin_engine(self) -> RoutingEngine:
         """A second engine whose buckets are one model each, named
@@ -1001,20 +1031,39 @@ class LocalRouter:
         """
         return self._pin_engine if "/" in tier else self._engine
 
-    def _pick_key(self, route: RouteResult) -> tuple[Optional[RouteResult], Optional[str]]:
+    async def _route_with_key(
+        self, tier: str, estimated_tokens: int, vision: bool, session_id: Optional[str],
+    ) -> tuple[Optional[RouteResult], Optional[str]]:
+        """engine.select() plus a key, waiting out keys that are merely busy.
+
+        A key at its concurrency cap frees up as soon as an in-flight request
+        gets its first chunk back, so it is queued for here rather than
+        treated as a failure: no penalty, and no retry spent on it.
+        """
+        while True:
+            route = self._engine_for(tier).select(tier, estimated_tokens, vision, session_id)
+            if route is None:
+                return None, None
+            route_with_key, key_id, busy = self._pick_key(route)
+            if not busy:
+                return route_with_key, key_id
+            await asyncio.sleep(KEY_BUSY_POLL_SECONDS)
+
+    def _pick_key(self, route: RouteResult) -> tuple[Optional[RouteResult], Optional[str], bool]:
         """Override a RouteResult's api_key with a real, stateful choice.
 
         engine.py already picked *which model* — this picks *which key*,
         from real per-key state instead of blind rotation (ADR 0011).
-        Returns (None, None) when every configured key for this provider is
-        currently unavailable, signalling that back to engine.py through
-        PenaltyBox primitives it already reads, never by teaching it
+        Returns (None, None, True) when a usable key is only at its
+        concurrency cap, and (None, None, False) when every configured key
+        for this provider is unavailable, signalling that back to engine.py
+        through PenaltyBox primitives it already reads, never by teaching it
         anything new.
         """
         provider_cfg = self._cfg.providers.get(route.provider)
         candidates = provider_cfg.keys if provider_cfg else []
         if not candidates:
-            return route, None  # keyless provider (e.g. local Ollama) — unchanged
+            return route, None, False  # keyless provider (e.g. local Ollama) — unchanged
 
         model_id = f"{route.provider}/{route.model}"
         chosen = pick_key(
@@ -1023,6 +1072,9 @@ class LocalRouter:
             counters=self._round_robin if provider_cfg.key_strategy == "round_robin" else None,
         )
         if chosen is None:
+            if any(allows(r, model_id) and self._key_states.is_available(route.provider, r.id)
+                   for r in candidates):
+                return None, None, True
             key_ids = [r.id for r in candidates]
             if self._key_states.all_benched_or_disabled(route.provider, key_ids):
                 self._penalties.quarantine_provider(
@@ -1032,15 +1084,16 @@ class LocalRouter:
                 if wait != float("inf"):
                     self._penalties.penalize_short(
                         route.provider, route.model, int(max(wait, 30.0)))
-            return None, None
+            return None, None, False
 
-        return dataclasses.replace(route, api_key=chosen.secret), chosen.id
+        return dataclasses.replace(route, api_key=chosen.secret), chosen.id, False
 
     def reload(self) -> None:
         # Load first, assign after: a settings file that has gone bad
         # must leave the router exactly as it was, not half swapped.
         cfg = load_config(self._config_path)
         self._cfg = cfg
+        self._register_known_identifiers()
         self._rate_limit_store = RateLimitStore(self._cfg.state_dir)
         self._quota_tracker = QuotaTracker(self._cfg.state_dir)
         self._engine.update_config(self._cfg)

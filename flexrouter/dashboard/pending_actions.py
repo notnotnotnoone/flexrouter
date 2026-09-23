@@ -34,6 +34,18 @@ def _save(state_dir: str, data: dict) -> None:
     write_json(_path(state_dir), data)
 
 
+def _appeared_fields(provider: str, model: str, found: dict) -> dict:
+    fields = {
+        "provider": provider, "model": model,
+        "score": found.get("score") or 50,
+        "rpm": found.get("rpm") or 60,
+        "tpm": found.get("tpm") or 60000,
+    }
+    if found.get("context_window"):
+        fields["context_window"] = found["context_window"]
+    return fields
+
+
 def accept_appeared(state_dir: str, provider: str, model: str, bucket: str,
                     overrides_path: Optional[Path] = None) -> None:
     data = _load(state_dir)
@@ -43,19 +55,37 @@ def accept_appeared(state_dir: str, provider: str, model: str, bucket: str,
     if found is None:
         raise PendingActionError(f"{provider}/{model} is not a pending new model")
 
-    fields = {
-        "provider": provider, "model": model,
-        "score": found.get("score") or 50,
-        "rpm": found.get("rpm") or 60,
-        "tpm": found.get("tpm") or 60000,
-    }
-    if found.get("context_window"):
-        fields["context_window"] = found["context_window"]
-    ov.add_model(bucket, fields, overrides_path)
+    ov.add_model(bucket, _appeared_fields(provider, model, found), overrides_path)
 
     bucket_entry["appeared"] = [m for m in appeared if m.get("model") != model]
     data[provider] = bucket_entry
     _save(state_dir, data)
+
+
+def accept_all_appeared(state_dir: str, bucket: str,
+                        overrides_path: Optional[Path] = None) -> int:
+    """Accept every pending new model, from every provider, into one bucket.
+
+    The per-item accept/reject above stays for picking through changes one
+    at a time; this is the bulk path for "just add everything the last
+    catalogue check found" - one call to discover every provider with a
+    valid key already ran (`refresh_config`) and left its findings in
+    `catalog_pending.json`, this only clears the `appeared` side of it.
+    """
+    data = _load(state_dir)
+    count = 0
+    for provider, bucket_entry in data.items():
+        appeared = bucket_entry.get("appeared") or []
+        for m in appeared:
+            model = m.get("model")
+            if not model:
+                continue
+            ov.add_model(bucket, _appeared_fields(provider, model, m), overrides_path)
+            count += 1
+        bucket_entry["appeared"] = []
+        data[provider] = bucket_entry
+    _save(state_dir, data)
+    return count
 
 
 def reject_appeared(state_dir: str, provider: str, model: str) -> None:

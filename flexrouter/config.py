@@ -426,6 +426,9 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
                                 preset["backoff_seconds"], float),
     )
 
+    from flexrouter import presets as presets_mod
+
+    shipped = presets_mod.shipped()
     vault = load_keys()
     providers: dict[str, ProviderConfig] = {}
     for name, praw in (raw.get("providers") or {}).items():
@@ -434,10 +437,18 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
             raise ConfigFieldError(
                 f"providers.{name}.base_url is missing in {source}")
         records = resolve_keys(name, praw, vault, source)
+        # How an endpoint reports its rate limits is a fact about that
+        # endpoint, and adding a provider from a preset stored a snapshot of
+        # the parser, so the preset's current parser wins at its own address.
+        preset = shipped.get(name)
+        if preset and praw["base_url"].rstrip("/") == preset.base_url.rstrip("/"):
+            header_parser = preset.header_parser
+        else:
+            header_parser = praw.get("header_parser", "openai_compatible")
         providers[name] = ProviderConfig(
             base_url=praw["base_url"],
             api_keys=[r.secret for r in records],
-            header_parser=praw.get("header_parser", "openai_compatible"),
+            header_parser=header_parser,
             keys=records,
             key_strategy=praw.get("key_strategy", "most_headroom"),
         )
@@ -516,7 +527,9 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
 
 
 NON_CHAT_PATTERNS = ("whisper", "tts", "orpheus", "image", "lyria", "guard",
-                     "native-audio", "-live", "embedding", "rerank")
+                     "native-audio", "-live", "embed", "rerank", "ocr",
+                     "moderation", "transcribe", "deplot", "safety", "reward",
+                     "detector", "parse", "clip", "translate")
 _LOCAL_HOST_HINTS = ("localhost", "127.0.0.1", "::1")
 
 

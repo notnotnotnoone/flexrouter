@@ -12,15 +12,17 @@ classification. The router's existing quarantine/penalize/bench logic
 """
 from __future__ import annotations
 
+import json
 import re
 import threading
-from dataclasses import asdict, dataclass
+from collections import deque
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from flexrouter.decider import Decider, ErrorVerdict
-from flexrouter.redact import scrub
+from flexrouter.redact import scrub, scrub_body
 from flexrouter.store import harden, read_json, write_json
 
 _PERMANENT_ISH = {404: "model_gone", 410: "model_gone"}
@@ -83,6 +85,20 @@ class ErrorBrainEntry:
     last_at: str
     sample: str
     flagged_for_review: bool = False
+    # The latest occurrence in full: its HTTP status and the provider's whole
+    # response body, scrubbed but never clipped.
+    status: Optional[int] = None
+    raw: str = ""
+    # "provider/model" -> how often it hit this error.
+    where: dict = field(default_factory=dict)
+    # The last RECENT_KEPT occurrences, newest first.
+    recent: list = field(default_factory=list)
+    # What the classifier said the last time it was asked about this error.
+    decision: Optional[dict] = None
+
+
+RECENT_KEPT = 20
+DECIDER_LOG = "decider_calls.jsonl"
 
 
 def _now_iso() -> str:
@@ -120,13 +136,17 @@ class ErrorBrain:
             write_json(self._path, snapshot)
             harden(self._path)
 
-    def classify(self, text: str, status: Optional[int], now: Optional[str] = None) -> ErrorVerdict:
+    def classify(self, text: str, status: Optional[int], now: Optional[str] = None, *,
+                 provider: Optional[str] = None, model: Optional[str] = None,
+                 trace_id: Optional[str] = None, body: Optional[str] = None) -> ErrorVerdict:
         clean = scrub(text or "")
         now = now or _now_iso()
+        seen = {"at": now, "provider": provider, "model": model, "status": status,
+                "trace_id": trace_id, "raw": scrub_body(body) if body else ""}
 
         rule = classify_by_rule(clean, status)
         if rule is not None and not self._is_contestable(status):
-            self._record(fingerprint(clean), rule, clean, now)
+            self._record(fingerprint(clean), rule, clean, now, seen)
             return rule
 
         fp = fingerprint(clean)
@@ -135,17 +155,64 @@ class ErrorBrain:
             if existing is not None:
                 existing.seen += 1
                 existing.last_at = now
+                self._note(existing, seen)
                 self._save()
                 return ErrorVerdict(existing.verdict, existing.source, existing.confidence)
 
-        verdict = self._decider.classify_error(clean, status)
-        if rule is not None and verdict.confidence <= self.rule_prior_confidence:
+        asked = self._decider.classify_error(clean, status)
+        verdict = asked
+        if rule is not None and asked.confidence <= self.rule_prior_confidence:
             # The classifier is no surer than the prior, so the rule stands --
             # at its own full confidence, not the prior's. The prior exists to
             # decide who wins, not to weaken the answer that did.
             verdict = rule
-        self._record(fp, verdict, clean, now)
+        decision = None
+        if asked.insight is not None:
+            decision = {**_scrubbed(asked.insight), "at": now, "verdict": asked.verdict,
+                        "confidence": asked.confidence,
+                        "rule_said": rule.verdict if rule else None,
+                        "used": verdict.verdict,
+                        "overturned_rule": bool(rule and verdict is asked
+                                                and asked.verdict != rule.verdict)}
+            self._log_decider_call({**decision, "error_text": clean, "status": status,
+                                    "error_provider": provider, "error_model": model,
+                                    "trace_id": trace_id})
+        self._record(fp, verdict, clean, now, seen, decision)
         return verdict
+
+    def _log_decider_call(self, row: dict) -> None:
+        with self._lock:
+            path = self._path.parent / DECIDER_LOG
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row) + "\n")
+            harden(path)
+
+    def decider_calls(self, limit: int = 200) -> list[dict]:
+        """The most recent classifier calls, newest first."""
+        path = self._path.parent / DECIDER_LOG
+        if not path.exists():
+            return []
+        with path.open(encoding="utf-8", errors="replace") as f:
+            lines = deque(f, maxlen=limit)
+        rows = []
+        for line in reversed(lines):
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+        return rows
+
+    @staticmethod
+    def _note(entry: ErrorBrainEntry, seen: dict) -> None:
+        where = f"{seen['provider']}/{seen['model']}" if seen.get("provider") else None
+        if where:
+            entry.where[where] = entry.where.get(where, 0) + 1
+        if seen.get("status") is not None:
+            entry.status = seen["status"]
+        if seen.get("raw"):
+            entry.raw = seen["raw"]
+        occurrence = {k: seen[k] for k in ("at", "provider", "model", "status", "trace_id")}
+        entry.recent = [occurrence, *entry.recent][:RECENT_KEPT]
 
     def _is_contestable(self, status: Optional[int]) -> bool:
         """Whether a rule's answer for this status is open to challenge.
@@ -178,13 +245,18 @@ class ErrorBrain:
             entry.flagged_for_review = False
             self._save()
 
-    def _record(self, fp: str, verdict: ErrorVerdict, sample: str, now: str) -> None:
+    def _record(self, fp: str, verdict: ErrorVerdict, sample: str, now: str,
+                seen: Optional[dict] = None, decision: Optional[dict] = None) -> None:
       with self._lock:
         existing = self._entries.get(fp)
         if existing is not None and existing.source == "manual":
             # Manual entries are never overwritten — only bookkeeping moves.
             existing.seen += 1
             existing.last_at = now
+            if seen:
+                self._note(existing, seen)
+            if decision:
+                existing.decision = decision
             self._save()
             return
         if existing is not None:
@@ -196,9 +268,19 @@ class ErrorBrain:
             existing.flagged_for_review = verdict.confidence < self._threshold
             self._entries[fp] = existing
         else:
-            self._entries[fp] = ErrorBrainEntry(
+            existing = self._entries[fp] = ErrorBrainEntry(
                 verdict=verdict.verdict, source=verdict.source, confidence=verdict.confidence,
                 seen=1, first_at=now, last_at=now, sample=sample,
                 flagged_for_review=verdict.confidence < self._threshold,
             )
+        if seen:
+            self._note(existing, seen)
+        if decision:
+            existing.decision = decision
         self._save()
+
+
+def _scrubbed(insight: dict) -> dict:
+    """A classifier's insight with its free-text fields scrubbed for storage."""
+    return {k: scrub_body(v) if isinstance(v, str) and k in ("error", "reply") else v
+            for k, v in insight.items()}

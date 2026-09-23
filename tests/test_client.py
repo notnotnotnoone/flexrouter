@@ -112,14 +112,18 @@ async def test_passes_extra_kwargs():
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_403_raises_router_error():
+async def test_403_is_a_refusal_of_this_model_not_a_bad_key():
+    # Seen live: Mistral answers 403 "labs_not_enabled" for one Labs model
+    # while the same key serves every other model fine.
     respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
-        return_value=httpx.Response(403, json={"error": {"message": "forbidden"}})
+        return_value=httpx.Response(403, json={"error": {"message": "Labs models not enabled"}})
     )
-    from flexrouter.exceptions import RouterError
+    from flexrouter.client import ProviderError
     async with AsyncClient() as client:
-        with pytest.raises(RouterError, match="Auth failure"):
+        with pytest.raises(ProviderError, match="Labs models not enabled") as info:
             await client.chat(ROUTE, MESSAGES)
+    assert info.value.status_code == 403
+    assert info.value.is_permanent
 
 @pytest.mark.asyncio
 @respx.mock

@@ -836,6 +836,30 @@ table.log td { padding: 8px 12px; }
 
 .load-more { display: flex; justify-content: center; padding: 14px; border-top: 1px solid var(--rule); }
 
+/* ── logs ──────────────────────────────────────────────── */
+
+.log-lines { max-height: calc(100vh - 250px); overflow-y: auto; padding: 6px 0; }
+.log-row {
+  display: grid;
+  grid-template-columns: 92px 84px minmax(110px, 190px) 1fr;
+  gap: 10px;
+  padding: 4px 14px;
+  font-size: 12px;
+  line-height: 1.55;
+  border-left: 3px solid transparent;
+}
+.log-time { white-space: nowrap; }
+.log-level { font: 500 10px/1.9 var(--mono); letter-spacing: .08em; text-align: center; }
+.log-level-debug { color: var(--ink-4); }
+.log-level-info { color: var(--blue); }
+.log-level-warning { color: var(--warn); }
+.log-level-error, .log-level-critical { color: var(--bad); }
+.log-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.log-msg { white-space: pre-wrap; word-break: break-word; color: var(--ink-2); }
+.log-row[data-level="WARNING"] { background: var(--warn-wash); border-left-color: var(--warn); }
+.log-row[data-level="ERROR"],
+.log-row[data-level="CRITICAL"] { background: var(--bad-wash); border-left-color: var(--bad); }
+
 /* ── allowance ─────────────────────────────────────────── */
 
 .stack-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -922,9 +946,33 @@ table.log td { padding: 8px 12px; }
   color: var(--ink-2);
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 120px;
+}
+.brain-raw {
+  margin: 6px 0 0;
+  padding: 9px 11px;
+  background: var(--ground);
+  border: 1px solid var(--rule);
+  color: var(--ink-2);
+  font: 400 11.5px/1.5 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 420px;
   overflow: auto;
 }
+.brain-card details > summary { font: 500 11px var(--mono); color: var(--ink-3); cursor: pointer; }
+.brain-note { margin: 6px 0 0; color: var(--ink-2); font-size: 12px; }
+.brain-facts { margin-top: 4px; font-size: 11px; color: var(--ink-3); word-break: break-word; }
+.brain-probs { display: grid; gap: 4px; margin-top: 8px; }
+.brain-prob { display: grid; grid-template-columns: minmax(120px, 170px) minmax(0, 1fr) 44px; align-items: center; gap: 10px; }
+.brain-prob-name { font: 400 11.5px var(--mono); color: var(--ink-2); }
+.brain-prob .n { text-align: right; }
+.brain-wheres { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.brain-where { font: 400 11px var(--mono); padding: 2px 7px; border: 1px solid var(--rule); color: var(--ink-2); }
+.brain-recent, .brain-calls { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.brain-recent li, .brain-call-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; font-size: 12px; }
+.brain-calls > li { padding: 10px 0; border-top: 1px solid var(--rule); }
+.brain-failure { margin-top: 12px; padding-left: 10px; border-left: 2px solid var(--rule-2); }
+.brain-failure.is-current { border-left-color: var(--bad); }
 .brain-foot { display: flex; align-items: center; gap: 10px; }
 .brain-label { font: 500 10px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--ink-4); }
 .correct-form { display: flex; gap: 6px; align-items: center; }
@@ -1128,6 +1176,7 @@ tbody tr.m-detail:hover td { background: var(--ground); }
 .pg-log .empty { margin: auto; max-width: 420px; text-align: center; align-items: center; }
 .pg-msg { display: flex; flex-direction: column; gap: 6px; max-width: 78ch; }
 .pg-user { align-self: flex-end; align-items: flex-end; }
+.pg-compare-msg { max-width: none; width: 100%; }
 .pg-who { font: 500 10px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--ink-4); }
 .pg-text { white-space: pre-wrap; word-break: break-word; line-height: 1.6; padding: 10px 14px; border: 1px solid var(--rule); background: var(--raise); min-height: 40px; min-width: 60px; }
 .pg-user .pg-text { background: var(--green-wash); border-color: rgba(52, 211, 153, .3); }
@@ -1145,6 +1194,11 @@ tbody tr.m-detail:hover td { background: var(--ground); }
 .pg-composer textarea { width: 100%; max-width: none; font-family: var(--sans); font-size: 13px; resize: vertical; }
 .pg-actions { display: flex; align-items: center; gap: 8px; }
 .pg-actions button:disabled { opacity: .5; cursor: wait; }
+
+.pg-compare-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; width: 100%; }
+.pg-compare-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pg-compare-head { font: 500 10px var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--ink-4); }
+.pg-compare-card .pg-text { min-height: 60px; }
 
 /* ── command bar and shortcut sheet ────────────────────── */
 

@@ -297,16 +297,16 @@ def test_every_provider_dead_still_raises_a_clear_auth_error(two_provider_config
         router.generate([{"role": "user", "content": "hi"}], tier="low", wait=False)
 
 
-def test_402_quarantines_the_whole_provider():
-    # Seen live: cerebras answered 402 "Payment required" and the router
-    # backed off 30s, 60s, 120s, 240s, 480s against the same model — a
-    # billing problem doesn't resolve on a timer.
-    assert ProviderError("nope", status_code=402).is_provider_wide is True
-    assert ProviderError("nope", status_code=500).is_provider_wide is False
+def test_402_quarantines_the_model_not_the_provider():
+    # A billing problem doesn't resolve on a timer (seen live on cerebras),
+    # so 402 is permanent. But it is not always account-wide: llm7 answers
+    # 402 for its paid models while its free ones keep working, and a
+    # provider-wide quarantine took those down with it.
+    assert ProviderError("nope", status_code=402).is_permanent is True
 
 
 @respx.mock
-def test_payment_required_sidelines_provider_and_rotates(two_provider_config):
+def test_payment_required_sidelines_the_model_and_rotates(two_provider_config):
     respx.post(CHAT_URL).mock(return_value=httpx.Response(
         402, json={"message": "Payment required to access this resource."}))
     respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
@@ -317,8 +317,9 @@ def test_payment_required_sidelines_provider_and_rotates(two_provider_config):
 
     assert result["choices"][0]["message"]["content"] == "hello"
     pens = router._engine._penalties
-    assert pens.is_quarantined("groq", "any-model-at-all") is True
-    assert "Payment required" in pens.quarantine_reason("groq", "whatever")
+    assert pens.is_quarantined("groq", "llama-3.1-8b-instant") is True
+    assert "Payment required" in pens.quarantine_reason("groq", "llama-3.1-8b-instant")
+    assert pens.is_quarantined("groq", "some-free-model") is False
 
 
 @respx.mock

@@ -29,6 +29,8 @@ ICONS: dict[str, str] = {
     "meter": '<path d="M3 3v18h18"/><path d="M7 16v-4"/><path d="M11 16V8"/>'
              '<path d="M15 16v-6"/><path d="M19 16V5"/>',
     "terminal": '<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',
+    "scroll": '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/>'
+              '<path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
     "settings": '<path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>',
     "search": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
     "x": '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',

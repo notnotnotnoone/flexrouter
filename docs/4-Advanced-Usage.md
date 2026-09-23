@@ -1,6 +1,6 @@
 # Advanced Usage
 
-**Goal:** Master session stickiness, multi-key round-robin, retry strategies, cost tracking, and the dashboard.
+**Goal:** Master session stickiness, multi-key round-robin, retry strategies, cost tracking, and monitoring from the dashboard or the TUI.
 
 > **Everything on this page needs the service running.** `FlexRouter` is a
 > client: it sends your request to the one flexrouter service on this machine,
@@ -218,7 +218,7 @@ Cost per token varies by model and provider. flexrouter uses standard pricing.
 
 ### View Budget Status
 
-Check the dashboard **Account Status** tab, or read the health file:
+Check the dashboard **Account Status** tab (or the TUI's **Overview** tab), or read the health file:
 
 ```python
 import json
@@ -311,7 +311,8 @@ When `vision=True` is requested, only models with `vision: true` are considered.
 
 ## Dashboard: Live Monitoring
 
-Start the dashboard:
+The dashboard is the main interface to a running flexrouter — telemetry, chat,
+logs, spending and settings on one port. Start it:
 
 ```bash
 flexrouter dashboard
@@ -383,6 +384,57 @@ Changes apply immediately (hot-reload).
 ### Tab 6: Setup
 
 A reminder of how flexrouter is set up: where it keeps your settings and keys (`flexrouter doctor`), how to add a key (`flexrouter keys add <provider>`), and what a `buckets:` entry looks like. It is a page to read, not a wizard — nothing on it changes anything.
+
+---
+
+## Logging and the Logs page
+
+The dashboard already shows every *request* (the Requests page). `--log` adds
+the server's own side of the story — startup, routing warnings, provider
+errors, and the HTTP lines uvicorn writes:
+
+```bash
+flexrouter dashboard --log
+```
+
+With the flag on, the dashboard grows a **Logs** page under *System* in the
+menu. It tails the log live, newest first, with each level color-coded —
+warnings washed amber, errors red — so a bad provider stands out without
+reading a thing. It is also in the Ctrl+K command bar, and the raw file is
+just a file, so `Get-Content`/`tail -f` on it works too.
+
+**Where it writes:** `flexrouter.log` in the state directory (`flexrouter doctor`
+shows where that is). The file rotates at 5 MB and keeps three backups, so it
+can never grow past roughly 20 MB.
+
+**Without the flag**, nothing writes a log file, the menu shows no Logs link,
+and `/logs` answers 404 — the dashboard looks exactly as it always did.
+
+---
+
+## Terminal UI: Monitoring Without a Browser
+
+```bash
+flexrouter tui
+```
+
+The same router, in your terminal, split into four tabs — and it works whether
+or not the service is running, because it reads your flexrouter home directly
+rather than talking to a live service:
+
+| Tab | Shows |
+|---|---|
+| **Overview** | Totals and today's spend per provider, straight from what the service has recorded |
+| **Keys** | Every provider, with the keys you have added (masked, never in full). Add a key, remove one, or switch one off without leaving the screen |
+| **Requests** | Your recent requests, newest first |
+| **Doctor** | Where your settings, keys, and records live, and which key each provider will use |
+
+Press `a` to add a key, `d` to remove the selected one, `r` to refresh, `q` to
+quit. The tabs refresh on their own every couple of seconds.
+
+For anything interactive — chatting with a bucket, editing settings, deep
+request logs — use the dashboard; the TUI covers status and key management at
+a glance. One-shot terminal output without any UI: `flexrouter status`.
 
 ---
 

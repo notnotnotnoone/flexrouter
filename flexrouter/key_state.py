@@ -49,7 +49,9 @@ class KeyStateStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._states: dict[str, KeyState] = {}
         for k, v in read_json(self._path, default={}).items():
-            self._states[k] = KeyState(**v)
+            # A request cannot outlive the process that started it, so a count
+            # left on disk by a crash would block the key forever.
+            self._states[k] = KeyState(**{**v, "active_requests": 0})
 
     def _key(self, provider: str, key_id: str) -> str:
         return f"{provider}:{key_id}"
