@@ -410,6 +410,54 @@
     log.innerHTML = '<div class="empty"><p>Cleared. Nothing was saved.</p></div>';
   });
 
+  /* ── Buckets: Try it ─────────────────────────────────────── */
+  /* One real, one-token request through the bucket; the result names who
+     answered and links to the request's journey. */
+
+  document.addEventListener("click", async function (e) {
+    var btn = e.target.closest && e.target.closest("[data-try]");
+    if (!btn || btn.disabled) return;
+    var bucket = btn.getAttribute("data-try");
+    var out = document.getElementById("try-" + bucket);
+    btn.disabled = true;
+    out.className = "try-result shimmer";
+    out.textContent = "Sending one small request through " + bucket + "...";
+    var info = null, error = "";
+    try {
+      var r = await fetch("/playground/chat", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: bucket, max_tokens: 1,
+                               messages: [{ role: "user", content: "Reply with OK." }] })
+      });
+      var text = await r.text();
+      var m = /event: flexrouter\ndata: (.*)\n/.exec(text);
+      if (m) info = JSON.parse(m[1]);
+      if (!r.ok) error = "HTTP " + r.status;
+    } catch (err) { error = err.message; }
+    out.className = "try-result";
+    out.textContent = "";
+    var word = document.createElement("span");
+    if (info) {
+      word.className = "outcome outcome-" + info.outcome;
+      word.textContent = info.outcome.toUpperCase();
+      out.appendChild(word);
+      var what = document.createElement("span");
+      what.textContent = (info.answered_by ? "answered by " + info.answered_by : "nothing answered") +
+        " in " + info.ms.toLocaleString() + " ms";
+      out.appendChild(what);
+      var link = document.createElement("a");
+      link.href = "/requests?id=" + encodeURIComponent(info.id);
+      link.setAttribute("hx-get", "/requests/" + encodeURIComponent(info.id) + "/journey");
+      link.setAttribute("hx-target", "#sheet-root");
+      link.textContent = "See the path it took";
+      out.appendChild(link);
+      if (window.htmx) htmx.process(out);
+    } else {
+      out.textContent = "Not sent: " + (error || "no answer");
+    }
+    btn.disabled = false;
+  });
+
   /* ── Ctrl+K command bar ──────────────────────────────────── */
 
   var index = null, hits = [], active = 0;

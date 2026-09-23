@@ -618,14 +618,6 @@ def _rank_proposal_body(changes: list, skipped_manual: list) -> str:
     )
 
 
-def _bucket_verdict(row) -> tuple[str, str]:
-    if row.in_the_running:
-        return "ok", "would answer"
-    if row.available:
-        return "warn", "available, but outscored right now"
-    return "bad", row.detail or (row.reason or "unavailable")
-
-
 def _add_model_form(bucket: str) -> str:
     return tag(
         "form",
@@ -648,45 +640,6 @@ def _add_bucket_form() -> str:
         _input(type="text", name="name", placeholder="bucket name") + " "
         + tag("button", "Add bucket", type="submit"),
         method="post", action="/buckets",
-    )
-
-
-def _buckets_body(router, banner: str = "") -> str:
-    all_buckets = facts.buckets(router)
-
-    sections = []
-    for b in all_buckets:
-        header = tag("tr", "".join(tag("th", h) for h in [
-            "Provider", "Model", "Score", "Verdict",
-        ]))
-        rows = [header]
-        for row in b.models:
-            state, verdict = _bucket_verdict(row)
-            rows.append(tag("tr", "".join([
-                tag("td", esc(row.provider)),
-                tag("td", esc(row.model)),
-                tag("td", esc(row.score)),
-                tag("td", esc(verdict), cls=f"state-{state}"),
-            ])))
-        sections.append(
-            tag("h3", esc(b.name))
-            + (tag("table", "".join(rows)) if b.models else tag("p", "Empty.", cls="note"))
-            + _add_model_form(b.name)
-        )
-
-    body = "".join(sections) if sections else tag("p", "No buckets are configured yet.", cls="note")
-
-    return (
-        tag("h1", "Buckets", cls="page-title")
-        + banner
-        + tag("p", "What each bucket can pick from right now, best score "
-                   "first. \"Would answer\" means a real request could "
-                   "land on this model - the engine picks randomly among "
-                   "everything within 20% of the top score, so more than "
-                   "one model can carry that verdict.", cls="lede")
-        + body
-        + tag("h3", "Add a bucket")
-        + _add_bucket_form()
     )
 
 
@@ -1063,7 +1016,9 @@ def allowance_page(fragment: str = "") -> HTMLResponse:
 @pages.get("/buckets", response_class=HTMLResponse, include_in_schema=False)
 def buckets_page(ok: str = "", message: str = "") -> HTMLResponse:
     banner = _message_banner(ok, message)
-    return HTMLResponse(page("Buckets", "buckets", _buckets_body(_live_router(), banner)))
+    from flexrouter.dashboard import buckets_page
+    return HTMLResponse(page("Buckets", "buckets", buckets_page.body(
+        _live_router(), banner, _add_model_form, _add_bucket_form())))
 
 
 @pages.post("/buckets", include_in_schema=False)
