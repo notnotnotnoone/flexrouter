@@ -23,6 +23,7 @@ from flexrouter import score_facts
 from flexrouter import service_keys
 from flexrouter.dashboard import (facts, keytest, overview, pending_actions,
                                   ranking, settings_write, ui)
+from flexrouter.dashboard import allowance_page as allowance_page_mod
 from flexrouter.dashboard import requests_page as requests_page_mod
 from flexrouter.dashboard.render import attrs, esc, page, tag
 
@@ -747,49 +748,6 @@ def _brain_body(router) -> str:
     )
 
 
-def _allowance_body(router) -> str:
-    rows_data = facts.allowance(router)
-    if not rows_data:
-        return tag("h1", "Allowance", cls="page-title") + tag("p", "No models configured.", cls="note")
-
-    header = tag("tr", "".join(tag("th", h) for h in [
-        "Provider", "Model", "Your caps", "Provider headroom",
-    ]))
-    rows = [header]
-    for r in rows_data:
-        caps = ", ".join(f"{k} {v}" for k, v in r.quotas.items()) or "none set"
-        if not r.quotas:
-            cap_cell = tag("td", esc(caps))
-        else:
-            text_ = caps if r.quota_ok else (
-                f"{caps} - used up, back in {int(r.quota_wait_seconds)}s")
-            cap_cell = tag("td", esc(text_), cls=f"state-{'ok' if r.quota_ok else 'bad'}")
-
-        if r.provider_rate_exhausted:
-            headroom = (
-                f"exhausted, back in {int(r.provider_available_at - time.time())}s"
-                if r.provider_available_at else "exhausted"
-            )
-            headroom_cell = tag("td", esc(headroom), cls="state-bad")
-        else:
-            headroom_cell = tag("td", "ok", cls="state-ok")
-
-        rows.append(tag("tr", "".join([
-            tag("td", esc(r.provider)),
-            tag("td", esc(r.model)),
-            cap_cell,
-            headroom_cell,
-        ])))
-
-    return (
-        tag("h1", "Allowance", cls="page-title")
-        + tag("p", "Free-tier headroom, not money - nothing here tracks "
-                   "cost, because nothing in the service records it.",
-              cls="lede")
-        + tag("table", "".join(rows))
-    )
-
-
 _INT_SETTINGS = frozenset({
     "port", "dashboard_port", "window_seconds", "penalty_base_seconds",
     "penalty_max_seconds", "session_ttl_minutes", "sample_interval_seconds",
@@ -1115,8 +1073,11 @@ def brain_page() -> HTMLResponse:
 
 
 @pages.get("/allowance", response_class=HTMLResponse, include_in_schema=False)
-def allowance_page() -> HTMLResponse:
-    return HTMLResponse(page("Allowance", "allowance", _allowance_body(_live_router())))
+def allowance_page(fragment: str = "") -> HTMLResponse:
+    router = _live_router()
+    if fragment:
+        return HTMLResponse(allowance_page_mod.inner(router))
+    return HTMLResponse(page("Allowance", "allowance", allowance_page_mod.body(router)))
 
 
 @pages.get("/buckets", response_class=HTMLResponse, include_in_schema=False)

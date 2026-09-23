@@ -93,6 +93,42 @@ def meter(fraction: float | None, *, cells: int = 20, label: str = "",
             f'data-level="{level}" data-value="{pct}">{body}</div>')
 
 
+def stacked_bar(parts: list[tuple[str, float, str]], *, empty_share: float = 0.0) -> str:
+    """One bar made of segments - (label, amount, css colour) each - sized by
+    amount. `empty_share` adds a dark tail for what is already used up."""
+    segs = "".join(
+        f'<span class="stacked-seg" style="flex-grow:{max(amount, 0):.4f};background:{esc(color)}" '
+        f'title="{esc(label)}"></span>'
+        for label, amount, color in parts if amount > 0)
+    if empty_share > 0:
+        segs += f'<span class="stacked-seg stacked-used" style="flex-grow:{empty_share:.4f}"></span>'
+    return f'<div class="stacked" role="img" aria-label="Headroom by provider">{segs}</div>'
+
+
+def countdown(at_epoch: float | None, *, prefix: str = "Resets in") -> str:
+    """Time until `at_epoch`, ticked down every second by app.js."""
+    if not at_epoch:
+        return ""
+    import time
+    left = max(0, int(at_epoch - time.time()))
+    return tag("span", esc(f"{prefix} {duration(left)}"), cls="countdown",
+               **{"data-countdown": f"{at_epoch:.0f}", "data-prefix": prefix})
+
+
+def duration(seconds: int) -> str:
+    """4d 2h · 2h 13m · 3m 05s · 41s"""
+    d, rem = divmod(int(seconds), 86400)
+    h, rem = divmod(rem, 3600)
+    m, s = divmod(rem, 60)
+    if d:
+        return f"{d}d {h}h"
+    if h:
+        return f"{h}h {m}m"
+    if m:
+        return f"{m}m {s:02d}s"
+    return f"{s}s"
+
+
 def tag_(text: str, kind: str = "") -> str:
     """A small mono label, e.g. VISION or PROVIDER SAYS."""
     return tag("span", esc(text), cls=f"tag {kind}".strip())

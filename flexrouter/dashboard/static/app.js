@@ -197,6 +197,34 @@
     lastMarker = mk ? mk.style.transform : null;
   });
 
+  /* ── countdowns ──────────────────────────────────────────── */
+  /* Server renders "Resets in 2h 13m" with the target time attached; this
+     keeps it true between refreshes. At zero it says so and stops. */
+
+  function duration(s) {
+    var d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600),
+        m = Math.floor(s % 3600 / 60), sec = s % 60;
+    if (d) return d + "d " + h + "h";
+    if (h) return h + "h " + m + "m";
+    if (m) return m + "m " + (sec < 10 ? "0" : "") + sec + "s";
+    return sec + "s";
+  }
+
+  setInterval(function () {
+    var now = Date.now() / 1000;
+    each(document.querySelectorAll("[data-countdown]"), function (el) {
+      var left = Math.max(0, Math.round(parseFloat(el.getAttribute("data-countdown")) - now));
+      if (left === 0) {
+        if (!el.classList.contains("is-done")) {
+          el.textContent = "Back now";
+          el.classList.add("is-done", "status-ok");
+        }
+        return;
+      }
+      el.textContent = (el.getAttribute("data-prefix") || "Resets in") + " " + duration(left);
+    });
+  }, 1000);
+
   /* ── the side panel ──────────────────────────────────────── */
 
   function sheetOpened(root) {

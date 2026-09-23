@@ -503,6 +503,97 @@ def allowance(router) -> list[AllowanceRow]:
     return sorted(rows, key=lambda r: (r.provider, r.model))
 
 
+_QUOTA_WINDOWS = {"rpd": ("day", 86400), "rph": ("hour", 3600)}
+
+
+def _quota_usage(router, provider: str, model: str, quotas: dict, now: float) -> list[dict]:
+    """The owner's own caps on one model, with what has been used of each.
+
+    `frees_at` is when the next request becomes allowed again - only set
+    when the cap is actually reached. These windows roll (the last 24
+    hours, not "today"), so a full cap frees up one request at a time as
+    the oldest request in the window ages out.
+    """
+    stamps = sorted(router._quota_tracker._state.get(f"{provider}/{model}", []))
+    out = []
+    for q_type, limit in quotas.items():
+        if q_type not in _QUOTA_WINDOWS or not limit:
+            continue
+        word, seconds = _QUOTA_WINDOWS[q_type]
+        in_window = [t for t in stamps if t > now - seconds]
+        used = len(in_window)
+        frees_at = None
+        if used >= limit:
+            frees_at = in_window[used - limit] + seconds
+        out.append({"window": word, "used": used, "limit": int(limit),
+                    "frees_at": frees_at, "source": "yours"})
+    return sorted(out, key=lambda lim: 0 if lim["window"] == "day" else 1)
+
+
+def _provider_says(router, provider: str, model: str, now: float) -> list[dict]:
+    """What the provider's own response headers last said is left. The
+    provider rarely says out of how many, so no total is invented here."""
+    entry = router._rate_limit_store._data.get(f"{provider}/{model}", {})
+    out = []
+    for what, rem_key, reset_key in (("requests", "remaining_requests", "reset_requests_at"),
+                                     ("tokens", "remaining_tokens", "reset_tokens_at")):
+        if entry.get(rem_key) is None:
+            continue
+        reset = entry.get(reset_key)
+        out.append({"what": what, "remaining": int(entry[rem_key]),
+                    "resets_at": reset if reset and reset > now else None,
+                    "source": "provider"})
+    return out
+
+
+def allowance_groups(router, now: Optional[float] = None) -> list[dict]:
+    """Every configured model's limits, grouped by provider, providers in
+    name order. Each model lists the owner's caps (`limits`) and what the
+    provider last said (`provider_says`)."""
+    now = time.time() if now is None else now
+    by_provider: dict[str, list[dict]] = {}
+    seen = set()
+    for model_configs in router._cfg.tiers.values():
+        for mc in model_configs:
+            if (mc.provider, mc.model) in seen:
+                continue
+            seen.add((mc.provider, mc.model))
+            by_provider.setdefault(mc.provider, []).append({
+                "model": mc.model,
+                "limits": _quota_usage(router, mc.provider, mc.model, dict(mc.quotas or {}), now),
+                "provider_says": _provider_says(router, mc.provider, mc.model, now),
+                "exhausted_until": router._rate_limit_store.available_at(mc.provider, mc.model),
+            })
+    return [{"provider": p, "keys": _key_count(router, p),
+             "models": sorted(ms, key=lambda m: m["model"])}
+            for p, ms in sorted(by_provider.items())]
+
+
+def _key_count(router, provider: str) -> int:
+    pcfg = router._cfg.providers.get(provider)
+    if pcfg is None:
+        return 0
+    return len(getattr(pcfg, "keys", None) or getattr(pcfg, "api_keys", None) or [])
+
+
+def allowance_stack(router, now: Optional[float] = None) -> dict:
+    """Daily headroom summed across every provider - the whole point of
+    stacking free tiers, as one number. Only daily caps the owner has set
+    are counted: a provider that never said its total cannot be added up."""
+    parts = []
+    for g in allowance_groups(router, now):
+        total = used = 0
+        for m in g["models"]:
+            for lim in m["limits"]:
+                if lim["window"] == "day":
+                    total += lim["limit"]
+                    used += min(lim["used"], lim["limit"])
+        if total:
+            parts.append({"provider": g["provider"], "left": total - used, "total": total})
+    return {"parts": parts, "left": sum(p["left"] for p in parts),
+            "total": sum(p["total"] for p in parts), "providers": len(parts)}
+
+
 _SETTINGS_ATTR = {
     "port": "port", "dashboard_port": "port", "state_dir": "state_dir",
     "window_seconds": "window_seconds",
