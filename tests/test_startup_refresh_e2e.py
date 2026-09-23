@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from flexrouter.app import create_app
@@ -13,6 +14,7 @@ def _cfg(tmp_path):
     )
 
 
+@pytest.mark.real_startup_refresh
 def test_starting_the_real_service_leaves_a_catalog_pending_file(tmp_path, monkeypatch):
     monkeypatch.setattr("flexrouter._router.load_config", lambda _p: _cfg(tmp_path))
     from flexrouter import app as app_mod

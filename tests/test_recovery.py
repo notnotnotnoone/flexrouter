@@ -1,4 +1,3 @@
-import time
 import pytest
 from flexrouter.recovery import PenaltyBox
 
@@ -36,11 +35,11 @@ def test_clear_removes_penalty():
     pb.clear("groq", "llama")
     assert pb.is_penalized("groq", "llama") is False
 
-def test_penalty_expires():
+def test_penalty_expires(virtual_clock):
     pb = PenaltyBox(base_seconds=1, max_seconds=10)  # 1s penalty
     pb.penalize("groq", "llama")
     assert pb.is_penalized("groq", "llama") is True
-    time.sleep(1.1)
+    virtual_clock.advance(1.1)
     assert pb.is_penalized("groq", "llama") is False
 
 def test_penalty_until_returns_timestamp():
