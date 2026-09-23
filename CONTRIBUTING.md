@@ -50,7 +50,7 @@ uv run pytest -m browser
 Tag a release to publish to PyPI:
 
 ```bash
-git tag v0.1.0
+git tag v2.1.0
 git push origin master --tags
 ```
 

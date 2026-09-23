@@ -4,7 +4,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-22
+
 ### Added
+
+- **Redesigned dashboard.** A new shell and design system, rebuilt pages
+  (Overview, Requests, Allowance, What's broken, Error brain, Settings,
+  Buckets, Models), a Playground, a Ctrl+K command bar with keyboard
+  shortcuts, and live updates.
+- **Provider presets.** The provider catalogue ships as data; add a provider
+  from a preset and import the models its key can reach. Your own presets
+  layer over the shipped set.
+- **Key management from the dashboard.** Add, remove, disable and edit keys
+  (label, weight, globs, enabled) from a provider's page.
+- **Terminal UI** (`flexrouter tui`) with overview, keys, requests and doctor
+  tabs.
+- **Request ids and pricing.** Every attempt carries a request id, failovers
+  are counted from it, and models are priced with selectable time ranges.
 
 - **Error classifier (spec §4a).** `HttpDecider` sends an error text the
   built-in rules cannot name to any OpenAI-compatible endpoint, held to a JSON
@@ -49,6 +65,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Error classification runs via `asyncio.to_thread`, so a slow or unreachable
   classifier cannot stall the event loop for every in-flight request.
+- The test suite runs in under a minute instead of about seven and a half:
+  the router's own waits advance a virtual clock under test, the startup
+  catalogue refresh no longer calls real providers, and `pytest -n auto` is
+  supported.
 
 ## [0.1.0]
 

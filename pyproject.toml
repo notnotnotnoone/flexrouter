@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flexrouter"
-version = "0.1.0"
+version = "2.1.0"
 description = "Stack every provider's free-tier LLMs behind one OpenAI-compatible address, with automatic failover and a live dashboard"
 readme = "README.md"
 license = { file = "LICENSE" }
