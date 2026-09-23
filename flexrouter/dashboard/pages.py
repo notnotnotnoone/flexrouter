@@ -29,8 +29,6 @@ from flexrouter.dashboard.render import attrs, esc, page, tag
 
 pages = APIRouter()
 
-CSS_PATH = Path(__file__).parent / "wire.css"
-JS_PATH = Path(__file__).parent / "wire.js"
 
 
 def _input(**kw) -> str:
@@ -1429,19 +1427,6 @@ def _settings_body(router, banner: str = "") -> str:
         + tag("table", "".join(rows))
         + _service_keys_section()
     )
-
-
-@pages.get("/wire.css", include_in_schema=False)
-def stylesheet() -> Response:
-    return Response(CSS_PATH.read_text(encoding="utf-8"),
-                    media_type="text/css; charset=utf-8")
-
-
-@pages.get("/wire.js", include_in_schema=False)
-def script() -> Response:
-    """The Overview's live update. Optional by construction - see wire.js."""
-    return Response(JS_PATH.read_text(encoding="utf-8"),
-                    media_type="text/javascript; charset=utf-8")
 
 
 @pages.get("/", response_class=HTMLResponse, include_in_schema=False)

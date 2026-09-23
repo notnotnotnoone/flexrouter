@@ -241,13 +241,10 @@ def test_the_page_tells_the_poller_what_to_ask_for(client):
     assert 'data-poll=' in body
 
 
-def test_the_script_is_served_and_is_optional(client):
-    r = client.get("/wire.js")
-    assert r.status_code == 200
-    assert "javascript" in r.headers["content-type"]
-    # Deferred, so it can never block the first paint of a page that is
-    # already complete without it.
-    assert 'src="/wire.js" defer' in client.get("/").text
+def test_the_script_is_served_and_deferred(client):
+    assert client.get("/static/app.js").status_code == 200
+    assert "app.js?v=" in client.get("/").text
+    assert client.get("/wire.js").status_code == 404
 
 
 # ── failovers and money on the page ────────────────────────────────────

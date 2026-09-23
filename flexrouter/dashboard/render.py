@@ -1,8 +1,7 @@
 """HTML building blocks for the dashboard, plus the site's own menu.
 
-Deliberately not a template engine. The dashboard is a wireframe the owner
-intends to restyle himself, so the markup stays semantic and the whole of
-its appearance lives in one stylesheet. Most of this module - `esc`,
+Deliberately not a template engine: the markup stays semantic and the
+whole of its appearance lives in static/app.css. Most of this module - `esc`,
 `attrs`, `tag` - takes strings and returns strings, knowing nothing about
 flexrouter. `AREAS` and `_nav` are the exception: they carry flexrouter's
 own menu labels and know that the overview lives at `/`, because the menu
@@ -18,18 +17,19 @@ from __future__ import annotations
 
 from html import escape
 
-# (slug, label, group) for the nine areas, in the order they appear in the
-# menu. The group is the heading a slug sits under.
-AREAS: list[tuple[str, str, str]] = [
-    ("overview", "Overview", "The router"),
-    ("providers", "Providers & keys", "The router"),
-    ("models", "Models", "The router"),
-    ("buckets", "Buckets", "The router"),
-    ("requests", "Requests", "Traffic"),
-    ("broken", "What's broken", "Traffic"),
-    ("brain", "Error brain", "Traffic"),
-    ("allowance", "Allowance", "Traffic"),
-    ("settings", "Settings", "System"),
+# (slug, label, group, icon) for the nine areas, in the order they appear in
+# the menu. The group is the heading a slug sits under; the icon is a name
+# in `ui.ICONS`.
+AREAS: list[tuple[str, str, str, str]] = [
+    ("overview", "Overview", "The router", "gauge"),
+    ("providers", "Providers & keys", "The router", "plug"),
+    ("models", "Models", "The router", "boxes"),
+    ("buckets", "Buckets", "The router", "layers"),
+    ("requests", "Requests", "Traffic", "arrows"),
+    ("broken", "What's broken", "Traffic", "alert"),
+    ("brain", "Error brain", "Traffic", "brain"),
+    ("allowance", "Allowance", "Traffic", "meter"),
+    ("settings", "Settings", "System", "settings"),
 ]
 
 
@@ -68,39 +68,77 @@ def tag(name: str, body: str = "", **kw) -> str:
     return f"<{name}{attrs(kw)}>{body}</{name}>"
 
 
-def _nav(current: str) -> str:
+def _version() -> str:
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        return version("flexrouter")
+    except (ImportError, PackageNotFoundError):
+        return ""
+
+
+def _brand() -> str:
+    mark = tag("span", "<i></i><i></i><i></i><i></i>", cls="mark", **{"aria-hidden": "true"})
+    word = tag("span", tag("span", "flex", cls="wm-flex") + tag("span", "router", cls="wm-router"),
+               cls="wordmark")
+    return tag("a", mark + word, href="/", cls="nav-brand", **{"aria-label": "flexrouter home"})
+
+
+def _nav(current: str, badges: dict) -> str:
+    from flexrouter.dashboard import ui  # ui imports this module
     out = []
     seen_group = None
-    for slug, label, group in AREAS:
+    for slug, label, group, icon in AREAS:
         if group != seen_group:
             out.append(tag("h2", esc(group), cls="nav-group"))
             seen_group = group
         here = slug == current
+        count = badges.get(slug) or 0
+        badge = tag("span", esc(count), cls="nav-badge") if count else ""
         out.append(tag(
-            "a", esc(label),
+            "a", ui.icon(icon) + tag("span", esc(label)) + badge,
             # The Overview lives at the root, not at /overview, so that the
             # address the owner is given is just the service's own address.
             href="/" if slug == "overview" else f"/{slug}",
+            cls="nav-link",
             **{"aria-current": "page" if here else None},
         ))
-    return tag("nav", "".join(out), cls="nav")
+    out.append(tag("span", "", cls="nav-marker", **{"aria-hidden": "true"}))
+    version = _version()
+    foot = tag("div",
+               tag("span", "", cls="live-dot") + tag("span", "live")
+               + (tag("span", esc(f"v{version}")) if version else "")
+               + tag("kbd", "Ctrl K"),
+               cls="nav-foot")
+    return tag("nav", _brand() + tag("div", "".join(out), cls="nav-links") + foot, cls="nav")
 
 
-def page(title: str, current: str, body: str) -> str:
-    """A complete document. `body` is already-rendered HTML."""
-    return (
-        "<!doctype html>"
-        '<html lang="en">'
-        "<head>"
+def page(title: str, current: str, body: str, *, badges: dict | None = None) -> str:
+    """A complete document. `body` is already-rendered HTML.
+
+    Scripts are deferred, so they never hold up the first paint; the page
+    is complete HTML before any of them runs.
+    """
+    from flexrouter.dashboard import assets, prefs, ui  # both import this module
+    motion = prefs.load().motion
+    scripts = "".join(
+        f'<script src="{assets.asset_url(rel)}" defer></script>'
+        for rel in ("vendor/htmx.min.js", "vendor/idiomorph-ext.min.js",
+                    "vendor/motion.js", "app.js"))
+    head = (
         '<meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>{esc(title)} - flexrouter</title>"
-        '<link rel="stylesheet" href="/wire.css">'
-        # Deferred, and a no-op on any page without a live block. Nothing
-        # on any page depends on it having run - see wire.js.
-        '<script src="/wire.js" defer></script>'
-        "</head>"
-        "<body>"
-        + tag("div", _nav(current) + tag("main", body, cls="main"), cls="shell")
+        f'<link rel="preload" href="{assets.asset_url("fonts/GeistMono.woff2")}" '
+        'as="font" type="font/woff2" crossorigin>'
+        f'<link rel="stylesheet" href="{assets.asset_url("app.css")}">'
+        + scripts
+    )
+    return (
+        f'<!doctype html><html lang="en" data-motion="{esc(motion)}">'
+        f"<head>{head}</head>"
+        '<body hx-boost="true" hx-ext="morph">'
+        + ui.sprite()
+        + tag("div", _nav(current, badges or {}) + tag("main", body, cls="main"), cls="shell")
+        + '<div class="toasts" id="toasts" aria-live="polite"></div>'
         + "</body></html>"
     )

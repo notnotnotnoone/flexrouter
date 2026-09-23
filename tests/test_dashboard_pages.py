@@ -19,19 +19,19 @@ def test_overview_is_served_at_the_root(client):
 
 
 def test_every_area_has_a_page(client):
-    for slug, _, _ in AREAS:
+    for slug, _, _, _ in AREAS:
         path = "/" if slug == "overview" else f"/{slug}"
         assert client.get(path).status_code == 200, slug
 
 
 def test_every_page_carries_the_whole_menu(client):
     body = client.get("/").text
-    for _, label, _ in AREAS:
+    for _, label, _, _ in AREAS:
         assert label.replace("&", "&amp;").replace("'", "&#x27;") in body
 
 
 def test_the_stylesheet_is_served(client):
-    r = client.get("/wire.css")
+    r = client.get("/static/app.css")
     assert r.status_code == 200
     assert "text/css" in r.headers["content-type"]
 
