@@ -543,6 +543,10 @@ def _models_body(router, banner: str = "") -> str:
         rows.append(tag("tr", tag("td", detail, colspan="6"), cls="m-detail", id=f"m-{n}",
                         hidden=True))
     provider_opts = "".join(f'<option value="{esc(p)}">{esc(p)}</option>' for p in providers)
+    if not rows:
+        rows.append(tag("tr", tag("td", "No models yet. Add a provider key on Providers & keys "
+                                        "and its models show up here.", colspan="6"),
+                        cls="models-empty"))
     filters = tag("div",
                   ui.icon("search")
                   + '<input type="search" placeholder="Find a model" aria-label="Find a model" '
@@ -584,11 +588,14 @@ def _models_body(router, banner: str = "") -> str:
                + tag("div", ui.button("Rank models with an AI", href="/models/rank",
                                       icon_name="brain"), cls="page-actions"),
                cls="page-head")
-    legend = tag("p", "Tag styles say where a fact came from: "
-                 + tag("span", "solid", cls="cap cap-published") + " the provider says so, "
-                 + tag("span", "outlined", cls="cap cap-observed") + " seen working, "
-                 + tag("span", "faded", cls="cap cap-guessed") + " a guess, "
-                 + tag("span", "underlined", cls="cap cap-manual") + " set by you.",
+    legend = tag("div", tag("span", "Tag styles say where a fact came from:")
+                 + "".join(tag("span", tag("span", label, cls=f"cap cap-{kind}") + esc(meaning),
+                               cls="cap-item")
+                           for label, kind, meaning in [
+                               ("solid", "published", "the provider says so"),
+                               ("outlined", "observed", "seen working"),
+                               ("faded", "guessed", "a guess"),
+                               ("underlined", "manual", "set by you")]),
                  cls="note cap-legend")
     return (
         head + banner + filters

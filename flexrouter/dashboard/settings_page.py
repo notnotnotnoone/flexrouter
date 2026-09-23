@@ -202,8 +202,8 @@ def _backup() -> str:
                 + tag("form", tag("button", "Reset everything I changed", type="submit",
                                   cls="danger"),
                       method="post", action="/settings/reset-all",
-                      onsubmit="return confirm('Undo every change made from this dashboard? "
-                               "Your settings file is not touched.')"),
+                      **{"data-confirm": "Undo every change made from this dashboard? "
+                                        "Your settings file is not touched."}),
                 cls="set-actions")
             + tag("p", "A backup holds every change made from this dashboard and your dashboard "
                        "preferences. Keys are never included.", cls="note")

@@ -592,7 +592,7 @@
     box.hidden = false;
     if (M && motion() !== "off") {
       M.animate(box.querySelector(".palette-box"),
-        { opacity: [0, 1], transform: ["translateY(-8px) scale(.98)", "none"] },
+        { opacity: [0, 1], transform: ["translateY(-8px) scale(.98)", "translateY(0px) scale(1)"] },
         { duration: 0.18, ease: EASE });
     }
   }
@@ -740,6 +740,71 @@
     each(document.querySelectorAll(".toast-seed"), function (s) {
       toast(s.textContent, s.getAttribute("data-kind"));
       s.remove();
+  /* ── tooltips ────────────────────────────────────────────── */
+  /* title="" would show the OS bubble. Move the text into data-tip on the
+     way in, show our own box, and never put the title back. */
+
+  var tip = null;
+  function showTip(el) {
+    var text = el.getAttribute("data-tip");
+    if (el.hasAttribute("title")) {
+      text = el.getAttribute("title");
+      el.setAttribute("data-tip", text);
+      if (!el.hasAttribute("aria-label") && !el.textContent.trim()) el.setAttribute("aria-label", text);
+      el.removeAttribute("title");
+    }
+    if (!text) return;
+    if (!tip) { tip = document.createElement("div"); tip.className = "tip"; tip.setAttribute("role", "tooltip"); document.body.appendChild(tip); }
+    tip.textContent = text;
+    tip.hidden = false;
+    var r = el.getBoundingClientRect(), t = tip.getBoundingClientRect();
+    var left = Math.max(8, Math.min(r.left + r.width / 2 - t.width / 2, innerWidth - t.width - 8));
+    var top = r.top - t.height - 8;
+    if (top < 8) top = r.bottom + 8;
+    tip.style.left = left + "px";
+    tip.style.top = top + "px";
+  }
+  function hideTip() { if (tip) tip.hidden = true; }
+  function tipTarget(e) { return e.target.closest && e.target.closest("[title], [data-tip]"); }
+  document.addEventListener("mouseover", function (e) { var el = tipTarget(e); if (el) showTip(el); });
+  document.addEventListener("mouseout", function (e) { if (tipTarget(e)) hideTip(); });
+  document.addEventListener("focusin", function (e) { var el = tipTarget(e); if (el) showTip(el); });
+  document.addEventListener("focusout", hideTip);
+  document.addEventListener("scroll", hideTip, true);
+
+  /* ── confirm ─────────────────────────────────────────────── */
+  /* form[data-confirm] asks first in a themed box, not window.confirm(). */
+
+  document.addEventListener("submit", function (e) {
+    var form = e.target;
+    var question = form.getAttribute && form.getAttribute("data-confirm");
+    if (!question || form.__confirmed) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    var box = document.getElementById("confirm");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "palette";
+      box.id = "confirm";
+      box.setAttribute("role", "alertdialog");
+      box.setAttribute("aria-modal", "true");
+      box.innerHTML = '<div class="palette-box confirm-box"><p></p><div class="confirm-actions">'
+        + '<button type="button" data-no>Cancel</button>'
+        + '<button type="button" class="danger" data-yes>Yes, do it</button></div></div>';
+      box.addEventListener("click", function (ev) { if (ev.target === box || ev.target.closest("[data-no]")) closeDialogs(); });
+      document.body.appendChild(box);
+    }
+    box.querySelector("p").textContent = question;
+    box.querySelector("[data-yes]").onclick = function () {
+      closeDialogs();
+      form.__confirmed = true;
+      if (form.requestSubmit) form.requestSubmit(); else form.submit();
+      form.__confirmed = false;
+    };
+    openDialog("confirm");
+    box.querySelector("[data-no]").focus();
+  }, true);
+
     });
     var mk = document.querySelector(".nav-marker");
     if (navigated && mk && lastMarker) {

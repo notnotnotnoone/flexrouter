@@ -94,7 +94,7 @@ def test_page_carries_the_motion_preference(tmp_path, monkeypatch):
 
 def test_page_shows_the_wordmark_and_a_badge():
     html = render.page("Overview", "overview", "", badges={"broken": 2})
-    assert 'class="wm-router"' in html
+    assert 'class="wordmark">flexrouter<' in html
     assert 'class="nav-badge"' in html and ">2<" in html
 
 

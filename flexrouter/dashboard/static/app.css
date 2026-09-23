@@ -131,15 +131,17 @@ code, pre { font-family: var(--mono); font-size: 12px; }
   padding: 2px 8px 18px;
   text-decoration: none;
 }
-.mark { display: grid; grid-template-columns: repeat(2, 5px); gap: 2px; }
-.mark i { width: 5px; height: 5px; display: block; }
-.mark i:nth-child(1) { background: var(--green); }
-.mark i:nth-child(2) { background: var(--blue); }
-.mark i:nth-child(3) { background: var(--violet); }
-.mark i:nth-child(4) { background: var(--green); opacity: .45; }
-.wordmark { font: 600 16px/1 var(--mono); letter-spacing: -.02em; }
-.wm-flex { color: var(--ink); }
-.wm-router { color: var(--green); }
+.mark { display: block; flex: none; overflow: visible; }
+.mark circle:last-child { transition: filter 200ms var(--ease); }
+.nav-brand:hover .mark circle:last-child { filter: brightness(1.2); }
+.wordmark {
+  font: 700 19px/1 var(--sans);
+  letter-spacing: -.02em;
+  background: linear-gradient(90deg, var(--blue), var(--violet) 55%, var(--green));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
 
 .nav-group {
   font: 500 10px var(--mono);
@@ -470,7 +472,170 @@ input:focus, select:focus, textarea:focus {
   border-color: var(--green);
   box-shadow: 0 0 0 3px var(--green-wash);
 }
-input[type="checkbox"] { accent-color: var(--green); }
+
+/* ── native controls, re-skinned ─────────────────────────
+   Each rule below replaces a browser/OS default that looked foreign on
+   the black ground: select arrows, checkboxes, radios, number spinners,
+   the search clear button, the file picker, range sliders, <details>
+   triangles, scrollbars and the autofill tint. */
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background: var(--raise) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23a3a3a3' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 10px center;
+  cursor: pointer;
+}
+select:hover { border-color: var(--ink-4); }
+select option, select optgroup { background: var(--panel); color: var(--ink); }
+
+input[type="checkbox"], input[type="radio"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  margin: 0;
+  display: inline-grid;
+  place-content: center;
+  vertical-align: -3px;
+  background: var(--raise);
+  border: 1px solid var(--rule-2);
+  border-radius: 2px;
+  cursor: pointer;
+}
+input[type="radio"] { border-radius: 50%; }
+input[type="checkbox"]::before, input[type="radio"]::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  transform: scale(0);
+  transition: transform 120ms var(--ease);
+  background: var(--ground);
+}
+input[type="checkbox"]::before { clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%); }
+input[type="radio"]::before { width: 7px; height: 7px; border-radius: 50%; }
+input[type="checkbox"]:checked, input[type="radio"]:checked { background: var(--green); border-color: var(--green); }
+input[type="checkbox"]:checked::before, input[type="radio"]:checked::before { transform: scale(1); }
+input[type="checkbox"]:hover, input[type="radio"]:hover { border-color: var(--ink-4); }
+input[type="checkbox"]:checked:hover, input[type="radio"]:checked:hover { border-color: var(--green); }
+input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .4; cursor: not-allowed; }
+
+input[type="number"] { -moz-appearance: textfield; appearance: textfield; font-variant-numeric: tabular-nums; }
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+
+input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  width: 10px;
+  height: 10px;
+  cursor: pointer;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M1 1l8 8M9 1l-8 8' stroke='%23a3a3a3' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat center;
+}
+
+input[type="file"] { padding: 3px; font-size: 12px; color: var(--ink-3); cursor: pointer; }
+input[type="file"]::file-selector-button {
+  font: 500 11px/1 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--rule-2);
+  border-radius: 2px;
+  padding: 7px 10px;
+  margin-right: 10px;
+  cursor: pointer;
+  transition: border-color 160ms var(--ease);
+}
+input[type="file"]:hover::file-selector-button { border-color: var(--green); }
+
+input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 18px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+input[type="range"]:focus { box-shadow: none; }
+input[type="range"]::-webkit-slider-runnable-track { height: 2px; background: var(--rule-2); }
+input[type="range"]::-moz-range-track { height: 2px; background: var(--rule-2); }
+input[type="range"]::-moz-range-progress { height: 2px; background: var(--green); }
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -5px;
+  background: var(--green);
+  border: 2px solid var(--ground);
+  border-radius: 0;
+  box-shadow: 0 0 0 1px var(--green);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  background: var(--green);
+  border: 2px solid var(--ground);
+  border-radius: 0;
+  box-shadow: 0 0 0 1px var(--green);
+}
+input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 1px var(--green), 0 0 0 4px var(--green-wash); }
+
+input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--ink);
+  -webkit-box-shadow: 0 0 0 1000px var(--raise) inset;
+  caret-color: var(--ink);
+}
+
+summary { list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin: 0 9px 2px 1px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 160ms var(--ease);
+}
+details[open] > summary::before { transform: rotate(45deg); }
+
+textarea { resize: vertical; }
+
+/* Chromium ignores ::-webkit-scrollbar once scrollbar-color is set, so the
+   standard properties go to Firefox only. */
+@supports (-moz-appearance: none) {
+  * { scrollbar-color: var(--rule-2) transparent; scrollbar-width: thin; }
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--rule-2); border: 3px solid var(--ground); }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-4); }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* Stands in for the OS title bubble; app.js moves title="" into it. */
+.tip {
+  position: fixed;
+  z-index: 1000;
+  max-width: 280px;
+  padding: 6px 9px;
+  font: 400 11px/1.4 var(--mono);
+  color: var(--ink);
+  background: var(--raise);
+  border: 1px solid var(--rule-2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .6);
+  pointer-events: none;
+}
+.tip[hidden] { display: none; }
+
+/* Stands in for window.confirm(); app.js opens it for form[data-confirm]. */
+.confirm-box { padding: 18px; max-width: 440px; }
+.confirm-box p { margin: 0 0 16px; color: var(--ink); line-height: 1.5; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
 textarea { font-family: var(--mono); font-size: 12px; width: 100%; line-height: 1.5; }
 
 button {
@@ -641,7 +806,14 @@ table.matrix th { padding: 9px 14px; }
 .filters .icon { color: var(--ink-4); }
 .filters input[type="search"] { flex: 1; max-width: 360px; background: transparent; border-color: transparent; }
 .filters input[type="search"]:focus { border-color: var(--green); }
-.filters select { font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+.filters select {
+  margin-left: auto;
+  font: 500 11px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
 
 table.log td { padding: 8px 12px; }
 .req-row { cursor: pointer; }
@@ -889,13 +1061,16 @@ tbody tr.m-detail:hover td { background: var(--ground); }
   padding: 4px 6px;
   border: 1px solid transparent;
 }
-.cap-published { background: var(--ink-2); color: var(--ground); font-style: normal; font-weight: 600; }
+.cap-published { background: var(--green); border-color: var(--green); color: var(--ground); font-style: normal; font-weight: 600; }
 .cap-observed { border-color: var(--green); color: var(--green); }
 .cap-guessed { border-color: var(--rule-2); color: var(--ink-4); border-style: dashed; font-style: normal; }
 .cap-manual { border-color: var(--ink-2); color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
 .cap-unknown { color: var(--ink-4); border-color: var(--rule); }
 .cap-size { border-color: var(--rule-2); color: var(--ink-2); }
-.cap-legend .cap { margin: 0 2px; }
+.cap-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; max-width: none; margin: 12px 0 20px; }
+.cap-legend .cap-item { display: inline-flex; align-items: center; gap: 6px; margin-right: 10px; }
+.cap-legend ~ .box { margin-top: 16px; }
+.models-empty td { padding: 28px 14px; text-align: center; color: var(--ink-3); cursor: default; }
 
 .tray.has-items { border-color: rgba(251, 191, 36, .45); }
 .tray.has-items::before, .tray.has-items::after { border-color: var(--warn); }
@@ -945,7 +1120,7 @@ tbody tr.m-detail:hover td { background: var(--ground); }
 .pg-hint { color: var(--ink-4); font-size: 11px; }
 .pg-field select, .pg-field textarea, .pg-field input[type="number"] { width: 100%; max-width: none; }
 .pg-range { display: flex; align-items: center; gap: 10px; }
-.pg-range input { flex: 1; accent-color: var(--green); }
+.pg-range input { flex: 1; }
 .pg-range output { font: 500 12px var(--mono); width: 32px; text-align: right; }
 
 .pg-chat { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--rule); background: var(--panel); }
