@@ -29,11 +29,13 @@ from typing import Any, AsyncIterator, Optional
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from flexrouter.dashboard.api import (
     get_config, get_config_validation, get_health_current, get_last_refresh,
     get_logs, get_stats, get_status, get_uptime, post_config, run_refresh,
 )
+from flexrouter.dashboard.assets import STATIC_DIR
 from flexrouter.dashboard.pages import pages as dashboard_pages
 from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.probe import probe_key, stale_models
@@ -766,5 +768,6 @@ def create_app(config_path: str | None = None) -> FastAPI:
     app.include_router(v1)
     app.include_router(api)
     app.include_router(dashboard_pages)
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     return app
