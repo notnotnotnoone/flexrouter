@@ -241,6 +241,62 @@
     });
   });
 
+  /* ── filter by attribute (e.g. the Models provider picker) ── */
+
+  document.addEventListener("change", function (e) {
+    var sel = e.target;
+    var attr = sel.getAttribute && sel.getAttribute("data-filter-attr");
+    if (!attr) return;
+    var v = sel.value;
+    each(document.querySelectorAll(sel.getAttribute("data-filter-target")), function (row) {
+      row.hidden = !!v && row.getAttribute("data-" + attr) !== v;
+      var detail = document.getElementById(row.getAttribute("data-toggle-row"));
+      if (detail && row.hidden) detail.hidden = true;
+    });
+  });
+
+  /* ── sortable tables ─────────────────────────────────────── */
+  /* Click a header with data-sort=KEY; rows sort by their data-KEY. A row's
+     detail row (data-toggle-row) travels with it. */
+
+  document.addEventListener("click", function (e) {
+    var th = e.target.closest && e.target.closest("th[data-sort]");
+    if (!th) return;
+    var table = th.closest("table"), key = th.getAttribute("data-sort");
+    var dir = th.getAttribute("aria-sort") === "descending" ? "ascending" : "descending";
+    each(table.querySelectorAll("th[data-sort]"), function (h) { h.removeAttribute("aria-sort"); });
+    th.setAttribute("aria-sort", dir);
+    var tbody = table.tBodies[0];
+    var rows = Array.prototype.filter.call(tbody.rows, function (r) { return r.hasAttribute("data-" + key); });
+    rows.sort(function (a, b) {
+      var x = a.getAttribute("data-" + key), y = b.getAttribute("data-" + key);
+      var nx = parseFloat(x), ny = parseFloat(y);
+      var c = !isNaN(nx) && !isNaN(ny) ? nx - ny : x.localeCompare(y);
+      return dir === "ascending" ? c : -c;
+    });
+    rows.forEach(function (r) {
+      tbody.appendChild(r);
+      var d = document.getElementById(r.getAttribute("data-toggle-row"));
+      if (d) tbody.appendChild(d);
+    });
+  });
+
+  /* ── expanding detail rows (Models) ──────────────────────── */
+
+  document.addEventListener("click", function (e) {
+    var row = e.target.closest && e.target.closest("tr[data-toggle-row]");
+    if (!row || e.target.closest("a, input, select, textarea, form")) return;
+    var detail = document.getElementById(row.getAttribute("data-toggle-row"));
+    if (!detail) return;
+    var opening = detail.hidden;
+    detail.hidden = !opening;
+    row.classList.toggle("is-open", opening);
+    if (opening && M && motion() !== "off") {
+      M.animate(detail.querySelector(".m-detail-inner"),
+        { opacity: [0, 1], transform: ["translateY(-6px)", "none"] }, { duration: 0.2, ease: EASE });
+    }
+  });
+
   /* ── copy buttons ────────────────────────────────────────── */
 
   document.addEventListener("click", function (e) {

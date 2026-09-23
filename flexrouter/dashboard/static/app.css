@@ -857,6 +857,49 @@ table.log td { padding: 8px 12px; }
 .about-row { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 12px; padding: 6px 0; align-items: baseline; }
 .about-row code { color: var(--ink-2); word-break: break-all; }
 
+/* ── models ────────────────────────────────────────────── */
+
+.filters select + select { margin-left: 0; }
+.models-table th[data-sort] { cursor: pointer; user-select: none; }
+.models-table th[data-sort]::after { content: " ↕"; color: var(--ink-4); }
+.models-table th[aria-sort="ascending"]::after { content: " ↑"; color: var(--green); }
+.models-table th[aria-sort="descending"]::after { content: " ↓"; color: var(--green); }
+.m-row { cursor: pointer; }
+.m-row[hidden] { display: none; }
+.m-prov { display: block; font: 400 10px var(--mono); color: var(--ink-4); text-transform: uppercase; letter-spacing: .08em; }
+.m-name { font: 500 13px var(--mono); }
+.m-track { display: inline-block; vertical-align: middle; width: 80px; height: 6px; background: var(--cell-off); margin-right: 8px; }
+.m-bar { display: block; height: 100%; background: var(--green); }
+.m-score { font: 500 12px var(--mono); font-variant-numeric: tabular-nums; }
+.m-why { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+.m-open { padding: 5px 7px; background: transparent; border-color: var(--rule); transition: transform 200ms var(--ease); }
+.m-row.is-open .m-open { transform: rotate(90deg); border-color: var(--green); color: var(--green); }
+.m-detail > td { padding: 0; background: var(--ground); }
+.m-detail-inner { overflow: hidden; }
+.m-detail-body { padding: 14px 18px 18px; display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: flex-start; }
+.m-detail-body h4 { width: 100%; margin: 0; }
+.m-detail-body .grouped-form { margin: 0; }
+tbody tr.m-detail:hover td { background: var(--ground); }
+
+.caps { display: flex; flex-wrap: wrap; gap: 4px; }
+.cap {
+  font: 500 10px/1 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+}
+.cap-published { background: var(--ink-2); color: var(--ground); font-style: normal; font-weight: 600; }
+.cap-observed { border-color: var(--green); color: var(--green); }
+.cap-guessed { border-color: var(--rule-2); color: var(--ink-4); border-style: dashed; font-style: normal; }
+.cap-manual { border-color: var(--ink-2); color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+.cap-unknown { color: var(--ink-4); border-color: var(--rule); }
+.cap-size { border-color: var(--rule-2); color: var(--ink-2); }
+.cap-legend .cap { margin: 0 2px; }
+
+.tray.has-items { border-color: rgba(251, 191, 36, .45); }
+.tray.has-items::before, .tray.has-items::after { border-color: var(--warn); }
+
 /* ── buckets ───────────────────────────────────────────── */
 
 .bucket-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr)); gap: 16px; margin-bottom: 16px; align-items: start; }

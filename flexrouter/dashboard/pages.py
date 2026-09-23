@@ -391,10 +391,35 @@ def _provider_detail_body(detail, editable: dict, bucket_names: list,
     )
 
 
-def _cap_cell(fact) -> str:
+_CAP_SOURCE_WORDS = {
+    "published": "the provider says so",
+    "observed": "seen working",
+    "guessed": "nobody has said either way yet",
+    "manual": "you set it; nothing overrides it",
+}
+
+
+def _cap_cell(fact, name: str = "") -> str:
+    """One capability as a tag. The tag's style says where the fact came
+    from (solid published, outlined observed, faded guessed, underlined
+    manual); hovering says it in words."""
     if fact is None:
-        return tag("span", "unknown", cls="cap-unknown")
-    return tag("span", esc(f"{fact.status} ({fact.source})"), cls=f"cap-{fact.source}")
+        return tag("span", esc(name or "unknown"), cls="cap cap-unknown",
+                   title="not known yet")
+    if fact.status == "no":
+        return ""
+    word = name or fact.status
+    mark = "?" if fact.status == "doubted" else ""
+    return tag("span", esc(word + mark), cls=f"cap cap-{fact.source}",
+               title=f"{fact.status} - {_CAP_SOURCE_WORDS.get(fact.source, fact.source)}")
+
+
+def _size_tag(tokens) -> str:
+    if not tokens:
+        return ""
+    k = int(tokens) // 1000
+    return tag("span", esc(f"{k}K" if k < 1000 else f"{k // 1000}M"), cls="cap cap-size",
+               title=f"{int(tokens):,} tokens of context")
 
 
 def _pending_action_form(action: str, url: str, extra: str = "") -> str:
@@ -454,22 +479,21 @@ def _model_edit_form(r) -> str:
     edit = tag(
         "form",
         _input(type="hidden", name="action", value="edit")
-        + _input(type="number", name="score", value=esc(r.score),
-              title="score")
-        + _input(type="number", name="rpm", value=esc(r.rpm), title="rpm")
-        + _input(type="number", name="tpm", value=esc(r.tpm), title="tpm")
-        + _input(type="number", name="context_window",
-              value=esc(r.context_window), title="context window")
+        + _field("Score", _input(type="number", name="score", value=esc(r.score)))
+        + _field("Requests a minute", _input(type="number", name="rpm", value=esc(r.rpm)))
+        + _field("Tokens a minute", _input(type="number", name="tpm", value=esc(r.tpm)))
+        + _field("Context window", _input(type="number", name="context_window",
+                                          value=esc(r.context_window)))
         + tag("label", _input(type="checkbox", name="vision",
-                          **{"checked": True} if vision_checked else {})
-              + "vision")
+                              **{"checked": True} if vision_checked else {})
+              + "Can see images", cls="check-field")
         + tag("button", "Save", type="submit"),
-        method="post", action=f"/models/{ident}",
+        method="post", action=f"/models/{ident}", cls="grouped-form",
     )
     disable = tag(
         "form",
         _input(type="hidden", name="action", value="disable")
-        + tag("button", "Disable", type="submit"),
+        + tag("button", "Disable this model", type="submit", cls="danger"),
         method="post", action=f"/models/{ident}",
     )
     return edit + disable
@@ -478,25 +502,54 @@ def _model_edit_form(r) -> str:
 def _models_body(router, banner: str = "") -> str:
     rows_data = facts.models(router)
 
-    header = tag("tr", "".join(tag("th", h) for h in [
-        "Provider", "Model", "Buckets", "Score", "Context",
-        "Vision", "Tools", "Reasoning", "State", "Why", "Change it",
-    ]))
-    rows = [header]
-    for r in rows_data:
+    header = tag("tr", "".join(
+        tag("th", h, cls=c, **({"data-sort": k} if k else {}))
+        for h, c, k in [("Model", "", "model"), ("Buckets", "", ""), ("Score", "", "score"),
+                        ("Can do", "", ""), ("State", "", "state"), ("", "", "")]))
+    rows = []
+    top_score = max((r.score for r in rows_data), default=0) or 1
+    providers = sorted({r.provider for r in rows_data})
+    for n, r in enumerate(rows_data):
+        caps = (_cap_cell(r.vision, "vision") + _cap_cell(r.tools, "tools")
+                + _cap_cell(r.reasoning, "reason") + _size_tag(r.learned_context or r.context_window))
+        ok = r.state == "available"
+        search = f"{r.provider} {r.model} {' '.join(r.buckets)}".lower()
         rows.append(tag("tr", "".join([
-            tag("td", esc(r.provider)),
-            tag("td", esc(r.model)),
-            tag("td", esc(", ".join(r.buckets))),
-            tag("td", esc(r.score)),
-            tag("td", esc(r.learned_context or r.context_window)),
-            tag("td", _cap_cell(r.vision)),
-            tag("td", _cap_cell(r.tools)),
-            tag("td", _cap_cell(r.reasoning)),
-            tag("td", esc(r.state), cls=f"state-{'ok' if r.state == 'available' else 'bad'}"),
-            tag("td", esc(r.why)),
-            tag("td", _model_edit_form(r)),
-        ])))
+            tag("td", tag("span", esc(r.provider), cls="m-prov") + tag("span", esc(r.model),
+                                                                        cls="m-name")),
+            tag("td", "".join(tag("span", esc(b), cls="tag") for b in r.buckets)),
+            tag("td", tag("div", tag("span", "", cls="m-bar",
+                                     style=f"width:{r.score / top_score * 100:.0f}%"),
+                          cls="m-track") + tag("span", esc(r.score), cls="m-score")),
+            tag("td", tag("div", caps, cls="caps")),
+            tag("td", ui.status("ok" if ok else "bad")
+                + (tag("div", esc(r.why), cls="m-why") if r.why else "")),
+            tag("td", tag("button", ui.icon("arrow-right"), type="button", cls="m-open",
+                          **{"aria-label": f"Details for {r.model}", "data-toggle": f"m-{n}"})),
+        ]), cls="m-row", **{"data-search": search, "data-provider": r.provider,
+                            "data-score": r.score, "data-model": r.model,
+                            "data-state": r.state, "data-toggle-row": f"m-{n}"}))
+        detail = tag("div",
+                     tag("div",
+                         tag("h4", "Change this model")
+                         + _model_edit_form(r)
+                         + (tag("p", esc(f"Priced at ${r.price_in}/M in, ${r.price_out}/M out"),
+                                cls="note") if r.price_in is not None else ""),
+                         cls="m-detail-body"),
+                     cls="m-detail-inner")
+        rows.append(tag("tr", tag("td", detail, colspan="6"), cls="m-detail", id=f"m-{n}",
+                        hidden=True))
+    provider_opts = "".join(f'<option value="{esc(p)}">{esc(p)}</option>' for p in providers)
+    filters = tag("div",
+                  ui.icon("search")
+                  + '<input type="search" placeholder="Find a model" aria-label="Find a model" '
+                    'data-page-search data-filter=".m-row">'
+                  + f'<select data-filter-attr="provider" data-filter-target=".m-row" '
+                    f'aria-label="Provider"><option value="">Any provider</option>{provider_opts}'
+                    "</select>",
+                  cls="filters")
+    table = tag("table", tag("thead", header) + tag("tbody", "".join(rows)),
+                cls="models-table", **{"data-sortable": ""})
 
     pending = facts.pending_catalogue(router)
     bucket_names = list(router._cfg.tiers)
@@ -517,26 +570,35 @@ def _models_body(router, banner: str = "") -> str:
         else tag("p", "No disabled models.", cls="note")
     )
 
+    n_pending = sum(len(b.get(kind) or []) for b in pending.values() if isinstance(b, dict)
+                    for kind in ("appeared", "vanished", "changed"))
+    status = f"{len(rows_data)} models in use · {len(disabled)} disabled"
+    if n_pending:
+        status += f" · {n_pending} catalogue changes waiting"
+    head = tag("div",
+               tag("div", tag("h1", "Models", cls="page-title")
+                   + tag("p", esc(status), cls="page-status"), cls="page-head-text")
+               + tag("div", ui.button("Rank models with an AI", href="/models/rank",
+                                      icon_name="brain"), cls="page-actions"),
+               cls="page-head")
+    legend = tag("p", "Tag styles say where a fact came from: "
+                 + tag("span", "solid", cls="cap cap-published") + " the provider says so, "
+                 + tag("span", "outlined", cls="cap cap-observed") + " seen working, "
+                 + tag("span", "faded", cls="cap cap-guessed") + " a guess, "
+                 + tag("span", "underlined", cls="cap cap-manual") + " set by you.",
+                 cls="note cap-legend")
     return (
-        tag("h1", "Models", cls="page-title")
-        + banner
-        + tag("p", "Every model configured in a bucket, and what the "
-                   "service has learned about it from real traffic. "
-                   "A capability's source is in parentheses: published "
-                   "(the provider says so), observed (seen working), "
-                   "guessed (nobody's said either way yet), or manual "
-                   "(you set it and nothing overrides it).", cls="lede")
-        + tag("table", "".join(rows))
-        + tag("p", tag("a", "Rank models with an AI", href="/models/rank"))
-        + tag("h3", "Disabled models")
-        + disabled_section
-        + tag("h3", "Pending catalogue changes")
-        + tag("p", "What the last catalogue check found. Accepting an "
-                   "appeared model adds it to the bucket you choose; "
-                   "accepting a vanished model disables it; accepting a "
-                   "changed field applies the provider's new value.",
-              cls="note")
-        + _pending_body(pending, bucket_names)
+        head + banner + filters
+        + tag("div", tag("div", table, cls="scroll"), cls="box flush", **{"data-enter": ""})
+        + legend
+        + ui.box("Disabled models", disabled_section, **{"data-enter": ""})
+        + ui.box("Pending catalogue changes",
+                 tag("p", "What the last catalogue check found. Accepting a new model adds it "
+                          "to the bucket you choose; accepting a vanished one disables it; "
+                          "accepting a changed field applies the provider's new value.",
+                     cls="note") + _pending_body(pending, bucket_names),
+                 cls="tray" + (" has-items" if n_pending else ""),
+                 id="pending", **{"data-enter": ""})
     )
 
 
