@@ -273,6 +273,143 @@
     });
   }
 
+  /* ── the Playground ──────────────────────────────────────── */
+  /* The conversation lives only in this page; the settings column is
+     remembered per browser. Replies stream in as the model writes them. */
+
+  var convo = [];
+
+  function remember(el) {
+    try {
+      var saved = localStorage.getItem("pg:" + el.id);
+      if (saved !== null) el.value = saved;
+      el.addEventListener("change", function () { localStorage.setItem("pg:" + el.id, el.value); });
+    } catch (err) { /* storage blocked: settings just aren't remembered */ }
+  }
+
+  function bubble(role, text) {
+    var log = document.getElementById("pg-log");
+    var empty = log.querySelector(".empty");
+    if (empty) empty.remove();
+    var b = document.createElement("div");
+    b.className = "pg-msg pg-" + role;
+    var who = document.createElement("span");
+    who.className = "pg-who";
+    who.textContent = role === "user" ? "you" : "flexrouter";
+    var body = document.createElement("div");
+    body.className = "pg-text";
+    body.textContent = text;
+    b.appendChild(who);
+    b.appendChild(body);
+    log.appendChild(b);
+    if (M && motion() !== "off") M.animate(b, { opacity: [0, 1], transform: ["translateY(6px)", "none"] }, { duration: 0.2 });
+    log.scrollTop = log.scrollHeight;
+    return body;
+  }
+
+  function strip(target, info) {
+    var s = document.createElement("a");
+    s.className = "pg-strip outcome-" + (info.outcome || "ok");
+    s.href = "/requests?id=" + encodeURIComponent(info.id);
+    s.setAttribute("hx-get", "/requests/" + encodeURIComponent(info.id) + "/journey");
+    s.setAttribute("hx-target", "#sheet-root");
+    s.setAttribute("hx-swap", "innerHTML");
+    s.textContent = [
+      (info.outcome === "failover" ? "FAILOVER · " : info.outcome === "failed" ? "FAILED · " : "") +
+        (info.answered_by || "nothing answered"),
+      (info.tokens_in || 0) + " in / " + (info.tokens_out || 0) + " out",
+      (info.ms || 0).toLocaleString() + " ms"
+    ].join("  ·  ");
+    target.parentNode.appendChild(s);
+    if (window.htmx) htmx.process(s);
+  }
+
+  async function send() {
+    var input = document.getElementById("pg-input"), btn = document.getElementById("pg-send");
+    var text = input.value.trim();
+    if (!text || btn.disabled) return;
+    input.value = "";
+    convo.push({ role: "user", content: text });
+    bubble("user", text);
+    var out = bubble("assistant", "");
+    out.classList.add("shimmer");
+    btn.disabled = true;
+    var sys = document.getElementById("pg-system").value.trim();
+    var msgs = (sys ? [{ role: "system", content: sys }] : []).concat(convo);
+    var answer = "";
+    try {
+      var r = await fetch("/playground/chat", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: document.getElementById("pg-target").value,
+                               temperature: document.getElementById("pg-temp").value,
+                               max_tokens: document.getElementById("pg-max").value,
+                               messages: msgs })
+      });
+      if (!r.ok) {
+        var err = await r.json().catch(function () { return {}; });
+        throw new Error(err.error || ("HTTP " + r.status));
+      }
+      var reader = r.body.getReader(), dec = new TextDecoder(), buf = "", evName = "";
+      for (;;) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        buf += dec.decode(chunk.value, { stream: true });
+        var parts = buf.split("\n\n");
+        buf = parts.pop();
+        parts.forEach(function (block) {
+          evName = "";
+          block.split("\n").forEach(function (line) {
+            if (line.indexOf("event: ") === 0) evName = line.slice(7).trim();
+            if (line.indexOf("data: ") !== 0) return;
+            var data = line.slice(6);
+            if (data === "[DONE]") return;
+            var payload;
+            try { payload = JSON.parse(data); } catch (e2) { return; }
+            if (evName === "flexrouter") { strip(out, payload); return; }
+            if (payload.error) { answer += (answer ? "\n\n" : "") + "[" + payload.error.message + "]"; }
+            var c = payload.choices && payload.choices[0];
+            if (c && c.delta && c.delta.content) answer += c.delta.content;
+            out.classList.remove("shimmer");
+            out.textContent = answer;
+            document.getElementById("pg-log").scrollTop = 1e9;
+          });
+        });
+      }
+      convo.push({ role: "assistant", content: answer });
+    } catch (e) {
+      out.textContent = "Not sent: " + e.message;
+      out.parentNode.classList.add("pg-error");
+      convo.pop();
+    } finally {
+      out.classList.remove("shimmer");
+      btn.disabled = false;
+      input.focus();
+    }
+  }
+
+  function bootPlayground() {
+    if (!document.getElementById("pg-composer")) return;
+    each(document.querySelectorAll("[data-remember]"), remember);
+    var temp = document.getElementById("pg-temp"), out = document.getElementById("pg-temp-out");
+    if (temp && out) {
+      out.textContent = temp.value;
+      temp.addEventListener("input", function () { out.textContent = temp.value; });
+    }
+  }
+
+  document.addEventListener("submit", function (e) {
+    if (e.target.id === "pg-composer") { e.preventDefault(); send(); }
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.target.id === "pg-input" && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  document.addEventListener("click", function (e) {
+    if (e.target.id !== "pg-clear") return;
+    convo = [];
+    var log = document.getElementById("pg-log");
+    log.innerHTML = '<div class="empty"><p>Cleared. Nothing was saved.</p></div>';
+  });
+
   /* ── Ctrl+K command bar ──────────────────────────────────── */
 
   var index = null, hits = [], active = 0;
@@ -498,6 +635,7 @@
     }
     enter(root);
     watchToc();
+    bootPlayground();
     var sr = document.getElementById("sheet-root");
     if (sr && sr.firstChild) sheetOpened(sr);
   }

@@ -857,6 +857,41 @@ table.log td { padding: 8px 12px; }
 .about-row { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 12px; padding: 6px 0; align-items: baseline; }
 .about-row code { color: var(--ink-2); word-break: break-all; }
 
+/* ── playground ────────────────────────────────────────── */
+
+.pg-layout { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 16px; align-items: stretch; min-height: calc(100vh - 150px); }
+.pg-settings { display: flex; flex-direction: column; gap: 16px; }
+.pg-field { display: flex; flex-direction: column; gap: 6px; }
+.pg-label { font: 500 10px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--ink-3); }
+.pg-hint { color: var(--ink-4); font-size: 11px; }
+.pg-field select, .pg-field textarea, .pg-field input[type="number"] { width: 100%; max-width: none; }
+.pg-range { display: flex; align-items: center; gap: 10px; }
+.pg-range input { flex: 1; accent-color: var(--green); }
+.pg-range output { font: 500 12px var(--mono); width: 32px; text-align: right; }
+
+.pg-chat { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--rule); background: var(--panel); }
+.pg-log { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 16px; max-height: calc(100vh - 290px); }
+.pg-log .empty { margin: auto; max-width: 420px; text-align: center; align-items: center; }
+.pg-msg { display: flex; flex-direction: column; gap: 6px; max-width: 78ch; }
+.pg-user { align-self: flex-end; align-items: flex-end; }
+.pg-who { font: 500 10px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--ink-4); }
+.pg-text { white-space: pre-wrap; word-break: break-word; line-height: 1.6; padding: 10px 14px; border: 1px solid var(--rule); background: var(--raise); min-height: 40px; min-width: 60px; }
+.pg-user .pg-text { background: var(--green-wash); border-color: rgba(52, 211, 153, .3); }
+.pg-error .pg-text { color: var(--bad); border-color: rgba(248, 113, 113, .4); }
+.pg-strip {
+  align-self: flex-start;
+  font: 500 10px var(--mono);
+  letter-spacing: .06em;
+  padding: 5px 8px;
+  border: 1px solid;
+  text-decoration: none;
+}
+.main a.pg-strip { border-bottom-width: 1px; }
+.pg-composer { border-top: 1px solid var(--rule); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.pg-composer textarea { width: 100%; max-width: none; font-family: var(--sans); font-size: 13px; resize: vertical; }
+.pg-actions { display: flex; align-items: center; gap: 8px; }
+.pg-actions button:disabled { opacity: .5; cursor: wait; }
+
 /* ── command bar and shortcut sheet ────────────────────── */
 
 .palette {

@@ -757,6 +757,66 @@ def _service_keys_section() -> str:
     )
 
 
+@pages.get("/playground", response_class=HTMLResponse, include_in_schema=False)
+def playground_page() -> HTMLResponse:
+    from flexrouter.dashboard import playground_page as pg
+    return HTMLResponse(page("Playground", "playground", pg.body(_live_router())))
+
+
+@pages.post("/playground/chat", include_in_schema=False)
+async def playground_chat(request: Request):
+    """Stream one Playground turn through the same in-process path /v1 uses.
+
+    Not behind the app password: the dashboard is local and open by design
+    (ADR 0009), and a browser has no way to hold that password anyway.
+    After the model's stream ends, one `event: flexrouter` says who answered,
+    read from the trace the router just wrote.
+    """
+    from fastapi.responses import StreamingResponse
+
+    from flexrouter.app import _best_bucket, _stream_chat
+    from flexrouter.wire import parse_model, resolve
+
+    body = await request.json()
+    messages = [m for m in (body.get("messages") or [])
+                if isinstance(m, dict) and m.get("role") in ("system", "user", "assistant")
+                and isinstance(m.get("content"), str)]
+    if not messages:
+        return Response(json.dumps({"error": "send at least one message"}), status_code=400,
+                        media_type="application/json")
+    router = _live_router()
+    target = str(body.get("target") or "auto")
+    try:
+        tier = resolve(parse_model(target), list(router._cfg.tiers.keys()), _best_bucket(router))
+    except KeyError as exc:
+        return Response(json.dumps({"error": str(exc.args[0])}), status_code=404,
+                        media_type="application/json")
+    kwargs = {}
+    try:
+        if body.get("temperature") not in (None, ""):
+            kwargs["temperature"] = max(0.0, min(float(body["temperature"]), 2.0))
+        if body.get("max_tokens") not in (None, ""):
+            kwargs["max_tokens"] = max(1, min(int(body["max_tokens"]), 32768))
+    except (TypeError, ValueError):
+        return Response(json.dumps({"error": "temperature and max tokens must be numbers"}),
+                        status_code=400, media_type="application/json")
+
+    async def stream():
+        async for piece in _stream_chat(router, messages, tier, target, kwargs):
+            yield piece
+        last = facts.recent_requests(router, limit=1)
+        if last:
+            r = last[0]
+            info = {"id": r.id, "ok": r.ok, "outcome": r.outcome, "ms": r.ms_total,
+                    "tokens_in": r.tokens_in, "tokens_out": r.tokens_out,
+                    "answered_by": (f"{r.answered_by['provider']}/{r.answered_by['model']}"
+                                    if r.answered_by else None)}
+            yield f"event: flexrouter\ndata: {json.dumps(info)}\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @pages.get("/palette.json", include_in_schema=False)
 def palette_index() -> Response:
     """Everything the Ctrl+K command bar can jump to."""
