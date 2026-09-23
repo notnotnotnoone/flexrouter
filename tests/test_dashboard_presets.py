@@ -60,3 +60,19 @@ def test_a_preset_label_is_escaped(client):
     body = client.get("/providers").text
     assert "<script>x</script>" not in body
     assert "&lt;script&gt;" in body
+
+
+def test_a_preset_opens_in_the_side_panel(client):
+    r = client.get("/providers/add/groq?panel=1")
+    assert r.status_code == 200
+    assert 'role="dialog"' in r.text and "<nav" not in r.text
+    assert 'name="secret"' in r.text
+
+
+def test_the_preset_grid_opens_the_panel_without_leaving_the_page(client):
+    body = client.get("/providers").text
+    assert 'hx-get="/providers/add/' in body and 'hx-target="#sheet-root"' in body
+
+
+def test_an_unknown_preset_panel_is_a_404(client):
+    assert client.get("/providers/add/nope?panel=1").status_code == 404

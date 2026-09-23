@@ -124,7 +124,7 @@ def _add_provider_form() -> str:
 def _provider_row(s) -> str:
     return tag("tr", "".join([
         tag("td", tag("a", esc(s.name), href=f"/providers/{quote(s.name)}")),
-        tag("td", esc(s.state), cls=f"state-{s.state}"),
+        tag("td", ui.status(s.state)),
         tag("td", esc(s.base_url), cls="dim"),
         tag("td", esc(f"{s.keys_live} live, {s.keys_cooling} resting, {s.keys_parked} parked")),
         tag("td", _num(s.models_total), cls="num"),
@@ -144,7 +144,10 @@ def _preset_card(p, configured: bool) -> str:
     inner = (
         tag("span", esc(p.label), cls="preset-name")
         + tag("span", esc(tier), cls="preset-tier dim")
-        + tag("a", "Add", href=f"/providers/add/{quote(p.name)}", cls="button-link")
+        + tag("a", "Add", href=f"/providers/add/{quote(p.name)}", cls="button-link",
+              **{"hx-get": f"/providers/add/{quote(p.name)}?panel=1",
+                 "hx-target": "#sheet-root", "hx-swap": "innerHTML",
+                 "hx-push-url": f"/providers/add/{quote(p.name)}"})
     )
     return tag("div", inner, cls="preset-card")
 
@@ -1186,8 +1189,17 @@ async def provider_add_from_preset(request: Request) -> RedirectResponse:
 
 
 @pages.get("/providers/add/{name}", response_class=HTMLResponse, include_in_schema=False)
-def provider_add_page(name: str, ok: str = "", message: str = "") -> HTMLResponse:
+def provider_add_page(name: str, ok: str = "", message: str = "",
+                      panel: str = "") -> HTMLResponse:
+    """Adding a provider from a preset. `panel=1` returns just the side
+    panel for the preset grid to slide in; without it, the same form as a
+    whole page, which is what a refresh or a no-JavaScript click gets."""
     preset = presets.get(name)
+    if preset is None and panel:
+        return HTMLResponse(ui.empty("No such preset."), status_code=404)
+    if preset is not None and panel:
+        return HTMLResponse(ui.sheet(f"Add {preset.label}", _preset_connect(preset),
+                                     close_href="/providers", sub=preset.base_url))
     if preset is None:
         return HTMLResponse(
             page("Providers & keys", "providers",
@@ -1200,6 +1212,18 @@ def provider_add_page(name: str, ok: str = "", message: str = "") -> HTMLRespons
 
 
 def _preset_add_body(p, banner: str = "") -> str:
+    return (
+        tag("div", tag("h1", esc(p.label), cls="page-title"), cls="page-head")
+        + banner
+        + tag("p", esc(p.base_url), cls="lede")
+        + tag("div", _panel("Connect it", tag("div", _preset_connect(p), cls="pb")),
+              cls="panel-page")
+    )
+
+
+def _preset_connect(p) -> str:
+    """Where to get a key, what happens next, and the form - shared by the
+    side panel and the full page."""
     where = (
         tag("p", "Get a key: " + tag("a", esc(p.signup_url), href=esc(p.signup_url)))
         if p.signup_url else ""
@@ -1220,17 +1244,9 @@ def _preset_add_body(p, banner: str = "") -> str:
                                  placeholder="which account this is"))
         + tag("button", "Add and look for models", type="submit"),
         method="post", action="/providers/add", cls="grouped-form",
+        **{"data-busy": "Checking the key and asking for models..."},
     )
-    return (
-        tag("div", tag("h1", esc(p.label), cls="page-title"), cls="page-head")
-        + banner
-        + tag("p", esc(p.base_url), cls="lede")
-        + tag("div",
-              _panel("Connect it",
-                     tag("div", where + tag("p", esc(discovery), cls="note") + form,
-                         cls="pb")),
-              cls="panel-page")
-    )
+    return where + tag("p", esc(discovery), cls="note") + form
 
 
 @pages.post("/providers/{provider}/models", include_in_schema=False)

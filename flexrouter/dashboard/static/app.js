@@ -297,6 +297,20 @@
     }
   });
 
+  /* ── busy forms ──────────────────────────────────────────── */
+  /* A form marked data-busy says what it is doing while the server works
+     (testing a key can take a few seconds) instead of looking frozen. */
+
+  document.addEventListener("submit", function (e) {
+    var form = e.target, msg = form.getAttribute && form.getAttribute("data-busy");
+    if (!msg) return;
+    var btn = form.querySelector("button[type=submit]");
+    if (!btn) return;
+    btn.classList.add("shimmer");
+    btn.textContent = msg;
+    setTimeout(function () { btn.disabled = true; }, 0);   /* after the submit is sent */
+  });
+
   /* ── copy buttons ────────────────────────────────────────── */
 
   document.addEventListener("click", function (e) {
