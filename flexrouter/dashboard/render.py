@@ -112,7 +112,8 @@ def _nav(current: str, badges: dict) -> str:
     return tag("nav", _brand() + tag("div", "".join(out), cls="nav-links") + foot, cls="nav")
 
 
-def page(title: str, current: str, body: str, *, badges: dict | None = None) -> str:
+def page(title: str, current: str, body: str, *, badges: dict | None = None,
+         sheet: str = "") -> str:
     """A complete document. `body` is already-rendered HTML.
 
     Scripts are deferred, so they never hold up the first paint; the page
@@ -142,6 +143,7 @@ def page(title: str, current: str, body: str, *, badges: dict | None = None) -> 
         '<body hx-boost="true" hx-ext="morph">'
         + ui.sprite()
         + tag("div", _nav(current, badges or {}) + tag("main", body, cls="main"), cls="shell")
+        + tag("div", sheet, id="sheet-root")
         + '<div class="toasts" id="toasts" aria-live="polite"></div>'
         + "</body></html>"
     )

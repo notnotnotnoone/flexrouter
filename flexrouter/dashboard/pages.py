@@ -22,7 +22,8 @@ from flexrouter.probe import probe_key
 from flexrouter import score_facts
 from flexrouter import service_keys
 from flexrouter.dashboard import (facts, keytest, overview, pending_actions,
-                                  ranking, settings_write)
+                                  ranking, settings_write, ui)
+from flexrouter.dashboard import requests_page as requests_page_mod
 from flexrouter.dashboard.render import attrs, esc, page, tag
 
 pages = APIRouter()
@@ -713,42 +714,6 @@ def _buckets_body(router, banner: str = "") -> str:
     )
 
 
-def _requests_body(router) -> str:
-    rows_data = facts.recent_requests(router)
-    if not rows_data:
-        return (
-            tag("h1", "Requests", cls="page-title")
-            + tag("p", "Nothing has come through yet.", cls="note")
-        )
-
-    header = tag("tr", "".join(tag("th", h) for h in [
-        "When", "Bucket", "Result", "Answered by", "Tokens in/out",
-        "Time", "Skipped",
-    ]))
-    rows = [header]
-    for r in rows_data:
-        answered = (
-            f"{r.answered_by['provider']}/{r.answered_by['model']}"
-            if r.answered_by else ""
-        )
-        rows.append(tag("tr", "".join([
-            tag("td", esc(r.at)),
-            tag("td", esc(r.bucket)),
-            tag("td", esc("ok" if r.ok else "failed"), cls=f"state-{'ok' if r.ok else 'bad'}"),
-            tag("td", esc(answered)),
-            tag("td", esc(f"{r.tokens_in}/{r.tokens_out}")),
-            tag("td", esc(f"{r.ms_total} ms")),
-            tag("td", esc(r.skipped_count)),
-        ])))
-
-    return (
-        tag("h1", "Requests", cls="page-title")
-        + tag("p", "The last 50 requests the service has handled, newest "
-                   "first.", cls="lede")
-        + tag("table", "".join(rows))
-    )
-
-
 def _brain_body(router) -> str:
     entries = facts.error_brain_entries(router)
     if not entries:
@@ -1114,8 +1079,34 @@ async def model_write(ident: str, request: Request) -> RedirectResponse:
 
 
 @pages.get("/requests", response_class=HTMLResponse, include_in_schema=False)
-def requests_page() -> HTMLResponse:
-    return HTMLResponse(page("Requests", "requests", _requests_body(_live_router())))
+def requests_page(result: str = "", bucket: str = "", provider: str = "", q: str = "",
+                  limit: int = requests_page_mod.PAGE, id: str = "",
+                  fragment: str = "") -> HTMLResponse:
+    """The request log. `fragment=1` is the live block alone (what it polls
+    for); `id=` opens that request's journey in the side panel."""
+    router = _live_router()
+    params = {"result": result if result in {"ok", "failover", "failed"} else "",
+              "bucket": bucket, "provider": provider, "q": q,
+              "limit": max(requests_page_mod.PAGE, min(int(limit or 0), 5000))}
+    if fragment:
+        return HTMLResponse(requests_page_mod.log(router, params))
+    sheet = ""
+    if id:
+        journey = facts.request_journey(router, id)
+        if journey:
+            sheet = requests_page_mod.journey_panel(journey)
+    return HTMLResponse(page("Requests", "requests",
+                             requests_page_mod.body(router, params), sheet=sheet))
+
+
+@pages.get("/requests/{request_id}/journey", response_class=HTMLResponse,
+           include_in_schema=False)
+def request_journey(request_id: str) -> HTMLResponse:
+    """Just the side panel, for htmx to drop into the page."""
+    journey = facts.request_journey(_live_router(), request_id)
+    if journey is None:
+        return HTMLResponse(ui.empty("No request with that id on record."), status_code=404)
+    return HTMLResponse(requests_page_mod.journey_panel(journey))
 
 
 @pages.get("/brain", response_class=HTMLResponse, include_in_schema=False)

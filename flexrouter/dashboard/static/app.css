@@ -624,6 +624,166 @@ table.matrix th { padding: 9px 14px; }
 .feed-ms { text-align: right; font-variant-numeric: tabular-nums; }
 .hop { color: var(--blue); }
 
+/* ── requests ──────────────────────────────────────────── */
+
+.mono { font-family: var(--mono); font-size: 12px; }
+.faint { color: var(--ink-4); font-size: 11px; }
+
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+}
+.filters .icon { color: var(--ink-4); }
+.filters input[type="search"] { flex: 1; max-width: 360px; background: transparent; border-color: transparent; }
+.filters input[type="search"]:focus { border-color: var(--green); }
+.filters select { font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+
+table.log td { padding: 8px 12px; }
+.req-row { cursor: pointer; }
+.row-link { color: inherit; text-decoration: none; }
+.main a.row-link { color: inherit; border-bottom: 0; }
+.req-row:hover .row-link { color: var(--green); }
+
+.outcome {
+  display: inline-block;
+  min-width: 92px;
+  text-align: center;
+  font: 500 10px/1 var(--mono);
+  letter-spacing: .1em;
+  padding: 6px 8px;
+  border: 1px solid;
+}
+.outcome-ok { color: var(--green); border-color: rgba(52, 211, 153, .35); background: var(--green-wash); }
+.outcome-failover { color: var(--blue); border-color: rgba(125, 211, 252, .35); background: var(--blue-wash); }
+.outcome-failed { color: var(--bad); border-color: rgba(248, 113, 113, .35); background: var(--bad-wash); }
+
+.load-more { display: flex; justify-content: center; padding: 14px; border-top: 1px solid var(--rule); }
+
+/* ── the side panel ────────────────────────────────────── */
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 39;
+  background: rgba(0, 0, 0, .6);
+  cursor: default;
+}
+.sheet {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  width: min(560px, 92vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-left: 1px solid var(--rule-2);
+  box-shadow: -24px 0 48px rgba(0, 0, 0, .5);
+}
+.sheet::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -1px;
+  width: 1px;
+  height: 64px;
+  background: var(--green);
+}
+.sheet-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--rule);
+}
+.sheet-head h2 { margin: 0; font: 600 16px var(--mono); text-transform: uppercase; letter-spacing: .02em; }
+.sheet-sub { margin: 4px 0 0; color: var(--ink-3); font-size: 12px; }
+.sheet-close {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  color: var(--ink-3);
+  border: 1px solid var(--rule-2);
+  text-decoration: none;
+}
+.sheet-close:hover { color: var(--ink); border-color: var(--ink-3); }
+.sheet-body { flex: 1; overflow-y: auto; padding: 18px 20px 28px; }
+.sheet-h {
+  font: 500 10px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: var(--ink-3);
+  margin: 22px 0 10px;
+}
+
+/* the journey: numbered steps on a rail */
+.jtop { display: flex; align-items: center; gap: 12px; }
+.jfacts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: 14px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+}
+.jfact { background: var(--panel); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.jfact b { font: 500 13px var(--mono); }
+.journey { list-style: none; margin: 0; padding: 0; position: relative; }
+.journey::before {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 14px;
+  bottom: 14px;
+  width: 1px;
+  background: var(--rule-2);
+}
+.jstep { position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; padding: 0 0 16px; }
+.jstep-n {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  font: 500 11px var(--mono);
+  background: var(--raise);
+  border: 1px solid var(--rule-2);
+  color: var(--ink-3);
+}
+.jstep-answered .jstep-n { color: var(--green); border-color: var(--green); background: var(--green-wash); }
+.jstep-failed .jstep-n { color: var(--bad); border-color: rgba(248, 113, 113, .5); }
+.jstep-gave_up .jstep-n { color: var(--bad); border-color: var(--bad); }
+.jstep-body { display: flex; flex-direction: column; gap: 6px; padding-top: 3px; min-width: 0; }
+.jstep-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.jstep-kind { font: 500 10px var(--mono); letter-spacing: .1em; }
+.jstep-skipped .jstep-kind { color: var(--ink-3); }
+.jstep-failed .jstep-kind, .jstep-gave_up .jstep-kind { color: var(--bad); }
+.jstep-answered .jstep-kind { color: var(--green); }
+.jstep-where { font: 500 13px var(--mono); }
+.jstep-detail { color: var(--ink-2); font-size: 12px; }
+.jstep-msg {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--ground);
+  border: 1px solid var(--rule);
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 140px;
+  overflow: auto;
+}
+.jstep-body .tag { align-self: flex-start; }
+.jstep-body .n { font-size: 11px; }
+
 /* ── legacy pages (replaced page by page) ──────────────── */
 /* The eight other pages were written for the wireframe. These rules make
    them sit in the new look until each one is rebuilt. */
@@ -642,8 +802,8 @@ table.matrix th { padding: 9px 14px; }
 .main h4 { font: 500 12px var(--mono); margin: 18px 0 8px; }
 .main ul { margin: 6px 0; padding-left: 18px; }
 .main li { margin: 3px 0; }
-.main a:not(.btn):not(.nav-link):not(.button-link) { color: var(--green); text-decoration: none; border-bottom: 1px solid rgba(52, 211, 153, .3); }
-.main a:not(.btn):not(.nav-link):not(.button-link):hover { border-bottom-color: var(--green); }
+.main a:not(.btn):not(.nav-link):not(.button-link):not(.row-link):not(.sheet-close):not(.range-link) { color: var(--green); text-decoration: none; border-bottom: 1px solid rgba(52, 211, 153, .3); }
+.main a:not(.btn):not(.nav-link):not(.button-link):not(.row-link):not(.sheet-close):not(.range-link):hover { border-bottom-color: var(--green); }
 
 .lede { color: var(--ink-2); max-width: 80ch; margin: 0 0 20px; }
 .note { color: var(--ink-3); font-size: 12px; max-width: 80ch; margin: 10px 0 0; }

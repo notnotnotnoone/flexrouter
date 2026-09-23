@@ -114,6 +114,26 @@ def button(label: str, *, href: str | None = None, kind: str = "",
     return f'<button type="button" class="{cls}"{attrs(kw)}>{body}</button>'
 
 
+def sheet(title: str, body: str, *, close_href: str, sub: str = "") -> str:
+    """The side panel: slides in from the right over a dimmed page.
+
+    Closing is a real link back to the page without the panel, so it works
+    with or without JavaScript and the back button does the same thing.
+    """
+    close = (f'<a class="sheet-close" href="{esc(close_href)}" aria-label="Close" '
+             f'data-sheet-close>{icon("x")}</a>')
+    head = tag("div",
+               tag("div", tag("h2", esc(title), id="sheet-title")
+                   + (tag("p", esc(sub), cls="sheet-sub") if sub else ""))
+               + close,
+               cls="sheet-head")
+    return (f'<a class="sheet-backdrop" href="{esc(close_href)}" tabindex="-1" '
+            f'aria-hidden="true" data-sheet-close></a>'
+            + tag("aside", head + tag("div", body, cls="sheet-body"),
+                  cls="sheet", role="dialog", **{"aria-modal": "true",
+                                                 "aria-labelledby": "sheet-title"}))
+
+
 def empty(message: str, *, action: str = "") -> str:
     """What a block says when it has nothing to show, and what to do next."""
     return tag("div", tag("p", esc(message)) + action, cls="empty")

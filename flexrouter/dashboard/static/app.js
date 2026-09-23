@@ -197,6 +197,61 @@
     lastMarker = mk ? mk.style.transform : null;
   });
 
+  /* ── the side panel ──────────────────────────────────────── */
+
+  function sheetOpened(root) {
+    var sheet = root.querySelector(".sheet");
+    if (!sheet) return;
+    var close = sheet.querySelector(".sheet-close");
+    if (close) close.focus({ preventScroll: true });
+    if (!M || motion() === "off") return;
+    M.animate(sheet, { transform: ["translateX(40px)", "none"], opacity: [0, 1] },
+      { type: "spring", stiffness: 420, damping: 38 });
+    var back = root.querySelector(".sheet-backdrop");
+    if (back) M.animate(back, { opacity: [0, 1] }, { duration: 0.2 });
+    if (motion() === "full") {
+      M.animate(sheet.querySelectorAll(".jstep"),
+        { opacity: [0, 1], transform: ["translateY(6px)", "none"] },
+        { duration: 0.22, delay: M.stagger(0.06, { startDelay: 0.12 }), ease: EASE });
+    }
+  }
+
+  /* Closing is a real link (it works without JavaScript); with it, the
+     panel slides away and the address goes back without a reload. */
+  function closeSheet(href) {
+    var root = document.getElementById("sheet-root");
+    if (!root || !root.firstChild) return;
+    if (href) history.pushState({}, "", href);
+    var sheet = root.querySelector(".sheet"), back = root.querySelector(".sheet-backdrop");
+    if (!M || motion() === "off" || !sheet) { root.innerHTML = ""; return; }
+    M.animate(sheet, { transform: "translateX(40px)", opacity: 0 }, { duration: 0.18 });
+    (back ? M.animate(back, { opacity: 0 }, { duration: 0.18 }).finished : Promise.resolve())
+      .then(function () { root.innerHTML = ""; });
+  }
+
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest && e.target.closest("[data-sheet-close]");
+    if (!a) return;
+    e.preventDefault();
+    closeSheet(a.getAttribute("href"));
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    var close = document.querySelector("#sheet-root [data-sheet-close]");
+    if (close) { e.preventDefault(); closeSheet(close.getAttribute("href")); }
+  });
+  document.addEventListener("htmx:afterSwap", function (e) {
+    if (e.detail.target && e.detail.target.id === "sheet-root") sheetOpened(e.detail.target);
+  });
+
+  /* A log row opens its panel from anywhere on the row, not only the link. */
+  document.addEventListener("click", function (e) {
+    var row = e.target.closest && e.target.closest("tr.req-row");
+    if (!row || e.target.closest("a, button, input, select")) return;
+    var link = row.querySelector(".row-link");
+    if (link) link.click();
+  });
+
   /* ── boot ────────────────────────────────────────────────── */
 
   function boot(root, navigated) {
@@ -215,6 +270,8 @@
       placeMarker(true);
     }
     enter(root);
+    var sr = document.getElementById("sheet-root");
+    if (sr && sr.firstChild) sheetOpened(sr);
   }
 
   function boosted(detail) {
