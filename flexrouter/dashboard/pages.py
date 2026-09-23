@@ -109,7 +109,7 @@ def _broken_body(router) -> str:
     needs_you, handling_itself = data["needs_you"], data["handling_itself"]
 
     return (
-        tag("h1", "What's broken")
+        tag("h1", "What's broken", cls="page-title")
         + tag("p", "Two piles: what only you can fix, and what the service "
                    "is already handling on its own without you doing "
                    "anything.", cls="lede")
@@ -217,7 +217,7 @@ def _providers_body(router, banner: str = "") -> str:
     )
 
     return (
-        tag("div", tag("h1", "Providers & keys"), cls="page-head")
+        tag("div", tag("h1", "Providers & keys", cls="page-title"), cls="page-head")
         + banner
         + tag("p", "Every provider you've configured, and every key it "
                    "holds. Click a provider for its keys.", cls="lede")
@@ -404,7 +404,7 @@ def _provider_detail_body(detail, editable: dict, bucket_names: list,
     )
 
     return (
-        tag("div", tag("h1", esc(detail.name)), cls="page-head")
+        tag("div", tag("h1", esc(detail.name), cls="page-title"), cls="page-head")
         + banner
         + tag("p", esc(detail.base_url), cls="lede")
         + quarantine_note
@@ -541,7 +541,7 @@ def _models_body(router, banner: str = "") -> str:
     )
 
     return (
-        tag("h1", "Models")
+        tag("h1", "Models", cls="page-title")
         + banner
         + tag("p", "Every model configured in a bucket, and what the "
                    "service has learned about it from real traffic. "
@@ -580,7 +580,7 @@ def _rank_body(prompt: str, notes: str) -> str:
         method="post", action="/models/rank/proposal",
     )
     return (
-        tag("h1", "Rank models with an AI")
+        tag("h1", "Rank models with an AI", cls="page-title")
         + tag("p", "Builds a ready-made prompt from the current model "
                    "list plus whatever benchmark material you supply. "
                    "Send it yourself, or copy it into whatever chat "
@@ -632,7 +632,7 @@ def _rank_proposal_body(changes: list, skipped_manual: list) -> str:
     )
 
     return (
-        tag("h1", "Proposed scores")
+        tag("h1", "Proposed scores", cls="page-title")
         + tag("p", "Nothing here is applied until you press the button "
                    "below. Uncheck any row you don't want changed.",
               cls="lede")
@@ -700,7 +700,7 @@ def _buckets_body(router, banner: str = "") -> str:
     body = "".join(sections) if sections else tag("p", "No buckets are configured yet.", cls="note")
 
     return (
-        tag("h1", "Buckets")
+        tag("h1", "Buckets", cls="page-title")
         + banner
         + tag("p", "What each bucket can pick from right now, best score "
                    "first. \"Would answer\" means a real request could "
@@ -717,7 +717,7 @@ def _requests_body(router) -> str:
     rows_data = facts.recent_requests(router)
     if not rows_data:
         return (
-            tag("h1", "Requests")
+            tag("h1", "Requests", cls="page-title")
             + tag("p", "Nothing has come through yet.", cls="note")
         )
 
@@ -742,7 +742,7 @@ def _requests_body(router) -> str:
         ])))
 
     return (
-        tag("h1", "Requests")
+        tag("h1", "Requests", cls="page-title")
         + tag("p", "The last 50 requests the service has handled, newest "
                    "first.", cls="lede")
         + tag("table", "".join(rows))
@@ -752,7 +752,7 @@ def _requests_body(router) -> str:
 def _brain_body(router) -> str:
     entries = facts.error_brain_entries(router)
     if not entries:
-        return tag("h1", "Error brain") + tag("p", "Nothing learned yet.", cls="note")
+        return tag("h1", "Error brain", cls="page-title") + tag("p", "Nothing learned yet.", cls="note")
 
     header = tag("tr", "".join(tag("th", h) for h in [
         "Verdict", "Source", "Confidence", "Seen", "First seen",
@@ -773,7 +773,7 @@ def _brain_body(router) -> str:
         ])))
 
     return (
-        tag("h1", "Error brain")
+        tag("h1", "Error brain", cls="page-title")
         + tag("p", "Every kind of provider error the service has learned "
                    "to recognise. Entries marked \"needs review\" were "
                    "guessed below its confidence threshold - correcting "
@@ -785,7 +785,7 @@ def _brain_body(router) -> str:
 def _allowance_body(router) -> str:
     rows_data = facts.allowance(router)
     if not rows_data:
-        return tag("h1", "Allowance") + tag("p", "No models configured.", cls="note")
+        return tag("h1", "Allowance", cls="page-title") + tag("p", "No models configured.", cls="note")
 
     header = tag("tr", "".join(tag("th", h) for h in [
         "Provider", "Model", "Your caps", "Provider headroom",
@@ -817,7 +817,7 @@ def _allowance_body(router) -> str:
         ])))
 
     return (
-        tag("h1", "Allowance")
+        tag("h1", "Allowance", cls="page-title")
         + tag("p", "Free-tier headroom, not money - nothing here tracks "
                    "cost, because nothing in the service records it.",
               cls="lede")
@@ -928,7 +928,7 @@ def _settings_body(router, banner: str = "") -> str:
     rows = [header] + [_settings_field_row(f) for f in facts.settings_fields(router)]
 
     return (
-        tag("h1", "Settings")
+        tag("h1", "Settings", cls="page-title")
         + banner
         + tag("p", "Everything here writes to a small file layered on top "
                    "of your own settings file, never to the settings file "
@@ -1242,7 +1242,7 @@ def provider_add_page(name: str, ok: str = "", message: str = "") -> HTMLRespons
     if preset is None:
         return HTMLResponse(
             page("Providers & keys", "providers",
-                 tag("h1", "No such preset") + tag("p", esc(name))),
+                 tag("h1", "No such preset", cls="page-title") + tag("p", esc(name))),
             status_code=404,
         )
     return HTMLResponse(
@@ -1273,7 +1273,7 @@ def _preset_add_body(p, banner: str = "") -> str:
         method="post", action="/providers/add", cls="grouped-form",
     )
     return (
-        tag("div", tag("h1", esc(p.label)), cls="page-head")
+        tag("div", tag("h1", esc(p.label), cls="page-title"), cls="page-head")
         + banner
         + tag("p", esc(p.base_url), cls="lede")
         + tag("div",
@@ -1321,7 +1321,7 @@ def provider_detail_page(provider: str, tested: str = "", ok: str = "",
     if detail is None:
         return HTMLResponse(
             page("Providers & keys", "providers",
-                 tag("h1", "No such provider") + tag("p", esc(provider))),
+                 tag("h1", "No such provider", cls="page-title") + tag("p", esc(provider))),
             status_code=404,
         )
 
@@ -1349,7 +1349,7 @@ async def provider_discover(provider: str) -> HTMLResponse:
     if pcfg is None:
         return HTMLResponse(
             page("Providers & keys", "providers",
-                 tag("h1", "No such provider") + tag("p", esc(provider))),
+                 tag("h1", "No such provider", cls="page-title") + tag("p", esc(provider))),
             status_code=404)
     result = await probe_key(
         pcfg.base_url,
@@ -1363,7 +1363,7 @@ async def provider_discover(provider: str) -> HTMLResponse:
 
 
 def _discovered_body(provider: str, preset, result, bucket_names: list) -> str:
-    head = tag("div", tag("h1", esc(provider)), cls="page-head")
+    head = tag("div", tag("h1", esc(provider), cls="page-title"), cls="page-head")
     if not result.ok:
         return (head
                 + tag("p", esc(result.error or "the provider did not answer"),

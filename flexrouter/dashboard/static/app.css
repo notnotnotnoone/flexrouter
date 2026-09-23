@@ -660,7 +660,8 @@ table.matrix th { padding: 9px 14px; }
 .ph { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--rule); }
 .ph h2 { font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--ink-2); margin: 0; }
 .pb { padding: 14px; }
-.panel-page { background: var(--panel); border: 1px solid var(--rule); padding: 16px; margin: 12px 0; }
+.panel-page { display: flex; flex-direction: column; gap: 16px; }
+.panel-page > .panel { position: relative; }
 
 
 .state-ok, .state-warn, .state-bad { white-space: nowrap; font-family: var(--mono); font-size: 12px; }
@@ -700,6 +701,9 @@ p.state-bad { background: var(--bad-wash); }
 /* forms on the older pages: label-left rows, never a run-on sentence */
 form { display: inline; }
 td form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+td input[type="text"], td input[type="number"], td input:not([type]) { width: 84px; padding: 4px 7px; font-size: 12px; }
+td select { padding: 4px 7px; font-size: 12px; }
+td form label { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ink-3); }
 main > form, .grouped-form {
   display: grid;
   grid-template-columns: 170px minmax(0, 360px);

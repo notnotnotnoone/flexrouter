@@ -641,3 +641,11 @@ def test_a_success_message_becomes_a_toast_seed(client):
 def test_a_failure_message_stays_on_the_page(client):
     body = client.get("/providers?ok=0&message=Nope").text
     assert 'class="state-bad">Nope<' in body
+
+
+@pytest.mark.parametrize("path", ["/providers", "/models", "/buckets", "/requests",
+                                  "/broken", "/brain", "/allowance", "/settings"])
+def test_every_page_uses_the_new_page_title(client, path):
+    body = client.get(path).text
+    assert 'class="page-title"' in body
+    assert "<h1>" not in body          # no bare browser-default headings
