@@ -10,22 +10,34 @@ from __future__ import annotations
 import json
 import os
 import time
-from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from flexrouter import keys as keystore
 from flexrouter import overrides as ov
+from flexrouter import presets
+from flexrouter.probe import probe_key
 from flexrouter import score_facts
 from flexrouter import service_keys
-from flexrouter.dashboard import facts, keytest, pending_actions, ranking, settings_write
+from flexrouter.dashboard import (facts, keytest, overview, pending_actions,
+                                  ranking, settings_write, ui)
+from flexrouter.dashboard import allowance_page as allowance_page_mod
+from dataclasses import asdict
+
+from fastapi.responses import Response
+
+from flexrouter import app_password
+from flexrouter.dashboard import prefs as dashboard_prefs
+from flexrouter.dashboard import settings_page as settings_page_mod
+from flexrouter.dashboard import brain_page as brain_page_mod
+from flexrouter.dashboard import broken_page as broken_page_mod
+from flexrouter.dashboard import requests_page as requests_page_mod
 from flexrouter.dashboard.render import attrs, esc, page, tag
 
 pages = APIRouter()
 
-CSS_PATH = Path(__file__).parent / "wire.css"
 
 
 def _input(**kw) -> str:
@@ -65,281 +77,352 @@ def _redirect_with_message(path: str, ok: bool, message: str) -> RedirectRespons
     return RedirectResponse(url=f"{path}?{qs}", status_code=303)
 
 
-def _tile(label: str, value: object, note: str = "") -> str:
-    return tag(
-        "div",
-        tag("span", esc(label)) + tag("b", esc(value)) + tag("small", esc(note)),
-        cls="tile",
-    )
+# The Overview's ranges and formatting helpers live in overview.py; these
+# names are kept because other pages (and tests) use them.
+RANGES = overview.RANGES
+DEFAULT_RANGE = overview.DEFAULT_RANGE
+_range = overview.range_for
+_num = overview.num
+_chart_series = overview.chart_series
+_KIND_LABELS = overview.KIND_LABELS
 
 
-def _overview_body(router) -> str:
-    summaries = facts.provider_summaries(router)
-    data = facts.overview(router, summaries=summaries)
-    p, k, m, learned = data["providers"], data["keys"], data["models"], data["learned"]
-
-    tiles = tag("div", "".join([
-        _tile("Providers", p["total"],
-              f"{p['ok']} fine, {p['warn']} unsettled, {p['bad']} down"),
-        _tile("Keys held", k["total"],
-              f"{k['live']} in use, {k['cooling']} resting, {k['parked']} parked"),
-        _tile("Models", f"{m['available']} of {m['total']}", "reachable right now"),
-        _tile("Failures understood", learned["error_kinds"],
-              f"{learned['awaiting_you']} waiting for you"),
-        _tile("Models it has learned about", learned["models_with_facts"], ""),
-    ]), cls="tiles")
-
-    rows = [tag("tr", "".join([
-        tag("th", "Provider"), tag("th", "State"), tag("th", "Address"),
-        tag("th", "Keys"), tag("th", "Models"), tag("th", "Why"),
-    ]))]
-    for s in summaries:
-        rows.append(tag("tr", "".join([
-            tag("td", esc(s.name)),
-            tag("td", esc(s.state), cls=f"state-{s.state}"),
-            tag("td", esc(s.base_url)),
-            tag("td", esc(f"{s.keys_live} of {s.key_count} in use")),
-            tag("td", esc(s.models_total)),
-            tag("td", esc(s.quarantine_reason or "")),
-        ])))
-
-    buckets = ", ".join(data["service"]["buckets"]) or "none set up"
-
-    needs_you = data["needs_you"]
-    if needs_you:
-        plural = "" if needs_you == 1 else "s"
-        message = f"{needs_you} thing{plural} need{'s' if needs_you == 1 else ''} you - see What's broken."
-        tail = tag("p", tag("a", esc(message), href="/broken"), cls="note")
-    else:
-        tail = tag("p", "Nothing needs you right now.", cls="note")
-
-    return (
-        tag("h1", "Overview")
-        + tag("p", "Everything at a glance. Apps point here instead of at "
-                   "OpenAI, and this is what the router can reach for them.",
-              cls="lede")
-        + tiles
-        + tag("h3", "Every provider")
-        + tag("table", "".join(rows))
-        + tag("h3", "Buckets your apps can ask for")
-        + tag("p", esc(buckets))
-        + tail
-    )
+def _panel(title: str, body: str, *, sub: str = "", action: str = "") -> str:
+    """A titled block on the Overview. `body` is already-rendered HTML."""
+    head = tag("h2", esc(title))
+    if sub:
+        head += tag("span", esc(sub), cls="sub")
+    if action:
+        head += tag("span", "", cls="spacer") + action
+    return tag("section", tag("div", head, cls="ph") + body, cls="panel")
 
 
-_KIND_LABELS = {
-    "provider_down": "provider is down",
-    "model_set_aside": "model set aside",
-    "key_benched": "key benched",
-    "key_cooling": "key resting",
-    "unclear_error": "an error it isn't sure about",
-}
-
-
-def _broken_table(items) -> str:
-    if not items:
-        return tag("p", "Nothing here.", cls="note")
-    rows = [tag("tr", "".join([
-        tag("th", "What"), tag("th", "Where"), tag("th", "Why"),
-    ]))]
-    for item in items:
-        where = item.provider
-        if item.detail:
-            where = f"{where} - {item.detail}" if where else item.detail
-        rows.append(tag("tr", "".join([
-            tag("td", esc(_KIND_LABELS.get(item.kind, item.kind))),
-            tag("td", esc(where)),
-            tag("td", esc(item.reason)),
-        ])))
-    return tag("table", "".join(rows))
-
-
-def _broken_body(router) -> str:
-    data = facts.broken(router)
-    needs_you, handling_itself = data["needs_you"], data["handling_itself"]
-
-    return (
-        tag("h1", "What's broken")
-        + tag("p", "Two piles: what only you can fix, and what the service "
-                   "is already handling on its own without you doing "
-                   "anything.", cls="lede")
-        + tag("h3", f"Needs you ({len(needs_you)})")
-        + _broken_table(needs_you)
-        + tag("h3", f"Handling itself ({len(handling_itself)})")
-        + _broken_table(handling_itself)
-    )
+def _field(label: str, input_html: str) -> str:
+    """One form control with a small caption above it, instead of a bare
+    input whose meaning only shows up in a hover tooltip."""
+    return tag("label", tag("span", esc(label)) + input_html, cls="field")
 
 
 def _add_provider_form() -> str:
     return tag(
         "form",
-        _input(type="text", name="name", placeholder="name") + " "
-        + _input(type="text", name="base_url", placeholder="base URL") + " "
-        + _input(type="text", name="header_parser",
-              placeholder="header parser (optional)") + " "
-        + _input(type="text", name="key_strategy",
-              placeholder="key strategy (optional)") + " "
-        + _input(type="text", name="key_secret",
-              placeholder="key (optional)") + " "
-        + _input(type="text", name="key_label",
-              placeholder="key label (optional)") + " "
+        _field("Name", _input(type="text", name="name", placeholder="name"))
+        + _field("Base URL", _input(type="text", name="base_url", placeholder="base URL"))
+        + _field("Header parser", _input(type="text", name="header_parser",
+              placeholder="optional"))
+        + _field("Key strategy", _input(type="text", name="key_strategy",
+              placeholder="optional"))
+        + _field("Key", _input(type="text", name="key_secret",
+              placeholder="optional"))
+        + _field("Key label", _input(type="text", name="key_label",
+              placeholder="optional"))
         + tag("button", "Add provider", type="submit"),
-        method="post", action="/providers",
+        method="post", action="/providers", cls="grouped-form",
     )
+
+
+def _provider_row(s) -> str:
+    return tag("tr", "".join([
+        tag("td", tag("a", esc(s.name), href=f"/providers/{quote(s.name)}")),
+        tag("td", ui.status(s.state)),
+        tag("td", esc(s.base_url), cls="dim"),
+        tag("td", esc(f"{s.keys_live} live, {s.keys_cooling} resting, {s.keys_parked} parked")),
+        tag("td", _num(s.models_total), cls="num"),
+        tag("td", esc(s.quarantine_reason or ""), cls="dim"),
+    ]))
+
+
+def _preset_card(p, configured: bool) -> str:
+    tier = "free tier" if p.free else "paid"
+    if configured:
+        inner = (
+            tag("span", esc(p.label), cls="preset-name")
+            + tag("span", esc(tier), cls="preset-tier dim")
+            + tag("a", "Open", href=f"/providers/{quote(p.name)}", cls="button-link")
+        )
+        return tag("div", inner, cls="preset-card is-configured")
+    inner = (
+        tag("span", esc(p.label), cls="preset-name")
+        + tag("span", esc(tier), cls="preset-tier dim")
+        + tag("a", "Add", href=f"/providers/add/{quote(p.name)}", cls="button-link",
+              **{"hx-get": f"/providers/add/{quote(p.name)}?panel=1",
+                 "hx-target": "#sheet-root", "hx-swap": "innerHTML",
+                 "hx-push-url": f"/providers/add/{quote(p.name)}"})
+    )
+    return tag("div", inner, cls="preset-card")
+
+
+def _preset_grid(router) -> str:
+    known = set(router._cfg.providers)
+    cards = "".join(
+        _preset_card(p, p.name in known)
+        for p in sorted(presets.all().values(), key=lambda x: (x.name not in known, x.label))
+    )
+    trouble = presets.problems()
+    note = (
+        tag("p", esc("Some of your own presets could not be read: "
+                     + "; ".join(trouble)), cls="state-bad")
+        if trouble else ""
+    )
+    return tag("div", note + tag("div", cards, cls="preset-grid"), cls="pb")
 
 
 def _providers_body(router, banner: str = "") -> str:
     summaries = facts.provider_summaries(router)
 
-    rows = [tag("tr", "".join([
-        tag("th", "Provider"), tag("th", "State"), tag("th", "Address"),
-        tag("th", "Keys"), tag("th", "Models"), tag("th", "Why"),
-    ]))]
-    for s in summaries:
-        rows.append(tag("tr", "".join([
-            tag("td", tag("a", esc(s.name), href=f"/providers/{quote(s.name)}")),
-            tag("td", esc(s.state), cls=f"state-{s.state}"),
-            tag("td", esc(s.base_url)),
-            tag("td", esc(f"{s.keys_live} live, {s.keys_cooling} resting, {s.keys_parked} parked")),
-            tag("td", esc(s.models_total)),
-            tag("td", esc(s.quarantine_reason or "")),
-        ])))
+    if summaries:
+        header = tag("tr", "".join([
+            tag("th", "Provider"), tag("th", "State"), tag("th", "Address"),
+            tag("th", "Keys"), tag("th", "Models"), tag("th", "Why"),
+        ]))
+        rows = "".join(_provider_row(s) for s in summaries)
+        table_html = tag("div", tag("table", header + rows, cls="matrix"), cls="scroll")
+        sub = f"{len(summaries)} configured"
+    else:
+        table_html = tag("div", tag("p", "No providers configured yet.", cls="note"), cls="pb")
+        sub = ""
+
+    providers_panel = _panel("Providers", table_html, sub=sub)
+    add_panel = _panel(
+        "Add a provider",
+        _preset_grid(router),
+        sub="pick one, paste a key, import its models",
+    )
+    custom_panel = _panel(
+        "Custom provider",
+        tag("div",
+            tag("p", "For anything not in the list above. You supply the "
+                     "address; everything else works the same.", cls="note")
+            + _add_provider_form(), cls="pb"),
+    )
 
     return (
-        tag("h1", "Providers & keys")
+        tag("div", tag("h1", "Providers & keys", cls="page-title"), cls="page-head")
         + banner
         + tag("p", "Every provider you've configured, and every key it "
                    "holds. Click a provider for its keys.", cls="lede")
-        + tag("table", "".join(rows))
-        + tag("h3", "Add a provider")
-        + tag("p", "A key can be added right here, or later from the "
-                   "provider's own page - models are always added from "
-                   "there, one at a time, once the provider exists.",
-              cls="note")
-        + _add_provider_form()
+        + tag("div", providers_panel + add_panel + custom_panel, cls="panel-page")
     )
+
+
+def _key_fact(label: str, value: object) -> str:
+    return tag("span", tag("span", esc(label) + " ", cls="dim") + esc(value))
+
+
+def _key_row(detail, k) -> str:
+    until = f", back in {int(k.until - time.time())}s" if k.until else ""
+    status = f"{k.status}{until}"
+    status_cls = "ok" if k.status == "live" else "warn" if k.status == "cooling" else "bad"
+    last_used = (
+        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(k.last_used_at))
+        if k.last_used_at else "never"
+    )
+    latency = f"{k.ema_latency_ms:.0f} ms" if k.ema_latency_ms else "-"
+    test_form = tag(
+        "form",
+        tag("button", "Test", type="submit"),
+        method="post",
+        action=f"/providers/{quote(detail.name, safe=':')}/keys/{quote(k.id, safe=':')}/test",
+        cls="key-test",
+    )
+    remove_form = tag(
+        "form",
+        tag("button", "Remove", type="submit", cls="danger"),
+        method="post",
+        action=f"/providers/{quote(detail.name, safe=':')}/keys/{quote(k.id, safe=':')}/remove",
+        cls="key-remove",
+    )
+    edit_form = tag(
+        "form",
+        _field("Label", _input(type="text", name="label", value=esc(k.label)))
+        + _field("Weight", _input(type="number", name="weight", value=esc(k.weight), min="1"))
+        + _field("Only these models",
+                 _input(type="text", name="allow_models",
+                        value=esc(" ".join(k.allow_models)),
+                        placeholder="* (all)"))
+        + tag("label",
+              _input(type="checkbox", name="enabled",
+                     **({"checked": True} if k.enabled else {}))
+              + "enabled", cls="check-field")
+        + tag("button", "Save", type="submit"),
+        method="post",
+        action=f"/providers/{quote(detail.name, safe=':')}/keys/{quote(k.id, safe=':')}/edit",
+        cls="grouped-form key-edit",
+    )
+
+    head = tag(
+        "div",
+        tag("span", esc(k.label or k.id), cls="key-label")
+        + tag("span", esc(k.masked), cls="key-value dim")
+        + tag("span", esc(status), cls=f"key-status state-{status_cls}")
+        + tag("span", esc("enabled" if k.enabled else "disabled"), cls="dim")
+        + test_form
+        + remove_form,
+        cls="key-head",
+    )
+    facts_line = tag(
+        "div",
+        _key_fact("Weight", k.weight)
+        + _key_fact("Allowed", ", ".join(k.allow_models) or "all")
+        + _key_fact("Today", f"{k.requests_today:,} req / {k.tokens_today:,} tok")
+        + _key_fact("Failures (24h)", k.failures_24h)
+        + _key_fact("Consecutive fails", k.consecutive_failures)
+        + _key_fact("Active now", k.active_requests)
+        + _key_fact("Typical latency", latency)
+        + _key_fact("Last used", last_used)
+        + _key_fact("Source", k.source),
+        cls="key-facts",
+    )
+    why = tag("div", esc(k.reason), cls="key-reason dim") if k.reason else ""
+    return tag("div", head + facts_line + why + edit_form, cls="key-row")
 
 
 def _key_rows(detail) -> str:
     if not detail.keys:
-        return tag("p", "No keys configured for this provider.", cls="note")
-
-    header = tag("tr", "".join([
-        tag("th", h) for h in [
-            "Key", "Value", "Status", "Why", "Weight", "Allowed models", "Enabled",
-            "Requests today", "Tokens today", "Failures (24h)",
-            "Consecutive failures", "Active now", "Typical latency",
-            "Last used", "Source", "Test",
-        ]
-    ]))
-    rows = [header]
-    for k in detail.keys:
-        until = f", back in {int(k.until - time.time())}s" if k.until else ""
-        status = f"{k.status}{until}"
-        last_used = (
-            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(k.last_used_at))
-            if k.last_used_at else "never"
-        )
-        latency = f"{k.ema_latency_ms:.0f} ms" if k.ema_latency_ms else ""
-        test_form = tag(
-            "form",
-            tag("button", "Test", type="submit"),
-            method="post",
-            action=f"/providers/{quote(detail.name, safe=':')}/keys/{quote(k.id, safe=':')}/test",
-        )
-        rows.append(tag("tr", "".join([
-            tag("td", esc(k.label or k.id)),
-            tag("td", esc(k.masked)),
-            tag("td", esc(status), cls=f"state-{'ok' if k.status == 'live' else 'warn' if k.status == 'cooling' else 'bad'}"),
-            tag("td", esc(k.reason)),
-            tag("td", esc(k.weight)),
-            tag("td", esc(", ".join(k.allow_models))),
-            tag("td", esc("yes" if k.enabled else "no")),
-            tag("td", esc(k.requests_today)),
-            tag("td", esc(k.tokens_today)),
-            tag("td", esc(k.failures_24h)),
-            tag("td", esc(k.consecutive_failures)),
-            tag("td", esc(k.active_requests)),
-            tag("td", esc(latency)),
-            tag("td", esc(last_used)),
-            tag("td", esc(k.source)),
-            tag("td", test_form),
-        ])))
-    return tag("table", "".join(rows))
+        return tag("div", tag("p", "No keys configured for this provider.", cls="note"), cls="pb")
+    return "".join(_key_row(detail, k) for k in detail.keys)
 
 
 def _provider_edit_form(detail, editable: dict) -> str:
     fields = editable["fields"]
+    labels = {
+        "base_url": "Base URL", "header_parser": "Header parser",
+        "key_strategy": "Key strategy",
+    }
     inputs = "".join(
-        _input(type="text", name=name,
-            value=esc(fields[name]["value"]), title=name) + " "
+        _field(labels[name], _input(type="text", name=name,
+            value=esc(fields[name]["value"])))
         for name in ("base_url", "header_parser", "key_strategy")
     )
     edit = tag(
         "form", inputs + tag("button", "Save", type="submit"),
         method="post", action=f"/providers/{quote(detail.name, safe=':')}/edit",
+        cls="grouped-form",
     )
     clear = (
         tag("form", tag("button", "Put it all back", type="submit"),
             method="post", action=f"/providers/{quote(detail.name, safe=':')}/clear")
         if editable["overridden_at_all"] else ""
     )
-    return tag("h3", "Change it") + edit + clear
+    return edit + clear
 
 
 def _provider_add_model_form(provider: str, bucket_names: list) -> str:
     bucket_options = "".join(
         tag("option", esc(b), value=esc(b)) for b in bucket_names
     )
+    picker = f"<select{attrs({'name': 'bucket'})}>{bucket_options}</select>"
     return tag(
         "form",
-        f"<select{attrs({'name': 'bucket'})}>{bucket_options}</select> "
-        + _input(type="text", name="model", placeholder="model") + " "
-        + _input(type="number", name="score", placeholder="score") + " "
-        + _input(type="number", name="rpm", placeholder="rpm") + " "
-        + _input(type="number", name="tpm", placeholder="tpm") + " "
-        + _input(type="number", name="context_window",
-              placeholder="context window (optional)") + " "
-        + tag("label", _input(type="checkbox", name="vision") + "vision") + " "
+        _field("Bucket", picker)
+        + _field("Model", _input(type="text", name="model", placeholder="model"))
+        + _field("Score", _input(type="number", name="score", placeholder="score"))
+        + _field("RPM", _input(type="number", name="rpm", placeholder="rpm"))
+        + _field("TPM", _input(type="number", name="tpm", placeholder="tpm"))
+        + _field("Context", _input(type="number", name="context_window",
+              placeholder="optional"))
+        + tag("label", _input(type="checkbox", name="vision") + "vision", cls="check-field")
         + tag("button", "Add model", type="submit"),
         method="post", action=f"/providers/{quote(provider, safe=':')}/models",
+        cls="grouped-form",
     )
+
+
+def _provider_models_line(label: str, models: list) -> str:
+    if not models:
+        return tag("div", tag("span", esc(label) + " ", cls="dim") + "none", cls="model-line")
+    return tag("div", tag("span", esc(label) + " ", cls="dim") + esc(", ".join(models)),
+              cls="model-line")
 
 
 def _provider_detail_body(detail, editable: dict, bucket_names: list,
                           banner: str = "") -> str:
-    models = (
-        tag("p", esc(f"Alive: {', '.join(detail.models_alive) or 'none'}"))
-        + tag("p", esc(f"Gone: {', '.join(detail.models_gone) or 'none'}"))
-    )
     quarantine_note = (
         tag("p", esc(detail.quarantine_reason), cls="state-bad")
         if detail.quarantined else ""
     )
+
+    models_panel = _panel(
+        "Models",
+        tag("div",
+            _provider_models_line("Alive:", detail.models_alive)
+            + _provider_models_line("Gone:", detail.models_gone),
+            cls="pb"),
+    )
+    add_model_panel = _panel(
+        "Add a model",
+        tag("div",
+            tag("p", "One model per submission, into the bucket you choose. "
+                     "Submit again for the next one.", cls="note")
+            + _provider_add_model_form(detail.name, bucket_names),
+            cls="pb"),
+    )
+    keys_panel = _panel(
+        "Keys",
+        _key_rows(detail)
+        + tag("div",
+              tag("p", "One key per account. Two keys from the same account "
+                       "share that account's rate limit, and flexrouter "
+                       "counts them separately - so add a second key only "
+                       "when it is a second signup.", cls="note")
+              + tag(
+                  "form",
+                  _field("Key", _input(type="password", name="secret",
+                                       placeholder="paste it here"))
+                  + _field("Label", _input(type="text", name="label",
+                                           placeholder="which account this is"))
+                  + tag("button", "Add key", type="submit"),
+                  method="post", action=f"/providers/{quote(detail.name, safe=':')}/keys",
+                  cls="grouped-form",
+              ),
+              cls="pb"),
+        sub="test sends one real chat request through this key",
+    )
+    edit_panel = _panel(
+        "Change it",
+        tag("div", _provider_edit_form(detail, editable), cls="pb"),
+    )
+
     return (
-        tag("h1", esc(detail.name))
+        tag("div", tag("h1", esc(detail.name), cls="page-title"), cls="page-head")
         + banner
         + tag("p", esc(detail.base_url), cls="lede")
         + quarantine_note
-        + tag("h3", "Models")
-        + models
-        + tag("h3", "Add a model")
-        + tag("p", "One model per submission, into the bucket you choose. "
-                   "Submit again for the next one.", cls="note")
-        + _provider_add_model_form(detail.name, bucket_names)
-        + tag("h3", "Keys")
-        + tag("p", "Test sends one real chat request through this key - not "
-                   "just a model list lookup, which can look fine while "
-                   "every real request still fails.", cls="note")
-        + _key_rows(detail)
-        + _provider_edit_form(detail, editable)
+        + tag("div",
+              models_panel + add_model_panel + keys_panel + edit_panel,
+              cls="panel-page")
     )
 
 
-def _cap_cell(fact) -> str:
+_CAP_SOURCE_WORDS = {
+    "published": "the provider says so",
+    "observed": "seen working",
+    "guessed": "nobody has said either way yet",
+    "manual": "you set it; nothing overrides it",
+}
+
+
+def _cap_cell(fact, name: str = "") -> str:
+    """One capability as a tag. The tag's style says where the fact came
+    from (solid published, outlined observed, faded guessed, underlined
+    manual); hovering says it in words."""
     if fact is None:
-        return tag("span", "unknown", cls="cap-unknown")
-    return tag("span", esc(f"{fact.status} ({fact.source})"), cls=f"cap-{fact.source}")
+        return tag("span", esc(name or "unknown"), cls="cap cap-unknown",
+                   title="not known yet")
+    if fact.status == "no":
+        return ""
+    word = name or fact.status
+    mark = "?" if fact.status == "doubted" else ""
+    return tag("span", esc(word + mark), cls=f"cap cap-{fact.source}",
+               title=f"{fact.status} - {_CAP_SOURCE_WORDS.get(fact.source, fact.source)}")
+
+
+def _size_tag(tokens) -> str:
+    if not tokens:
+        return ""
+    k = int(tokens) // 1000
+    return tag("span", esc(f"{k}K" if k < 1000 else f"{k // 1000}M"), cls="cap cap-size",
+               title=f"{int(tokens):,} tokens of context")
 
 
 def _pending_action_form(action: str, url: str, extra: str = "") -> str:
@@ -399,22 +482,21 @@ def _model_edit_form(r) -> str:
     edit = tag(
         "form",
         _input(type="hidden", name="action", value="edit")
-        + _input(type="number", name="score", value=esc(r.score),
-              title="score")
-        + _input(type="number", name="rpm", value=esc(r.rpm), title="rpm")
-        + _input(type="number", name="tpm", value=esc(r.tpm), title="tpm")
-        + _input(type="number", name="context_window",
-              value=esc(r.context_window), title="context window")
+        + _field("Score", _input(type="number", name="score", value=esc(r.score)))
+        + _field("Requests a minute", _input(type="number", name="rpm", value=esc(r.rpm)))
+        + _field("Tokens a minute", _input(type="number", name="tpm", value=esc(r.tpm)))
+        + _field("Context window", _input(type="number", name="context_window",
+                                          value=esc(r.context_window)))
         + tag("label", _input(type="checkbox", name="vision",
-                          **{"checked": True} if vision_checked else {})
-              + "vision")
+                              **{"checked": True} if vision_checked else {})
+              + "Can see images", cls="check-field")
         + tag("button", "Save", type="submit"),
-        method="post", action=f"/models/{ident}",
+        method="post", action=f"/models/{ident}", cls="grouped-form",
     )
     disable = tag(
         "form",
         _input(type="hidden", name="action", value="disable")
-        + tag("button", "Disable", type="submit"),
+        + tag("button", "Disable this model", type="submit", cls="danger"),
         method="post", action=f"/models/{ident}",
     )
     return edit + disable
@@ -423,25 +505,54 @@ def _model_edit_form(r) -> str:
 def _models_body(router, banner: str = "") -> str:
     rows_data = facts.models(router)
 
-    header = tag("tr", "".join(tag("th", h) for h in [
-        "Provider", "Model", "Buckets", "Score", "Context",
-        "Vision", "Tools", "Reasoning", "State", "Why", "Change it",
-    ]))
-    rows = [header]
-    for r in rows_data:
+    header = tag("tr", "".join(
+        tag("th", h, cls=c, **({"data-sort": k} if k else {}))
+        for h, c, k in [("Model", "", "model"), ("Buckets", "", ""), ("Score", "", "score"),
+                        ("Can do", "", ""), ("State", "", "state"), ("", "", "")]))
+    rows = []
+    top_score = max((r.score for r in rows_data), default=0) or 1
+    providers = sorted({r.provider for r in rows_data})
+    for n, r in enumerate(rows_data):
+        caps = (_cap_cell(r.vision, "vision") + _cap_cell(r.tools, "tools")
+                + _cap_cell(r.reasoning, "reason") + _size_tag(r.learned_context or r.context_window))
+        ok = r.state == "available"
+        search = f"{r.provider} {r.model} {' '.join(r.buckets)}".lower()
         rows.append(tag("tr", "".join([
-            tag("td", esc(r.provider)),
-            tag("td", esc(r.model)),
-            tag("td", esc(", ".join(r.buckets))),
-            tag("td", esc(r.score)),
-            tag("td", esc(r.learned_context or r.context_window)),
-            tag("td", _cap_cell(r.vision)),
-            tag("td", _cap_cell(r.tools)),
-            tag("td", _cap_cell(r.reasoning)),
-            tag("td", esc(r.state), cls=f"state-{'ok' if r.state == 'available' else 'bad'}"),
-            tag("td", esc(r.why)),
-            tag("td", _model_edit_form(r)),
-        ])))
+            tag("td", tag("span", esc(r.provider), cls="m-prov") + tag("span", esc(r.model),
+                                                                        cls="m-name")),
+            tag("td", "".join(tag("span", esc(b), cls="tag") for b in r.buckets)),
+            tag("td", tag("div", tag("span", "", cls="m-bar",
+                                     style=f"width:{r.score / top_score * 100:.0f}%"),
+                          cls="m-track") + tag("span", esc(r.score), cls="m-score")),
+            tag("td", tag("div", caps, cls="caps")),
+            tag("td", ui.status("ok" if ok else "bad")
+                + (tag("div", esc(r.why), cls="m-why") if r.why else "")),
+            tag("td", tag("button", ui.icon("arrow-right"), type="button", cls="m-open",
+                          **{"aria-label": f"Details for {r.model}", "data-toggle": f"m-{n}"})),
+        ]), cls="m-row", **{"data-search": search, "data-provider": r.provider,
+                            "data-score": r.score, "data-model": r.model,
+                            "data-state": r.state, "data-toggle-row": f"m-{n}"}))
+        detail = tag("div",
+                     tag("div",
+                         tag("h4", "Change this model")
+                         + _model_edit_form(r)
+                         + (tag("p", esc(f"Priced at ${r.price_in}/M in, ${r.price_out}/M out"),
+                                cls="note") if r.price_in is not None else ""),
+                         cls="m-detail-body"),
+                     cls="m-detail-inner")
+        rows.append(tag("tr", tag("td", detail, colspan="6"), cls="m-detail", id=f"m-{n}",
+                        hidden=True))
+    provider_opts = "".join(f'<option value="{esc(p)}">{esc(p)}</option>' for p in providers)
+    filters = tag("div",
+                  ui.icon("search")
+                  + '<input type="search" placeholder="Find a model" aria-label="Find a model" '
+                    'data-page-search data-filter=".m-row">'
+                  + f'<select data-filter-attr="provider" data-filter-target=".m-row" '
+                    f'aria-label="Provider"><option value="">Any provider</option>{provider_opts}'
+                    "</select>",
+                  cls="filters")
+    table = tag("table", tag("thead", header) + tag("tbody", "".join(rows)),
+                cls="models-table", **{"data-sortable": ""})
 
     pending = facts.pending_catalogue(router)
     bucket_names = list(router._cfg.tiers)
@@ -462,26 +573,35 @@ def _models_body(router, banner: str = "") -> str:
         else tag("p", "No disabled models.", cls="note")
     )
 
+    n_pending = sum(len(b.get(kind) or []) for b in pending.values() if isinstance(b, dict)
+                    for kind in ("appeared", "vanished", "changed"))
+    status = f"{len(rows_data)} models in use · {len(disabled)} disabled"
+    if n_pending:
+        status += f" · {n_pending} catalogue changes waiting"
+    head = tag("div",
+               tag("div", tag("h1", "Models", cls="page-title")
+                   + tag("p", esc(status), cls="page-status"), cls="page-head-text")
+               + tag("div", ui.button("Rank models with an AI", href="/models/rank",
+                                      icon_name="brain"), cls="page-actions"),
+               cls="page-head")
+    legend = tag("p", "Tag styles say where a fact came from: "
+                 + tag("span", "solid", cls="cap cap-published") + " the provider says so, "
+                 + tag("span", "outlined", cls="cap cap-observed") + " seen working, "
+                 + tag("span", "faded", cls="cap cap-guessed") + " a guess, "
+                 + tag("span", "underlined", cls="cap cap-manual") + " set by you.",
+                 cls="note cap-legend")
     return (
-        tag("h1", "Models")
-        + banner
-        + tag("p", "Every model configured in a bucket, and what the "
-                   "service has learned about it from real traffic. "
-                   "A capability's source is in parentheses: published "
-                   "(the provider says so), observed (seen working), "
-                   "guessed (nobody's said either way yet), or manual "
-                   "(you set it and nothing overrides it).", cls="lede")
-        + tag("table", "".join(rows))
-        + tag("p", tag("a", "Rank models with an AI", href="/models/rank"))
-        + tag("h3", "Disabled models")
-        + disabled_section
-        + tag("h3", "Pending catalogue changes")
-        + tag("p", "What the last catalogue check found. Accepting an "
-                   "appeared model adds it to the bucket you choose; "
-                   "accepting a vanished model disables it; accepting a "
-                   "changed field applies the provider's new value.",
-              cls="note")
-        + _pending_body(pending, bucket_names)
+        head + banner + filters
+        + tag("div", tag("div", table, cls="scroll"), cls="box flush", **{"data-enter": ""})
+        + legend
+        + ui.box("Disabled models", disabled_section, **{"data-enter": ""})
+        + ui.box("Pending catalogue changes",
+                 tag("p", "What the last catalogue check found. Accepting a new model adds it "
+                          "to the bucket you choose; accepting a vanished one disables it; "
+                          "accepting a changed field applies the provider's new value.",
+                     cls="note") + _pending_body(pending, bucket_names),
+                 cls="tray" + (" has-items" if n_pending else ""),
+                 id="pending", **{"data-enter": ""})
     )
 
 
@@ -502,7 +622,7 @@ def _rank_body(prompt: str, notes: str) -> str:
         method="post", action="/models/rank/proposal",
     )
     return (
-        tag("h1", "Rank models with an AI")
+        tag("h1", "Rank models with an AI", cls="page-title")
         + tag("p", "Builds a ready-made prompt from the current model "
                    "list plus whatever benchmark material you supply. "
                    "Send it yourself, or copy it into whatever chat "
@@ -554,21 +674,13 @@ def _rank_proposal_body(changes: list, skipped_manual: list) -> str:
     )
 
     return (
-        tag("h1", "Proposed scores")
+        tag("h1", "Proposed scores", cls="page-title")
         + tag("p", "Nothing here is applied until you press the button "
                    "below. Uncheck any row you don't want changed.",
               cls="lede")
         + skipped_note
         + body
     )
-
-
-def _bucket_verdict(row) -> tuple[str, str]:
-    if row.in_the_running:
-        return "ok", "would answer"
-    if row.available:
-        return "warn", "available, but outscored right now"
-    return "bad", row.detail or (row.reason or "unavailable")
 
 
 def _add_model_form(bucket: str) -> str:
@@ -596,157 +708,6 @@ def _add_bucket_form() -> str:
     )
 
 
-def _buckets_body(router, banner: str = "") -> str:
-    all_buckets = facts.buckets(router)
-
-    sections = []
-    for b in all_buckets:
-        header = tag("tr", "".join(tag("th", h) for h in [
-            "Provider", "Model", "Score", "Verdict",
-        ]))
-        rows = [header]
-        for row in b.models:
-            state, verdict = _bucket_verdict(row)
-            rows.append(tag("tr", "".join([
-                tag("td", esc(row.provider)),
-                tag("td", esc(row.model)),
-                tag("td", esc(row.score)),
-                tag("td", esc(verdict), cls=f"state-{state}"),
-            ])))
-        sections.append(
-            tag("h3", esc(b.name))
-            + (tag("table", "".join(rows)) if b.models else tag("p", "Empty.", cls="note"))
-            + _add_model_form(b.name)
-        )
-
-    body = "".join(sections) if sections else tag("p", "No buckets are configured yet.", cls="note")
-
-    return (
-        tag("h1", "Buckets")
-        + banner
-        + tag("p", "What each bucket can pick from right now, best score "
-                   "first. \"Would answer\" means a real request could "
-                   "land on this model - the engine picks randomly among "
-                   "everything within 20% of the top score, so more than "
-                   "one model can carry that verdict.", cls="lede")
-        + body
-        + tag("h3", "Add a bucket")
-        + _add_bucket_form()
-    )
-
-
-def _requests_body(router) -> str:
-    rows_data = facts.recent_requests(router)
-    if not rows_data:
-        return (
-            tag("h1", "Requests")
-            + tag("p", "Nothing has come through yet.", cls="note")
-        )
-
-    header = tag("tr", "".join(tag("th", h) for h in [
-        "When", "Bucket", "Result", "Answered by", "Tokens in/out",
-        "Time", "Skipped",
-    ]))
-    rows = [header]
-    for r in rows_data:
-        answered = (
-            f"{r.answered_by['provider']}/{r.answered_by['model']}"
-            if r.answered_by else ""
-        )
-        rows.append(tag("tr", "".join([
-            tag("td", esc(r.at)),
-            tag("td", esc(r.bucket)),
-            tag("td", esc("ok" if r.ok else "failed"), cls=f"state-{'ok' if r.ok else 'bad'}"),
-            tag("td", esc(answered)),
-            tag("td", esc(f"{r.tokens_in}/{r.tokens_out}")),
-            tag("td", esc(f"{r.ms_total} ms")),
-            tag("td", esc(r.skipped_count)),
-        ])))
-
-    return (
-        tag("h1", "Requests")
-        + tag("p", "The last 50 requests the service has handled, newest "
-                   "first.", cls="lede")
-        + tag("table", "".join(rows))
-    )
-
-
-def _brain_body(router) -> str:
-    entries = facts.error_brain_entries(router)
-    if not entries:
-        return tag("h1", "Error brain") + tag("p", "Nothing learned yet.", cls="note")
-
-    header = tag("tr", "".join(tag("th", h) for h in [
-        "Verdict", "Source", "Confidence", "Seen", "First seen",
-        "Last seen", "Sample", "Needs review",
-    ]))
-    rows = [header]
-    for e in entries:
-        rows.append(tag("tr", "".join([
-            tag("td", esc(e.verdict)),
-            tag("td", esc(e.source)),
-            tag("td", esc(f"{e.confidence:.0%}")),
-            tag("td", esc(e.seen)),
-            tag("td", esc(e.first_at)),
-            tag("td", esc(e.last_at)),
-            tag("td", esc(e.sample)),
-            tag("td", esc("yes" if e.flagged_for_review else ""),
-                cls="state-warn" if e.flagged_for_review else ""),
-        ])))
-
-    return (
-        tag("h1", "Error brain")
-        + tag("p", "Every kind of provider error the service has learned "
-                   "to recognise. Entries marked \"needs review\" were "
-                   "guessed below its confidence threshold - correcting "
-                   "one by hand isn't wired up yet.", cls="lede")
-        + tag("table", "".join(rows))
-    )
-
-
-def _allowance_body(router) -> str:
-    rows_data = facts.allowance(router)
-    if not rows_data:
-        return tag("h1", "Allowance") + tag("p", "No models configured.", cls="note")
-
-    header = tag("tr", "".join(tag("th", h) for h in [
-        "Provider", "Model", "Your caps", "Provider headroom",
-    ]))
-    rows = [header]
-    for r in rows_data:
-        caps = ", ".join(f"{k} {v}" for k, v in r.quotas.items()) or "none set"
-        if not r.quotas:
-            cap_cell = tag("td", esc(caps))
-        else:
-            text_ = caps if r.quota_ok else (
-                f"{caps} - used up, back in {int(r.quota_wait_seconds)}s")
-            cap_cell = tag("td", esc(text_), cls=f"state-{'ok' if r.quota_ok else 'bad'}")
-
-        if r.provider_rate_exhausted:
-            headroom = (
-                f"exhausted, back in {int(r.provider_available_at - time.time())}s"
-                if r.provider_available_at else "exhausted"
-            )
-            headroom_cell = tag("td", esc(headroom), cls="state-bad")
-        else:
-            headroom_cell = tag("td", "ok", cls="state-ok")
-
-        rows.append(tag("tr", "".join([
-            tag("td", esc(r.provider)),
-            tag("td", esc(r.model)),
-            cap_cell,
-            headroom_cell,
-        ])))
-
-    return (
-        tag("h1", "Allowance")
-        + tag("p", "Free-tier headroom, not money - nothing here tracks "
-                   "cost, because nothing in the service records it.",
-              cls="lede")
-        + tag("table", "".join(rows))
-    )
-
-
 _INT_SETTINGS = frozenset({
     "port", "dashboard_port", "window_seconds", "penalty_base_seconds",
     "penalty_max_seconds", "session_ttl_minutes", "sample_interval_seconds",
@@ -766,32 +727,6 @@ def _cast_setting(field: str, raw_value: str):
             return {} if field == "provider_budget" else []
         return json.loads(raw_value)
     return raw_value
-
-
-def _display_setting(value) -> str:
-    if isinstance(value, (dict, list)):
-        return json.dumps(value)
-    return "" if value is None else str(value)
-
-
-def _settings_field_row(f) -> str:
-    edit = tag(
-        "form",
-        _input(type="text", name="value", value=esc(_display_setting(f.value)))
-        + tag("button", "Save", type="submit"),
-        method="post", action=f"/settings/{quote(f.name)}",
-    )
-    clear = (
-        tag("form", tag("button", "Put it back", type="submit"),
-            method="post", action=f"/settings/{quote(f.name)}/clear")
-        if f.overridden else ""
-    )
-    return tag("tr", "".join([
-        tag("td", esc(f.name)),
-        tag("td", edit),
-        tag("td", esc("changed here" if f.overridden else "typed by you")),
-        tag("td", clear),
-    ]))
 
 
 def _service_key_row(name: str, label: str, env_var: str) -> str:
@@ -831,60 +766,125 @@ def _service_keys_section() -> str:
         for name, (label, env_var) in service_keys.SERVICES.items()
     ]
     return (
-        tag("h3", "Service keys")
-        + tag("p", "Not a chat provider - these are keys the service uses "
-                   "for its own calls: scoring a newly discovered model, "
-                   "or (once it's built) classifying an error. Typed here "
-                   "first, its environment variable second - same order "
-                   "as every other key in this app. Stored the same way a "
-                   "provider's key is: masked everywhere, never shown in "
-                   "full again.", cls="note")
-        + tag("table", "".join(rows))
+        tag("div", tag("h2", "Service keys"), cls="box-head")
+        + tag("div",
+              tag("p", "Keys flexrouter uses for its own calls, not for chat: scoring a "
+                       "newly found model, and the Error brain's classifier. Masked "
+                       "everywhere, never shown in full again.", cls="set-help")
+              + tag("table", "".join(rows)), cls="box-body")
     )
 
 
-def _settings_body(router, banner: str = "") -> str:
-    header = tag("tr", "".join(tag("th", h) for h in [
-        "Setting", "Change it", "Where it's from", "",
-    ]))
-    rows = [header] + [_settings_field_row(f) for f in facts.settings_fields(router)]
-
-    return (
-        tag("h1", "Settings")
-        + banner
-        + tag("p", "Everything here writes to a small file layered on top "
-                   "of your own settings file, never to the settings file "
-                   "itself - \"put it back\" removes just that one change. "
-                   "Editing a provider's address or a model's numbers, "
-                   "adding a provider, a bucket, or a model, live on "
-                   "their own pages.", cls="lede")
-        + tag("table", "".join(rows))
-        + _service_keys_section()
-    )
+@pages.get("/playground", response_class=HTMLResponse, include_in_schema=False)
+def playground_page() -> HTMLResponse:
+    from flexrouter.dashboard import playground_page as pg
+    return HTMLResponse(page("Playground", "playground", pg.body(_live_router())))
 
 
-@pages.get("/wire.css", include_in_schema=False)
-def stylesheet() -> Response:
-    return Response(CSS_PATH.read_text(encoding="utf-8"),
-                    media_type="text/css; charset=utf-8")
+@pages.post("/playground/chat", include_in_schema=False)
+async def playground_chat(request: Request):
+    """Stream one Playground turn through the same in-process path /v1 uses.
+
+    Not behind the app password: the dashboard is local and open by design
+    (ADR 0009), and a browser has no way to hold that password anyway.
+    After the model's stream ends, one `event: flexrouter` says who answered,
+    read from the trace the router just wrote.
+    """
+    from fastapi.responses import StreamingResponse
+
+    from flexrouter.app import _best_bucket, _stream_chat
+    from flexrouter.wire import parse_model, resolve
+
+    body = await request.json()
+    messages = [m for m in (body.get("messages") or [])
+                if isinstance(m, dict) and m.get("role") in ("system", "user", "assistant")
+                and isinstance(m.get("content"), str)]
+    if not messages:
+        return Response(json.dumps({"error": "send at least one message"}), status_code=400,
+                        media_type="application/json")
+    router = _live_router()
+    target = str(body.get("target") or "auto")
+    try:
+        tier = resolve(parse_model(target), list(router._cfg.tiers.keys()), _best_bucket(router))
+    except KeyError as exc:
+        return Response(json.dumps({"error": str(exc.args[0])}), status_code=404,
+                        media_type="application/json")
+    kwargs = {}
+    try:
+        if body.get("temperature") not in (None, ""):
+            kwargs["temperature"] = max(0.0, min(float(body["temperature"]), 2.0))
+        if body.get("max_tokens") not in (None, ""):
+            kwargs["max_tokens"] = max(1, min(int(body["max_tokens"]), 32768))
+    except (TypeError, ValueError):
+        return Response(json.dumps({"error": "temperature and max tokens must be numbers"}),
+                        status_code=400, media_type="application/json")
+
+    async def stream():
+        async for piece in _stream_chat(router, messages, tier, target, kwargs):
+            yield piece
+        last = facts.recent_requests(router, limit=1)
+        if last:
+            r = last[0]
+            info = {"id": r.id, "ok": r.ok, "outcome": r.outcome, "ms": r.ms_total,
+                    "tokens_in": r.tokens_in, "tokens_out": r.tokens_out,
+                    "answered_by": (f"{r.answered_by['provider']}/{r.answered_by['model']}"
+                                    if r.answered_by else None)}
+            yield f"event: flexrouter\ndata: {json.dumps(info)}\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@pages.get("/palette.json", include_in_schema=False)
+def palette_index() -> Response:
+    """Everything the Ctrl+K command bar can jump to."""
+    from flexrouter.dashboard import palette
+    return Response(json.dumps(palette.items(_live_router())), media_type="application/json")
 
 
 @pages.get("/", response_class=HTMLResponse, include_in_schema=False)
-def overview_page() -> HTMLResponse:
-    return HTMLResponse(
-        page("Overview", "overview", _overview_body(_live_router()))
-    )
+def overview_page(range: str = DEFAULT_RANGE, fragment: str = "") -> HTMLResponse:
+    """The Overview, or - with `fragment=1` - only the part that changes.
+
+    The fragment is what the page polls for. It is the same HTML built by
+    the same code as the full page, so the two can never drift; there is no
+    second rendering path and no JSON shape to keep in step.
+    """
+    router = _live_router()
+    key = _range(range)[0]
+    if fragment:
+        return HTMLResponse(overview.inner(router, key))
+    return HTMLResponse(page("Overview", "overview", overview.body(router, key)))
 
 
 @pages.get("/broken", response_class=HTMLResponse, include_in_schema=False)
-def broken_page() -> HTMLResponse:
-    return HTMLResponse(page("What's broken", "broken", _broken_body(_live_router())))
+def broken_page(fragment: str = "") -> HTMLResponse:
+    router = _live_router()
+    if fragment:
+        return HTMLResponse(broken_page_mod.inner(router))
+    return HTMLResponse(page("What's broken", "broken", broken_page_mod.body(router)))
+
+
+def toast_trigger(message: str, kind: str = "ok") -> dict[str, str]:
+    """Response headers that make htmx raise a `toast` event on the page,
+    which app.js shows in the corner."""
+    return {"HX-Trigger": json.dumps({"toast": {"message": message, "kind": kind}})}
 
 
 def _message_banner(ok: str, message: str) -> str:
+    """The outcome a redirect carried back in its querystring.
+
+    Success becomes a toast (app.js reads the hidden seed and shows it).
+    Failure stays on the page as well: an error that fades after four
+    seconds, while the owner is looking somewhere else, is worse than none.
+    """
     if not message:
         return ""
-    return tag("p", esc(message), cls=f"state-{'ok' if ok == '1' else 'bad'}")
+    if ok == "1":
+        return tag("div", esc(message), cls="toast-seed", hidden=True,
+                   **{"data-kind": "ok"})
+    return (tag("div", esc(message), cls="toast-seed", hidden=True, **{"data-kind": "bad"})
+            + tag("p", esc(message), cls="state-bad"))
 
 
 @pages.get("/models", response_class=HTMLResponse, include_in_schema=False)
@@ -1018,24 +1018,72 @@ async def model_write(ident: str, request: Request) -> RedirectResponse:
 
 
 @pages.get("/requests", response_class=HTMLResponse, include_in_schema=False)
-def requests_page() -> HTMLResponse:
-    return HTMLResponse(page("Requests", "requests", _requests_body(_live_router())))
+def requests_page(result: str = "", bucket: str = "", provider: str = "", q: str = "",
+                  limit: int = requests_page_mod.PAGE, id: str = "",
+                  fragment: str = "") -> HTMLResponse:
+    """The request log. `fragment=1` is the live block alone (what it polls
+    for); `id=` opens that request's journey in the side panel."""
+    router = _live_router()
+    params = {"result": result if result in {"ok", "failover", "failed"} else "",
+              "bucket": bucket, "provider": provider, "q": q,
+              "limit": max(requests_page_mod.PAGE, min(int(limit or 0), 5000))}
+    if fragment:
+        return HTMLResponse(requests_page_mod.log(router, params))
+    sheet = ""
+    if id:
+        journey = facts.request_journey(router, id)
+        if journey:
+            sheet = requests_page_mod.journey_panel(journey)
+    return HTMLResponse(page("Requests", "requests",
+                             requests_page_mod.body(router, params), sheet=sheet))
+
+
+@pages.get("/requests/{request_id}/journey", response_class=HTMLResponse,
+           include_in_schema=False)
+def request_journey(request_id: str) -> HTMLResponse:
+    """Just the side panel, for htmx to drop into the page."""
+    journey = facts.request_journey(_live_router(), request_id)
+    if journey is None:
+        return HTMLResponse(ui.empty("No request with that id on record."), status_code=404)
+    return HTMLResponse(requests_page_mod.journey_panel(journey))
 
 
 @pages.get("/brain", response_class=HTMLResponse, include_in_schema=False)
-def brain_page() -> HTMLResponse:
-    return HTMLResponse(page("Error brain", "brain", _brain_body(_live_router())))
+def brain_page(ok: str = "", message: str = "") -> HTMLResponse:
+    return HTMLResponse(page("Error brain", "brain",
+                             brain_page_mod.body(_live_router(), _message_banner(ok, message))))
+
+
+@pages.post("/brain/{fp}/verdict", include_in_schema=False)
+async def brain_correct(fp: str, request: Request) -> RedirectResponse:
+    """Correct what one learned error means. Stored as the owner's own
+    answer, which nothing afterwards overrules."""
+    form = await request.form()
+    verdict = str(form.get("verdict", ""))
+    try:
+        _live_router()._error_brain.correct(fp, verdict)
+    except KeyError:
+        return _redirect_with_message("/brain", False, "That error is no longer on record.")
+    except ValueError as exc:
+        return _redirect_with_message("/brain", False, str(exc))
+    label = brain_page_mod.LABELS.get(verdict, verdict)
+    return _redirect_with_message("/brain", True, f"Saved: that error now means \"{label}\".")
 
 
 @pages.get("/allowance", response_class=HTMLResponse, include_in_schema=False)
-def allowance_page() -> HTMLResponse:
-    return HTMLResponse(page("Allowance", "allowance", _allowance_body(_live_router())))
+def allowance_page(fragment: str = "") -> HTMLResponse:
+    router = _live_router()
+    if fragment:
+        return HTMLResponse(allowance_page_mod.inner(router))
+    return HTMLResponse(page("Allowance", "allowance", allowance_page_mod.body(router)))
 
 
 @pages.get("/buckets", response_class=HTMLResponse, include_in_schema=False)
 def buckets_page(ok: str = "", message: str = "") -> HTMLResponse:
     banner = _message_banner(ok, message)
-    return HTMLResponse(page("Buckets", "buckets", _buckets_body(_live_router(), banner)))
+    from flexrouter.dashboard import buckets_page
+    return HTMLResponse(page("Buckets", "buckets", buckets_page.body(
+        _live_router(), banner, _add_model_form, _add_bucket_form())))
 
 
 @pages.post("/buckets", include_in_schema=False)
@@ -1111,6 +1159,96 @@ async def providers_add(request: Request) -> RedirectResponse:
         dest, ok=True, message=f"provider {name!r} and its key added")
 
 
+@pages.post("/providers/add", include_in_schema=False)
+async def provider_add_from_preset(request: Request) -> RedirectResponse:
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    preset = presets.get(name)
+    if preset is None:
+        return _redirect_with_message("/providers", ok=False,
+                                      message=f"unknown preset {name!r}")
+    dest = f"/providers/{quote(name, safe=':')}"
+    try:
+        ov.add_provider(name, {"base_url": preset.base_url,
+                               "header_parser": preset.header_parser})
+    except ValueError as e:
+        return _redirect_with_message("/providers", ok=False, message=str(e))
+
+    # The provider now genuinely exists. A key failure past this point must
+    # not read as "nothing happened" - the same reasoning as providers_add.
+    secret = (form.get("secret") or "").strip()
+    if secret:
+        try:
+            keystore.add_key(name, secret, (form.get("label") or "").strip())
+        except (ValueError, OSError) as e:
+            return _redirect_with_message(
+                dest, ok=False, message=f"{name} added, but its key failed: {e}")
+    if preset.models_path and secret:
+        return RedirectResponse(url=f"{dest}/discover", status_code=303)
+    return _redirect_with_message(dest, ok=True, message=f"{name} added")
+
+
+@pages.get("/providers/add/{name}", response_class=HTMLResponse, include_in_schema=False)
+def provider_add_page(name: str, ok: str = "", message: str = "",
+                      panel: str = "") -> HTMLResponse:
+    """Adding a provider from a preset. `panel=1` returns just the side
+    panel for the preset grid to slide in; without it, the same form as a
+    whole page, which is what a refresh or a no-JavaScript click gets."""
+    preset = presets.get(name)
+    if preset is None and panel:
+        return HTMLResponse(ui.empty("No such preset."), status_code=404)
+    if preset is not None and panel:
+        return HTMLResponse(ui.sheet(f"Add {preset.label}", _preset_connect(preset),
+                                     close_href="/providers", sub=preset.base_url))
+    if preset is None:
+        return HTMLResponse(
+            page("Providers & keys", "providers",
+                 tag("h1", "No such preset", cls="page-title") + tag("p", esc(name))),
+            status_code=404,
+        )
+    return HTMLResponse(
+        page(f"Add {preset.label} - Providers & keys", "providers",
+             _preset_add_body(preset, _message_banner(ok, message))))
+
+
+def _preset_add_body(p, banner: str = "") -> str:
+    return (
+        tag("div", tag("h1", esc(p.label), cls="page-title"), cls="page-head")
+        + banner
+        + tag("p", esc(p.base_url), cls="lede")
+        + tag("div", _panel("Connect it", tag("div", _preset_connect(p), cls="pb")),
+              cls="panel-page")
+    )
+
+
+def _preset_connect(p) -> str:
+    """Where to get a key, what happens next, and the form - shared by the
+    side panel and the full page."""
+    where = (
+        tag("p", "Get a key: " + tag("a", esc(p.signup_url), href=esc(p.signup_url)))
+        if p.signup_url else ""
+    )
+    discovery = (
+        "Paste the key and flexrouter will ask this provider which models "
+        "it can reach, then let you pick which to import."
+        if p.models_path else
+        "This provider has no model list flexrouter knows how to read, so "
+        "you will add its models by hand afterwards."
+    )
+    form = tag(
+        "form",
+        _input(type="hidden", name="name", value=esc(p.name))
+        + _field("Key", _input(type="password", name="secret",
+                               placeholder="paste it here"))
+        + _field("Label", _input(type="text", name="label",
+                                 placeholder="which account this is"))
+        + tag("button", "Add and look for models", type="submit"),
+        method="post", action="/providers/add", cls="grouped-form",
+        **{"data-busy": "Checking the key and asking for models..."},
+    )
+    return where + tag("p", esc(discovery), cls="note") + form
+
+
 @pages.post("/providers/{provider}/models", include_in_schema=False)
 async def provider_add_model(provider: str, request: Request) -> RedirectResponse:
     form = await request.form()
@@ -1148,7 +1286,7 @@ def provider_detail_page(provider: str, tested: str = "", ok: str = "",
     if detail is None:
         return HTMLResponse(
             page("Providers & keys", "providers",
-                 tag("h1", "No such provider") + tag("p", esc(provider))),
+                 tag("h1", "No such provider", cls="page-title") + tag("p", esc(provider))),
             status_code=404,
         )
 
@@ -1165,6 +1303,72 @@ def provider_detail_page(provider: str, tested: str = "", ok: str = "",
         page(f"{provider} - Providers & keys", "providers",
              _provider_detail_body(detail, editable, bucket_names, banner))
     )
+
+
+@pages.get("/providers/{provider}/discover", response_class=HTMLResponse,
+           include_in_schema=False)
+async def provider_discover(provider: str) -> HTMLResponse:
+    router = _live_router()
+    preset = presets.get(provider)
+    pcfg = router._cfg.providers.get(provider)
+    if pcfg is None:
+        return HTMLResponse(
+            page("Providers & keys", "providers",
+                 tag("h1", "No such provider", cls="page-title") + tag("p", esc(provider))),
+            status_code=404)
+    result = await probe_key(
+        pcfg.base_url,
+        pcfg.api_keys[0] if pcfg.api_keys else None,
+        timeout=router._cfg.probe_timeout_seconds,
+        models_path=(preset.models_path if preset else "/models") or "/models",
+    )
+    return HTMLResponse(
+        page(f"{provider} - Providers & keys", "providers",
+             _discovered_body(provider, preset, result, list(router._cfg.tiers))))
+
+
+def _discovered_body(provider: str, preset, result, bucket_names: list) -> str:
+    head = tag("div", tag("h1", esc(provider), cls="page-title"), cls="page-head")
+    if not result.ok:
+        return (head
+                + tag("p", esc(result.error or "the provider did not answer"),
+                      cls="state-bad")
+                + tag("p", tag("a", "Back to the provider",
+                               href=f"/providers/{quote(provider, safe=':')}",
+                               cls="button-link")))
+    if not result.models:
+        return (head + tag("p", "This key works, but the provider lists no "
+                               "models it can reach.", cls="note"))
+
+    seed_rpm = preset.seed_rpm if preset else 30
+    seed_tpm = preset.seed_tpm if preset else 60_000
+    options = "".join(tag("option", esc(b), value=esc(b)) for b in bucket_names)
+    rows = []
+    for model_id in result.models:
+        picker = f"<select{attrs({'name': 'bucket'})}>{options}</select>"
+        form = tag(
+            "form",
+            _input(type="hidden", name="model", value=esc(model_id))
+            + _input(type="hidden", name="score", value="50")
+            + _input(type="hidden", name="rpm", value=esc(seed_rpm))
+            + _input(type="hidden", name="tpm", value=esc(seed_tpm))
+            + picker
+            + tag("button", "Import", type="submit"),
+            method="post",
+            action=f"/providers/{quote(provider, safe=':')}/models",
+        )
+        rows.append(tag("tr", tag("td", esc(model_id)) + tag("td", form)))
+    table = tag("div", tag("table",
+        tag("tr", tag("th", "Model") + tag("th", "Import into")) + "".join(rows),
+        cls="matrix"), cls="scroll")
+    return (
+        head
+        + tag("p", esc(f"{len(result.models)} models reachable with this key, "
+                       f"answered in {result.latency_ms} ms"), cls="lede")
+        + tag("div", _panel(
+            "What this key can reach", table,
+            sub=f"seeded at {seed_rpm} rpm / {seed_tpm} tpm - correct them "
+                f"afterwards on the Models page"), cls="panel-page"))
 
 
 @pages.post("/providers/{provider}/edit", include_in_schema=False)
@@ -1202,10 +1406,161 @@ async def provider_key_test(provider: str, key_id: str) -> RedirectResponse:
     return RedirectResponse(url=f"/providers/{quote(provider, safe=':')}?{qs}", status_code=303)
 
 
+def _globs(raw: str) -> list[str]:
+    """Split an `allow_models` box into patterns.
+
+    Commas and whitespace both separate, because the owner will use
+    whichever they think of first and neither one is wrong.
+    """
+    parts = [p.strip() for p in raw.replace(",", " ").split()]
+    return [p for p in parts if p]
+
+
+@pages.post("/providers/{provider}/keys", include_in_schema=False)
+async def provider_key_add(provider: str, request: Request) -> RedirectResponse:
+    form = await request.form()
+    dest = f"/providers/{quote(provider, safe=':')}"
+    secret = (form.get("secret") or "").strip()
+    if not secret:
+        return _redirect_with_message(dest, ok=False, message="paste a key first")
+    try:
+        keystore.add_key(provider, secret, (form.get("label") or "").strip())
+    except (ValueError, OSError) as e:
+        return _redirect_with_message(dest, ok=False, message=str(e))
+    return _redirect_with_message(dest, ok=True, message="key added")
+
+
+@pages.post("/providers/{provider}/keys/{key_id}/remove", include_in_schema=False)
+async def provider_key_remove(provider: str, key_id: str) -> RedirectResponse:
+    dest = f"/providers/{quote(provider, safe=':')}"
+    removed = keystore.remove_key(provider, key_id)
+    return _redirect_with_message(
+        dest, ok=removed,
+        message="key removed" if removed else "that key is already gone")
+
+
+@pages.post("/providers/{provider}/keys/{key_id}/edit", include_in_schema=False)
+async def provider_key_edit(provider: str, key_id: str,
+                            request: Request) -> RedirectResponse:
+    form = await request.form()
+    dest = f"/providers/{quote(provider, safe=':')}"
+    try:
+        weight = int(form.get("weight") or 1)
+    except (TypeError, ValueError):
+        return _redirect_with_message(dest, ok=False, message="weight must be a number")
+    updated = keystore.update_key(
+        provider, key_id,
+        label=(form.get("label") or "").strip(),
+        weight=weight,
+        allow_models=_globs(form.get("allow_models") or ""),
+        # An unchecked checkbox is simply absent from the form, which is
+        # the only way HTML says "false" without JavaScript.  We test
+        # truthiness (not key-presence) so that the test client can send
+        # an empty string to simulate an unchecked box.
+        enabled=bool(form.get("enabled")),
+    )
+    if updated is None:
+        return _redirect_with_message(dest, ok=False, message="that key is no longer there")
+    return _redirect_with_message(dest, ok=True, message="key saved")
+
+
 @pages.get("/settings", response_class=HTMLResponse, include_in_schema=False)
 def settings_page(ok: str = "", message: str = "") -> HTMLResponse:
     banner = _message_banner(ok, message)
-    return HTMLResponse(page("Settings", "settings", _settings_body(_live_router(), banner)))
+    return HTMLResponse(page("Settings", "settings", settings_page_mod.body(
+        _live_router(), banner, _service_keys_section())))
+
+
+# These fixed addresses are registered before `/settings/{field}` below,
+# which would otherwise catch them as a setting called "app-password".
+
+@pages.post("/settings/app-password", response_class=HTMLResponse, include_in_schema=False)
+async def settings_app_password() -> HTMLResponse:
+    """Make a new random app password and show it exactly once. Nothing in
+    the request is read: the password is never typed in (ADR 0015)."""
+    secret = app_password.generate()
+    body = settings_page_mod.body(_live_router(),
+                                  _message_banner("1", "New app password made"),
+                                  _service_keys_section(), shown_password=secret)
+    return HTMLResponse(page("Settings", "settings", body),
+                        headers={"Cache-Control": "no-store"})
+
+
+@pages.post("/settings/app-password/clear", include_in_schema=False)
+async def settings_app_password_clear() -> RedirectResponse:
+    app_password.clear()
+    return _redirect_with_message("/settings", ok=True, message="Generated app password forgotten")
+
+
+@pages.post("/settings/dashboard", include_in_schema=False)
+async def settings_dashboard(request: Request) -> RedirectResponse:
+    form = await request.form()
+    current = dashboard_prefs.load()
+    try:
+        new = dashboard_prefs.Prefs(
+            motion=str(form.get("motion", current.motion)),
+            refresh_seconds=int(form.get("refresh_seconds", current.refresh_seconds)),
+            default_range=str(form.get("default_range", current.default_range)),
+            timezone=str(form.get("timezone", current.timezone)).strip() or "local",
+        )
+        dashboard_prefs.save(new)
+    except ValueError as e:
+        return _redirect_with_message("/settings", ok=False, message=str(e))
+    return _redirect_with_message("/settings", ok=True, message="Dashboard preferences saved")
+
+
+@pages.get("/settings/backup", include_in_schema=False)
+def settings_backup() -> Response:
+    """Every dashboard change plus the dashboard's own preferences, as one
+    file. Keys are deliberately not included."""
+    data = {"flexrouter_backup": 1, "overrides": ov.load_overrides(),
+            "dashboard": asdict(dashboard_prefs.load())}
+    return Response(json.dumps(data, indent=2), media_type="application/json",
+                    headers={"Content-Disposition": 'attachment; filename="flexrouter-backup.json"'})
+
+
+@pages.post("/settings/restore", include_in_schema=False)
+async def settings_restore(request: Request) -> RedirectResponse:
+    form = await request.form()
+    upload = form.get("backup")
+    try:
+        raw = json.loads((await upload.read()).decode("utf-8")) if upload else None
+        if not isinstance(raw, dict) or raw.get("flexrouter_backup") != 1:
+            raise ValueError("that file is not a flexrouter backup")
+        overrides = raw.get("overrides") or {}
+        for section, entries in overrides.items():
+            if section == "settings":
+                ov.check_fields("settings", entries)
+            elif section in ("providers", "models"):
+                for fields in (entries or {}).values():
+                    ov.check_fields(section, {k: v for k, v in (fields or {}).items()
+                                              if k not in ("provider", "model")})
+        prefs_in = dashboard_prefs.Prefs(**{k: v for k, v in (raw.get("dashboard") or {}).items()
+                                            if k in dashboard_prefs.Prefs.__dataclass_fields__})
+        dashboard_prefs.save(prefs_in)
+        ov.save_overrides(overrides)
+    except (ValueError, TypeError, UnicodeDecodeError) as e:
+        return _redirect_with_message("/settings", ok=False, message=f"Not restored: {e}")
+    return _redirect_with_message("/settings", ok=True, message="Backup restored")
+
+
+@pages.post("/settings/reset-all", include_in_schema=False)
+async def settings_reset_all() -> RedirectResponse:
+    ov.save_overrides({})
+    return _redirect_with_message("/settings", ok=True,
+                                  message="Every dashboard change undone; your settings file applies")
+
+
+@pages.post("/settings/refresh-models", include_in_schema=False)
+async def settings_refresh_models() -> RedirectResponse:
+    import asyncio
+    from flexrouter.dashboard.api import run_refresh
+    try:
+        await asyncio.to_thread(run_refresh, _live_router()._cfg.state_dir)
+    except Exception as e:  # noqa: BLE001 - report, don't 500
+        return _redirect_with_message("/settings", ok=False, message=f"Check failed: {e}")
+    return _redirect_with_message("/models", ok=True,
+                                  message="Checked every provider; anything new is listed below")
 
 
 @pages.post("/settings/{field}/clear", include_in_schema=False)

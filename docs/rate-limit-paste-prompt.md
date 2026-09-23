@@ -45,8 +45,9 @@ tiers:
       score: 85                             # 1-100, higher = preferred. Router picks randomly from top 20%
       rpm: 30                               # local rate limit: requests per minute
       tpm: 6000                             # local rate limit: tokens per minute
-      rpd: 1440                             # optional: requests per day (0 = unlimited)
-      tpd: 500000                           # optional: tokens per day (0 = unlimited)
+      quotas:                               # daily and hourly caps live here, not at the top level
+        rpd: 1440                           # optional: requests per day (0 = unlimited)
+        rph: 60                             # optional: requests per hour (0 = unlimited)
       context_window: 131072                # max input tokens. Router skips this model if input exceeds it
       vision: false                         # true if model accepts images
 
@@ -55,8 +56,8 @@ tiers:
       score: 70
       rpm: 20
       tpm: 100000
-      rpd: 200
-      tpd: 0
+      quotas:
+        rpd: 200
       context_window: 131072
       vision: false
 
@@ -65,8 +66,8 @@ tiers:
       score: 95
       rpm: 15
       tpm: 1000000
-      rpd: 1500
-      tpd: 32000000
+      quotas:
+        rpd: 1500
       context_window: 1048576
       vision: true
 
@@ -75,8 +76,8 @@ tiers:
       score: 95
       rpm: 500
       tpm: 200000
-      rpd: 10000
-      tpd: 10000000
+      quotas:
+        rpd: 10000
       context_window: 128000
       vision: true
 
@@ -178,14 +179,14 @@ Providers show two independent limits — a per-minute rate and a daily quota. Y
 | **RPM** / requests per minute | Rate limit | `rpm` | Sliding window, resets every 60s |
 | **TPM** / tokens per minute | Rate limit | `tpm` | Sliding window, resets every 60s |
 | **RPD** / requests per day | Quota | `rpd` | Resets at UTC midnight |
-| **TPD** / tokens per day | Quota | `tpd` | Resets at UTC midnight |
+| **TPD** / tokens per day | Quota | *(not yet implemented)* | Planned for LimitBook (Piece 2). Do not add `tpd` — it is silently ignored today. |
 
 **These are independent.** A common pattern: `rpm: 15, rpd: 100` — you can only make 15 requests per minute, AND only 100 total per day. Hitting either limit skips the model until that limit resets.
 
-Set `rpd: 0` and `tpd: 0` for unlimited (or if the provider doesn't publish a daily quota).
+Set `rpd: 0` in the `quotas:` block for unlimited (or if the provider doesn't publish a daily quota).
 
 **Converting from other units:**
-- RPH → set `rpd` directly as RPH × 24
-- TPH → set `tpd` directly as TPH × 24
+- RPH → set `rph` in the `quotas:` block directly as RPH × 24 → `rpd` value
+- TPH → token-per-day caps are not yet enforced (coming with LimitBook, Piece 2)
 
 ## Now wait for my paste.

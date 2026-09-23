@@ -17,6 +17,19 @@ dependencies = [
     "watchdog>=4.0",
     "tiktoken>=0.7",
     "click>=8.1",
+    # The terminal surface. `textual` is the TUI (`flexrouter tui`); `rich` is
+    # what styles the ordinary commands, so the terminal looks the same whether
+    # the owner runs one command or opens the TUI. textual depends on rich, but
+    # rich is declared on its own because flexrouter/tui/render.py imports it
+    # directly and the CLI would break if textual ever dropped it.
+    "textual>=0.80",
+    "rich>=13.0",
+    # The dashboard reads HTML form posts via `await request.form()` in 11
+    # places; Starlette refuses to parse a form without this. It was never
+    # declared, so a clean install had a dashboard whose every write button
+    # returned a 500 -- it only worked where the package happened to be
+    # present transitively.
+    "python-multipart>=0.0.9",
 ]
 
 [project.scripts]
@@ -28,6 +41,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "respx>=0.21",
     "pytest-cov>=5.0",
+    "pytest-playwright>=0.5",
     "pytest-xdist>=3.5",
 ]
 
@@ -36,8 +50,14 @@ where = ["."]
 include = ["flexrouter*"]
 
 [tool.setuptools.package-data]
-"flexrouter.dashboard" = ["static/**/*", "*.css"]
+"flexrouter.dashboard" = ["static/**/*", "*.css", "*.js"]
+"flexrouter.data" = ["*.json"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Browser tests drive the dashboard in a real (headless) Chromium. They are
+# opt-in - a plain `pytest` skips them; run them with `pytest -m browser`.
+# See docs/agents/testing.md.
+markers = ["browser: drives the dashboard in a real browser (opt-in: pytest -m browser)"]
+addopts = "-m 'not browser'"

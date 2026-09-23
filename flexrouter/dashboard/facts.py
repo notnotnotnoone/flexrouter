@@ -228,6 +228,8 @@ class ModelRow:
     reasoning: Optional[CapabilityFact]
     learned_context: Optional[int]
     size_class: Optional[str]
+    price_in: Optional[float]   # USD per million input tokens; None = not priced
+    price_out: Optional[float]  # USD per million output tokens; None = not priced
     state: str  # "available" | "gone"
     why: str
 
@@ -266,6 +268,7 @@ def models(router) -> list[ModelRow]:
                 vision=mf.vision, tools=mf.tools, reasoning=mf.reasoning,
                 learned_context=mf.context.value if mf.context else None,
                 size_class=mf.size_class.value if mf.size_class else None,
+                price_in=mc.price_in, price_out=mc.price_out,
                 state="available" if available else "gone",
                 why=reason,
             )
@@ -361,6 +364,64 @@ class RequestRow:
     tokens_out: int
     ms_total: int
     skipped_count: int
+    # "ok", "failover" (answered after at least one failed attempt) or
+    # "failed" (nothing answered).
+    outcome: str = "ok"
+    attempt_count: int = 0
+
+
+def _read_traces(router, last: int) -> list[dict]:
+    """The last `last` trace entries, oldest first. Unreadable lines are
+    skipped rather than breaking the page."""
+    path = Path(router._cfg.state_dir) / "traces.jsonl"
+    if not path.exists():
+        return []
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-last:]:
+        if not line.strip():
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+def _outcome(entry: dict) -> str:
+    if not entry.get("ok"):
+        return "failed"
+    return "failover" if entry.get("attempts") else "ok"
+
+
+def request_journey(router, request_id: str, search_last: int = 5000) -> Optional[dict]:
+    """One request, told in order: what was passed over before anything was
+    tried, each attempt that failed, and what finally answered (or that
+    nothing did). Read straight from its trace; nothing is inferred."""
+    for entry in reversed(_read_traces(router, search_last)):
+        if entry.get("id") != request_id:
+            continue
+        steps = [{"kind": "skipped", "provider": s.get("provider", ""),
+                  "model": s.get("model", ""), "reason": s.get("reason", ""),
+                  "detail": s.get("detail", "")}
+                 for s in entry.get("skipped") or []]
+        steps += [{"kind": "failed", "provider": a.get("provider", ""),
+                   "model": a.get("model", ""), "status": a.get("status"),
+                   "message": a.get("provider_message") or "",
+                   "verdict": a.get("verdict") or "", "ms": a.get("ms")}
+                  for a in entry.get("attempts") or []]
+        answered = entry.get("answered_by")
+        if entry.get("ok") and answered:
+            steps.append({"kind": "answered", "provider": answered.get("provider", ""),
+                          "model": answered.get("model", ""), "ms": entry.get("ms_total")})
+        else:
+            steps.append({"kind": "gave_up"})
+        tokens = entry.get("tokens") or {}
+        return {"id": request_id, "at": entry.get("at", ""),
+                "bucket": (entry.get("asked") or {}).get("bucket", ""),
+                "ok": bool(entry.get("ok")), "outcome": _outcome(entry),
+                "tokens_in": tokens.get("in", 0), "tokens_out": tokens.get("out", 0),
+                "ms_total": entry.get("ms_total", 0), "steps": steps}
+    return None
 
 
 def recent_requests(router, limit: int = 50) -> list[RequestRow]:
@@ -369,18 +430,8 @@ def recent_requests(router, limit: int = 50) -> list[RequestRow]:
     every real call (flexrouter/traces.py). Nothing here is computed; this
     only reads and reshapes.
     """
-    path = Path(router._cfg.state_dir) / "traces.jsonl"
-    if not path.exists():
-        return []
-    lines = path.read_text(encoding="utf-8").splitlines()
     rows: list[RequestRow] = []
-    for line in lines[-limit:]:
-        if not line.strip():
-            continue
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue
+    for entry in _read_traces(router, limit):
         tokens = entry.get("tokens") or {}
         rows.append(RequestRow(
             id=entry.get("id", ""),
@@ -392,6 +443,8 @@ def recent_requests(router, limit: int = 50) -> list[RequestRow]:
             tokens_out=tokens.get("out", 0),
             ms_total=entry.get("ms_total", 0),
             skipped_count=len(entry.get("skipped") or []),
+            outcome=_outcome(entry),
+            attempt_count=len(entry.get("attempts") or []),
         ))
     rows.reverse()
     return rows
@@ -450,6 +503,97 @@ def allowance(router) -> list[AllowanceRow]:
     return sorted(rows, key=lambda r: (r.provider, r.model))
 
 
+_QUOTA_WINDOWS = {"rpd": ("day", 86400), "rph": ("hour", 3600)}
+
+
+def _quota_usage(router, provider: str, model: str, quotas: dict, now: float) -> list[dict]:
+    """The owner's own caps on one model, with what has been used of each.
+
+    `frees_at` is when the next request becomes allowed again - only set
+    when the cap is actually reached. These windows roll (the last 24
+    hours, not "today"), so a full cap frees up one request at a time as
+    the oldest request in the window ages out.
+    """
+    stamps = sorted(router._quota_tracker._state.get(f"{provider}/{model}", []))
+    out = []
+    for q_type, limit in quotas.items():
+        if q_type not in _QUOTA_WINDOWS or not limit:
+            continue
+        word, seconds = _QUOTA_WINDOWS[q_type]
+        in_window = [t for t in stamps if t > now - seconds]
+        used = len(in_window)
+        frees_at = None
+        if used >= limit:
+            frees_at = in_window[used - limit] + seconds
+        out.append({"window": word, "used": used, "limit": int(limit),
+                    "frees_at": frees_at, "source": "yours"})
+    return sorted(out, key=lambda lim: 0 if lim["window"] == "day" else 1)
+
+
+def _provider_says(router, provider: str, model: str, now: float) -> list[dict]:
+    """What the provider's own response headers last said is left. The
+    provider rarely says out of how many, so no total is invented here."""
+    entry = router._rate_limit_store._data.get(f"{provider}/{model}", {})
+    out = []
+    for what, rem_key, reset_key in (("requests", "remaining_requests", "reset_requests_at"),
+                                     ("tokens", "remaining_tokens", "reset_tokens_at")):
+        if entry.get(rem_key) is None:
+            continue
+        reset = entry.get(reset_key)
+        out.append({"what": what, "remaining": int(entry[rem_key]),
+                    "resets_at": reset if reset and reset > now else None,
+                    "source": "provider"})
+    return out
+
+
+def allowance_groups(router, now: Optional[float] = None) -> list[dict]:
+    """Every configured model's limits, grouped by provider, providers in
+    name order. Each model lists the owner's caps (`limits`) and what the
+    provider last said (`provider_says`)."""
+    now = time.time() if now is None else now
+    by_provider: dict[str, list[dict]] = {}
+    seen = set()
+    for model_configs in router._cfg.tiers.values():
+        for mc in model_configs:
+            if (mc.provider, mc.model) in seen:
+                continue
+            seen.add((mc.provider, mc.model))
+            by_provider.setdefault(mc.provider, []).append({
+                "model": mc.model,
+                "limits": _quota_usage(router, mc.provider, mc.model, dict(mc.quotas or {}), now),
+                "provider_says": _provider_says(router, mc.provider, mc.model, now),
+                "exhausted_until": router._rate_limit_store.available_at(mc.provider, mc.model),
+            })
+    return [{"provider": p, "keys": _key_count(router, p),
+             "models": sorted(ms, key=lambda m: m["model"])}
+            for p, ms in sorted(by_provider.items())]
+
+
+def _key_count(router, provider: str) -> int:
+    pcfg = router._cfg.providers.get(provider)
+    if pcfg is None:
+        return 0
+    return len(getattr(pcfg, "keys", None) or getattr(pcfg, "api_keys", None) or [])
+
+
+def allowance_stack(router, now: Optional[float] = None) -> dict:
+    """Daily headroom summed across every provider - the whole point of
+    stacking free tiers, as one number. Only daily caps the owner has set
+    are counted: a provider that never said its total cannot be added up."""
+    parts = []
+    for g in allowance_groups(router, now):
+        total = used = 0
+        for m in g["models"]:
+            for lim in m["limits"]:
+                if lim["window"] == "day":
+                    total += lim["limit"]
+                    used += min(lim["used"], lim["limit"])
+        if total:
+            parts.append({"provider": g["provider"], "left": total - used, "total": total})
+    return {"parts": parts, "left": sum(p["left"] for p in parts),
+            "total": sum(p["total"] for p in parts), "providers": len(parts)}
+
+
 _SETTINGS_ATTR = {
     "port": "port", "dashboard_port": "port", "state_dir": "state_dir",
     "window_seconds": "window_seconds",
@@ -461,6 +605,22 @@ _SETTINGS_ATTR = {
     "key_concurrency_cap": "key_concurrency_cap",
     "provider_budget": "provider_budget",
     "hooks": "hooks",
+    "quarantine_seconds": "quarantine_seconds",
+    "probe_timeout_seconds": "probe_timeout_seconds",
+    "error_max_length": "error_max_length",
+    "unscored_fallback_score": "unscored_fallback_score",
+}
+
+# Nested under cfg.decider rather than sitting flat on FlexConfig, so these
+# cannot go through _SETTINGS_ATTR's plain getattr.
+_DECIDER_ATTR = {
+    "decider_base_url": "base_url",
+    "decider_model": "model",
+    "decider_timeout_seconds": "timeout_seconds",
+    "decider_confidence_threshold": "confidence_threshold",
+    "decider_rule_prior_confidence": "rule_prior_confidence",
+    "decider_confidence_ceiling": "confidence_ceiling",
+    "decider_contested_statuses": "contested_statuses",
 }
 
 
@@ -488,6 +648,8 @@ def settings_fields(router) -> list[SettingsField]:
             value = router._cfg.retry.retries
         elif name == "backoff_seconds":
             value = router._cfg.retry.backoff_seconds
+        elif name in _DECIDER_ATTR:
+            value = getattr(router._cfg.decider, _DECIDER_ATTR[name])
         elif name in _SETTINGS_ATTR:
             value = getattr(router._cfg, _SETTINGS_ATTR[name])
         else:

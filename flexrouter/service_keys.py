@@ -26,7 +26,8 @@ from flexrouter.keys import KeyRecord, add_key, load_keys, save_keys
 # name -> (label, environment variable fallback)
 SERVICES: dict[str, tuple[str, str]] = {
     "aa": ("Artificial Analysis (scores newly discovered models)", "AA_API_KEY"),
-    "decider": ("Decider / typesafe-jev-1.13 (not wired up yet - see decider.py)",
+    "decider": ("Decider (classifies unfamiliar provider errors; set "
+                "decider_base_url and decider_model in Settings too)",
                 "DECIDER_API_KEY"),
 }
 

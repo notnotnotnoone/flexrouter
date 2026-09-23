@@ -31,6 +31,13 @@ stubbed so tests never call provider APIs; opt back in with
 
 CI runs the same suite on Python 3.11 and 3.12 for every push and pull request.
 
+The dashboard also has a small set of real-browser tests that a plain `pytest` skips. If you change anything in `flexrouter/dashboard/static/app.js` or the markup it hooks into, run them too:
+
+```bash
+uv run playwright install chromium   # once
+uv run pytest -m browser
+```
+
 ## Submitting changes
 
 1. Fork the repo and create a branch off `master`.

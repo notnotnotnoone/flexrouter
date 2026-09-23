@@ -5,6 +5,7 @@ import os
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
@@ -29,6 +30,11 @@ class ModelConfig:
     context_window: int = 200000
     vision: bool = False
     quotas: dict[str, int] = field(default_factory=dict)
+    # USD per million tokens. `None` means nobody has priced this model -
+    # which is not the same as free, and the dashboard says so. Most models
+    # here are on a free tier; some, like the decider, are not.
+    price_in: Optional[float] = None
+    price_out: Optional[float] = None
 
 @dataclass
 class ProviderConfig:
@@ -42,6 +48,67 @@ class ProviderConfig:
 class RetryConfig:
     retries: int = 3
     backoff_seconds: float = 2.0
+
+def _price(raw) -> Optional[float]:
+    """A price per million tokens, or `None` for "not priced".
+
+    An empty string is how the dashboard's form says "clear this", and a
+    negative price is a typo rather than a discount; both become `None`
+    so a bad edit costs the owner a figure, not a crash on every request.
+    """
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _statuses(raw, default: tuple[int, ...]) -> tuple[int, ...]:
+    """Accept either a YAML list or a comma-separated string.
+
+    Hand-written settings files use both shapes, and the dashboard's settings
+    form can only ever produce a string.
+    """
+    if raw is None or raw == "":
+        return default
+    items = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
+    out = []
+    for item in items:
+        try:
+            out.append(int(str(item).strip()))
+        except (TypeError, ValueError):
+            continue
+    return tuple(out) or default
+
+
+@dataclass
+class DeciderConfig:
+    """Where the small-decisions classifier lives (spec 4).
+
+    No vendor is hard-wired: the plan named `typesafe/jev-1.13`, which was
+    never confirmed to exist, so the endpoint and model id are settings and
+    picking a vendor is configuration rather than code. The API key is
+    deliberately absent -- it travels through service_keys.py like every other
+    credential, for the same reason auth_token is kept out of ALLOWED_FIELDS.
+    """
+    base_url: str | None = None
+    model: str | None = None
+    timeout_seconds: float = 3.0
+
+    # Behaviour, as opposed to plumbing. These were hardcoded constants: the
+    # threshold in particular is read at nine places in _router to decide
+    # whether a verdict is acted on at all, while nothing ever set it.
+    confidence_threshold: float = 0.80
+    rule_prior_confidence: float = 0.6
+    confidence_ceiling: float = 0.95
+    contested_statuses: tuple[int, ...] = (400, 403, 429)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.base_url and self.model)
+
 
 @dataclass
 class FlexConfig:
@@ -57,7 +124,12 @@ class FlexConfig:
     sample_interval_seconds: int = 60
     health_history_days: int = 30
     key_concurrency_cap: int = 4
+    quarantine_seconds: int = 86400
+    probe_timeout_seconds: float = 15.0
+    error_max_length: int = 300
+    unscored_fallback_score: int = 50
     retry: RetryConfig = field(default_factory=RetryConfig)
+    decider: DeciderConfig = field(default_factory=DeciderConfig)
     provider_budget: dict[str, float] = field(default_factory=dict)
     hooks: list[str] = field(default_factory=list)
     auth_token: str | None = None
@@ -392,6 +464,8 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
                 context_window=m.get("context_window", 200000),
                 vision=m.get("vision", False),
                 quotas=m.get("quotas", {}),
+                price_in=_price(m.get("price_in")),
+                price_out=_price(m.get("price_out")),
             ))
         tiers[bucket_name] = parsed_models
 
@@ -404,6 +478,18 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
     # guard against a non-string.
     raw_auth_token = settings.get("auth_token")
     auth_token = str(raw_auth_token) if raw_auth_token else None
+    # Flat keys, like every other setting: the dashboard's settings machinery
+    # (overrides.ALLOWED_FIELDS, facts._SETTINGS_ATTR) works in flat scalars,
+    # and a nested block would need its own special case at every layer.
+    decider = DeciderConfig(
+        base_url=settings.get("decider_base_url") or None,
+        model=settings.get("decider_model") or None,
+        timeout_seconds=_number(settings, "decider_timeout_seconds", 3.0, float),
+        confidence_threshold=_number(settings, "decider_confidence_threshold", 0.80, float),
+        rule_prior_confidence=_number(settings, "decider_rule_prior_confidence", 0.6, float),
+        confidence_ceiling=_number(settings, "decider_confidence_ceiling", 0.95, float),
+        contested_statuses=_statuses(settings.get("decider_contested_statuses"), (400, 403, 429)),
+    )
     return FlexConfig(
         tiers=tiers,
         providers=providers,
@@ -417,7 +503,12 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
         sample_interval_seconds=_number(settings, "sample_interval_seconds", 60, int),
         health_history_days=_number(settings, "health_history_days", 30, int),
         key_concurrency_cap=_number(settings, "key_concurrency_cap", 4, int),
+        quarantine_seconds=_number(settings, "quarantine_seconds", 86400, int),
+        probe_timeout_seconds=_number(settings, "probe_timeout_seconds", 15.0, float),
+        error_max_length=_number(settings, "error_max_length", 300, int),
+        unscored_fallback_score=_number(settings, "unscored_fallback_score", 50, int),
         retry=retry,
+        decider=decider,
         provider_budget=settings.get("provider_budget", {}),
         hooks=settings.get("hooks", []),
         auth_token=auth_token,

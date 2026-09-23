@@ -13,6 +13,7 @@ classification. The router's existing quarantine/penalize/bench logic
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,15 @@ _STATUS_RULES = {
     404: "model_gone", 410: "model_gone",
     429: "too_fast",
 }
+
+# Codes providers overload. A 429 means "slow down" most of the time and "you
+# are out of credits" the rest of the time; 400 and 403 carry a real cause in
+# the body just as often. Answering those at confidence 1.0 ends the matter and
+# the router retries into a wall. For these three only, the rule becomes a
+# prior the classifier may overturn -- and only when a classifier is actually
+# configured, so an install without one behaves exactly as it always did.
+_OVERLOADED_STATUSES = frozenset({400, 403, 429})
+_RULE_PRIOR_CONFIDENCE = 0.6
 
 _TOO_LONG_SUBSTRINGS = (
     "context length", "maximum context", "too long", "context_length_exceeded",
@@ -81,11 +91,21 @@ def _now_iso() -> str:
 
 class ErrorBrain:
     def __init__(self, state_dir: str, decider: Decider,
-                confidence_threshold: float = 0.80) -> None:
+                confidence_threshold: float = 0.80,
+                contested_statuses: tuple[int, ...] = tuple(_OVERLOADED_STATUSES),
+                rule_prior_confidence: float = _RULE_PRIOR_CONFIDENCE) -> None:
         self._path = Path(state_dir) / "error_brain.json"
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._decider = decider
+        # Classification is offloaded to a worker thread so a slow classifier
+        # cannot stall the event loop, which means two requests can now reach
+        # a novel error at the same moment. Everything that touches _entries or
+        # writes the file goes through this. Reentrant because _record saves.
+        self._lock = threading.RLock()
         self._threshold = confidence_threshold
+        # Per-instance rather than module constants: both are settings now.
+        self.contested_statuses = tuple(contested_statuses)
+        self.rule_prior_confidence = rule_prior_confidence
         self._entries: dict[str, ErrorBrainEntry] = {
             k: ErrorBrainEntry(**v) for k, v in read_json(self._path, default={}).items()
         }
@@ -95,31 +115,71 @@ class ErrorBrain:
         return self._threshold
 
     def _save(self) -> None:
-        write_json(self._path, {k: asdict(v) for k, v in self._entries.items()})
-        harden(self._path)
+        with self._lock:
+            snapshot = {k: asdict(v) for k, v in self._entries.items()}
+            write_json(self._path, snapshot)
+            harden(self._path)
 
     def classify(self, text: str, status: Optional[int], now: Optional[str] = None) -> ErrorVerdict:
         clean = scrub(text or "")
         now = now or _now_iso()
 
         rule = classify_by_rule(clean, status)
-        if rule is not None:
+        if rule is not None and not self._is_contestable(status):
             self._record(fingerprint(clean), rule, clean, now)
             return rule
 
         fp = fingerprint(clean)
-        existing = self._entries.get(fp)
-        if existing is not None:
-            existing.seen += 1
-            existing.last_at = now
-            self._save()
-            return ErrorVerdict(existing.verdict, existing.source, existing.confidence)
+        with self._lock:
+            existing = self._entries.get(fp)
+            if existing is not None:
+                existing.seen += 1
+                existing.last_at = now
+                self._save()
+                return ErrorVerdict(existing.verdict, existing.source, existing.confidence)
 
         verdict = self._decider.classify_error(clean, status)
+        if rule is not None and verdict.confidence <= self.rule_prior_confidence:
+            # The classifier is no surer than the prior, so the rule stands --
+            # at its own full confidence, not the prior's. The prior exists to
+            # decide who wins, not to weaken the answer that did.
+            verdict = rule
         self._record(fp, verdict, clean, now)
         return verdict
 
+    def _is_contestable(self, status: Optional[int]) -> bool:
+        """Whether a rule's answer for this status is open to challenge.
+
+        False unless a classifier is configured: NullDecider always answers
+        "unknown" at zero confidence, so contesting a rule with it could only
+        ever waste a lookup and drag a settled verdict's stored confidence
+        down past the review threshold, filling the review queue on an install
+        that never asked for a classifier.
+        """
+        if status not in self.contested_statuses:
+            return False
+        return getattr(self._decider, "configured", True)
+
+    def correct(self, fp: str, verdict: str) -> None:
+        """The owner's own answer for one learned error.
+
+        Stored as `source="manual"` at full confidence, which `_record`
+        already refuses to overwrite: once corrected by hand, no rule or
+        classifier ever changes this entry again - only its counters move.
+        """
+        from flexrouter.decider import VERDICTS
+        if verdict not in VERDICTS:
+            raise ValueError(f"{verdict!r} is not a verdict; choose one of {', '.join(VERDICTS)}")
+        with self._lock:
+            entry = self._entries[fp]  # KeyError for an unknown entry, on purpose
+            entry.verdict = verdict
+            entry.source = "manual"
+            entry.confidence = 1.0
+            entry.flagged_for_review = False
+            self._save()
+
     def _record(self, fp: str, verdict: ErrorVerdict, sample: str, now: str) -> None:
+      with self._lock:
         existing = self._entries.get(fp)
         if existing is not None and existing.source == "manual":
             # Manual entries are never overwritten — only bookkeeping moves.

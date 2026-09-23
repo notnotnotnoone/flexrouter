@@ -2,8 +2,9 @@ from __future__ import annotations
 import csv
 import math
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 
 def _percentile(values: list[float], pct: float) -> float:
@@ -114,4 +115,243 @@ def compute_stats(state_dir: str) -> dict:
             ],
         },
         "tiers": {"by_tier": [{"tier": t, "requests": c} for t, c in by_tier.most_common()]},
+    }
+
+
+# ── the last N hours, as the Overview needs it ──────────────────────────
+#
+# `compute_stats` above reads the whole audit log and buckets by hour over
+# all of history; it was written for the retired React front end, and every
+# figure it returns is lifetime-to-date. The Overview asks a narrower
+# question - "what has it been doing lately?" - so this does its own pass
+# over the same file and answers only for a fixed, recent window.
+#
+# Hours are bucketed in the machine's *local* time, not UTC. The owner runs
+# this on their own computer and means their own clock when they read
+# "14:00" off the chart.
+
+
+def _local(ts: str) -> datetime:
+    """A stored UTC timestamp, as local time."""
+    return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone()
+
+
+def _bucket_start(dt: datetime, bucket_hours: int) -> datetime:
+    """The start of the bucket `dt` falls in.
+
+    Buckets are anchored to the local clock, not to "now": a day bucket
+    starts at local midnight and a six-hour bucket at 00/06/12/18, so the
+    same request always lands in the same bucket no matter when the page
+    is loaded. Anchoring to now would make the chart's bars shuffle
+    sideways on every refresh - which, now that the page refreshes itself,
+    would be visible.
+    """
+    dt = dt.replace(minute=0, second=0, microsecond=0)
+    if bucket_hours >= 24:
+        return dt.replace(hour=0)
+    if bucket_hours > 1:
+        return dt.replace(hour=(dt.hour // bucket_hours) * bucket_hours)
+    return dt
+
+
+def _local_hour(ts: str) -> datetime:
+    """The local-time hour a timestamp falls in."""
+    return _bucket_start(_local(ts), 1)
+
+
+def _int(value) -> int:
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _float(value) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _audit_rows(state_dir: str) -> list[dict]:
+    path = Path(state_dir) / "audit.csv"
+    if not path.exists():
+        return []
+    with path.open() as f:
+        return list(csv.DictReader(f))
+
+
+def recent_window(state_dir: str, hours: Optional[int] = 24,
+                  bucket_hours: int = 1, label_format: str = "%H:%M",
+                  now: Optional[datetime] = None) -> dict:
+    """Everything the Overview draws, for the last `hours` hours.
+
+    One pass over `audit.csv`, one clock. The page renders several things
+    off this - a stacked chart, a per-provider table, a latency list, a
+    bucket split - and computing them together is what stops two of them
+    disagreeing about a request that landed while the page was rendering.
+
+    The window always has exactly `hours` buckets, oldest first, including
+    empty ones: a chart with a gap in it should show the gap, not close it.
+    """
+    now = (now or datetime.now()).astimezone()
+    rows = _audit_rows(state_dir)
+    end = _bucket_start(now, bucket_hours)
+
+    if hours is None:
+        # "All" - back to the first thing ever logged. An empty log still
+        # gets a window, so the page has a shape to render.
+        earliest = None
+        for r in rows:
+            try:
+                at = _bucket_start(_local(r["timestamp"]), bucket_hours)
+            except (ValueError, KeyError, TypeError):
+                continue
+            if earliest is None or at < earliest:
+                earliest = at
+        span = end - (earliest or end)
+        hours = int(span.total_seconds() // 3600) + bucket_hours
+
+    points = max(1, -(-hours // bucket_hours))   # ceiling division
+    starts = [end - timedelta(hours=bucket_hours * (points - 1 - i))
+              for i in range(points)]
+    slot = {s: i for i, s in enumerate(starts)}
+    hours = points * bucket_hours
+
+    by_provider: dict[str, list[int]] = {}
+    fails_by_hour = [0] * points
+    totals_by_hour = [0] * points
+    # provider -> bucket -> [ok_count, error_count]
+    health: dict[str, list[list[int]]] = {}
+
+    lat_by_model: dict[str, list[float]] = defaultdict(list)
+    req_by_model: Counter = Counter()
+    by_bucket: Counter = Counter()
+    all_latencies: list[float] = []
+    total = ok_total = 0
+    # request id -> [attempts, succeeded]. A request that took more than one
+    # attempt and still got an answer is a failover: the router moved on and
+    # the app never knew. Rows written before `request_id` existed have an
+    # empty id and are left out of this count rather than being lumped
+    # together as one enormous request.
+    attempts: dict[str, list[int]] = {}
+    tokens_in = tokens_out = 0
+    spend = 0.0
+    priced_rows = 0
+
+    for r in rows:
+        try:
+            bucket = _bucket_start(_local(r["timestamp"]), bucket_hours)
+        except (ValueError, KeyError, TypeError):
+            continue
+        i = slot.get(bucket)
+        if i is None:
+            continue
+
+        provider = r.get("provider") or "unknown"
+        status = r.get("status") or ""
+        good = status == "ok"
+
+        by_provider.setdefault(provider, [0] * points)[i] += 1
+        health.setdefault(provider, [[0, 0] for _ in range(points)])
+        health[provider][i][0 if good else 1] += 1
+
+        totals_by_hour[i] += 1
+        total += 1
+        model = f"{provider}/{r.get('model', '')}"
+        req_by_model[model] += 1
+        by_bucket[r.get("tier") or "unknown"] += 1
+
+        rid = (r.get("request_id") or "").strip()
+        if rid:
+            seen = attempts.setdefault(rid, [0, 0])
+            seen[0] += 1
+            seen[1] += 1 if good else 0
+
+        tokens_in += _int(r.get("prompt_tokens"))
+        tokens_out += _int(r.get("completion_tokens"))
+        cost = _float(r.get("cost_usd"))
+        spend += cost
+        if cost > 0:
+            priced_rows += 1
+
+        if good:
+            ok_total += 1
+            try:
+                lat = float(r.get("latency_ms") or 0)
+            except ValueError:
+                lat = 0.0
+            lat_by_model[model].append(lat)
+            all_latencies.append(lat)
+        else:
+            fails_by_hour[i] += 1
+
+    # Busiest provider first: the stack reads best with the big band at the
+    # bottom, and the table reads best with the provider you care about on
+    # top. Same order for both, so the legend colours agree.
+    order = sorted(by_provider, key=lambda p: (-sum(by_provider[p]), p))
+
+    def hour_state(counts: list[int]) -> str:
+        good, bad = counts
+        if good == 0 and bad == 0:
+            return "none"
+        if bad == 0:
+            return "ok"
+        return "bad" if good == 0 else "part"
+
+    providers = [{
+        "name": name,
+        "values": by_provider[name],
+        "requests": sum(by_provider[name]),
+        "states": [hour_state(c) for c in health[name]],
+        "failed": sum(c[1] for c in health[name]),
+    } for name in order]
+
+    # A failover is a request that needed more than one attempt and still
+    # got an answer. One that needed more than one and never got one is a
+    # request that genuinely failed, which is a different thing and counted
+    # separately - conflating them would make the router look good at
+    # recovering on exactly the occasions it did not recover.
+    failovers = sum(1 for a, ok in attempts.values() if a > 1 and ok)
+    gave_up = sum(1 for a, ok in attempts.values() if a > 1 and not ok)
+
+    return {
+        "hours": points,          # how many buckets the chart draws
+        "bucket_hours": bucket_hours,
+        "span_hours": hours,
+        "labels": [s.strftime(label_format).lstrip("0") or s.strftime(label_format)
+                   for s in starts],
+        "requests_traced": len(attempts),
+        "failovers": failovers,
+        "gave_up": gave_up,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        # `spend` is only as true as the prices set on the models. When no
+        # row carried a price, the honest answer is "not priced", not "$0" -
+        # the page must not imply free when it means unknown.
+        "spend_usd": round(spend, 6),
+        "priced_rows": priced_rows,
+        "any_priced": priced_rows > 0,
+        "starts": [s.isoformat(timespec="seconds") for s in starts],
+        "providers": providers,
+        "fails_by_hour": fails_by_hour,
+        "totals_by_hour": totals_by_hour,
+        "peak_hour": max(totals_by_hour) if totals_by_hour else 0,
+        "requests": total,
+        "answered": ok_total,
+        "failed": total - ok_total,
+        "answered_rate": (ok_total / total) if total else None,
+        "latency": {
+            "p50": round(_percentile(all_latencies, 0.5)) if all_latencies else None,
+            "p95": round(_percentile(all_latencies, 0.95)) if all_latencies else None,
+            "per_model": sorted(
+                ({"model": m,
+                  "p50": round(_percentile(v, 0.5)),
+                  "p95": round(_percentile(v, 0.95)),
+                  "requests": req_by_model[m]}
+                 for m, v in lat_by_model.items()),
+                key=lambda d: -d["requests"],
+            ),
+        },
+        "buckets": [{"bucket": b, "requests": c} for b, c in by_bucket.most_common()],
     }

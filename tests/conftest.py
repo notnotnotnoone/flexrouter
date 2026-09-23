@@ -26,6 +26,9 @@ _CLOCKED_MODULES = (
     "flexrouter._router", "flexrouter.engine", "flexrouter.recovery",
     "flexrouter.window", "flexrouter.rate_limits", "flexrouter.quota",
     "flexrouter.key_state",
+    # The dashboard's Allowance reads quota timestamps and asks when a cap
+    # frees up; it must see the same clock as quota.py writes them with.
+    "flexrouter.dashboard.facts",
 )
 
 

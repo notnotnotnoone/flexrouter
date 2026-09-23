@@ -101,6 +101,9 @@ class FakeRouter:
 
     def __init__(self, delay: float = 0.0, raises: Exception | None = None):
         self._cfg = SimpleNamespace(
+            # Stands in for FlexConfig; keep new settings mirrored here or the
+            # handlers that read them get an AttributeError instead of a value.
+            probe_timeout_seconds=15.0,
             tiers={
                 "low": [_model("groq", "llama-3.1-8b-instant", 85)],
                 "high": [_model("openai", "gpt-4o", 95, vision=True)],

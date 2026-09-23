@@ -155,3 +155,22 @@ def test_probe_result_serializes_for_the_dashboard():
                           latency_ms=42).as_dict()
     assert payload == {"ok": True, "models": ["a"], "model_count": 1,
                        "error": None, "status_code": 200, "latency_ms": 42}
+
+
+# --- models_path parameter ---------------------------------------------------
+
+@respx.mock
+async def test_a_provider_can_list_models_somewhere_other_than_slash_models():
+    respx.get("http://localhost:11434/api/tags").mock(
+        return_value=httpx.Response(200, json={"models": [{"name": "llama3:8b"}]}))
+    result = await probe_key("http://localhost:11434", None, models_path="/api/tags")
+    assert result.ok
+    assert result.models == ["llama3:8b"]
+
+
+@respx.mock
+async def test_the_default_path_is_unchanged():
+    respx.get("https://api.groq.com/openai/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "llama-3.1-8b"}]}))
+    result = await probe_key("https://api.groq.com/openai/v1", "sk-x")
+    assert result.models == ["llama-3.1-8b"]

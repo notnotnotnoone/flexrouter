@@ -1,6 +1,4 @@
 import base64
-import json
-import os
 import webbrowser
 from pathlib import Path
 
@@ -9,8 +7,10 @@ import click
 from flexrouter import home
 from flexrouter import service_keys
 from flexrouter.config import load_config, redact_settings_text
-from flexrouter.exceptions import ConfigError, ConfigFieldError
+from flexrouter.exceptions import ConfigError
 from flexrouter.refresh import refresh_config
+from flexrouter.tui import facts as tui_facts
+from flexrouter.tui import render as tui_render
 
 
 @click.group()
@@ -40,13 +40,9 @@ def _run_daemon(port, config_path, open_browser):
     import uvicorn
     from flexrouter.app import create_app
 
-    click.echo(f"Settings: {home.config_path()}")
+    tui_render.console().print(tui_render.banner(port, str(home.config_path())))
 
     url = f"http://localhost:{port}"
-    click.echo(f"flexrouter running at {url}")
-    click.echo(f"  dashboard   {url}")
-    click.echo(f"  OpenAI API  {url}/v1")
-    click.echo(f"  API docs    {url}/docs")
     if open_browser:
         webbrowser.open(url)
     uvicorn.run(create_app(config_path), host="127.0.0.1", port=port, log_level="info")
@@ -77,18 +73,20 @@ def dashboard(port, config_path):
 
 
 @cli.command()
+@_config_option
+def tui(config_path):
+    """Open the live TUI: overview, keys, requests, and paths."""
+    # Imported here, not at module load: textual is only needed when someone
+    # actually opens the TUI, and the ordinary commands should stay light.
+    from flexrouter.tui.app import FlexRouterApp
+
+    FlexRouterApp(config_path).run()
+
+
+@cli.command()
 def status():
-    """Print tier health to terminal."""
-    path = home.config_path()
-    cfg = load_config(path)
-    state = Path(cfg.state_dir) / "health.json"
-    if not state.exists():
-        click.echo("No health data yet. Run router.generate() first.")
-        return
-    health = json.loads(state.read_text())
-    click.echo(f"Total cost: ${health['total_cost_usd']:.4f}")
-    for provider, info in health.get("providers", {}).items():
-        click.echo(f"  {provider}: ${info['daily_cost_usd']:.4f} today")
+    """Show the router's totals and today's spend."""
+    tui_render.console().print(tui_render.status_panel(tui_facts.overview()))
 
 
 @cli.command()
@@ -98,13 +96,14 @@ def refresh():
     cfg = load_config(path)
     aa_key = service_keys.resolve("aa")
     result = refresh_config(str(path), cfg.state_dir, aa_key=aa_key)
-    click.echo(
-        f"Checked your providers: found {len(result.added)} new model(s), "
-        f"{len(result.removed)} that are gone, and {len(result.changed)} "
-        f"with different limits."
+    out = tui_render.console()
+    out.print(
+        f"Checked your providers: found [bold]{len(result.added)}[/bold] new model(s), "
+        f"[bold]{len(result.removed)}[/bold] that are gone, and "
+        f"[bold]{len(result.changed)}[/bold] with different limits."
     )
-    click.echo("Nothing has been changed. Your settings file is exactly as you left it.")
-    click.echo(f"What was found is saved here: {result.pending_path}")
+    out.print("Nothing has been changed. Your settings file is exactly as you left it.")
+    out.print(f"What was found is saved here: {tui_render.esc(result.pending_path)}")
     for err in result.provider_errors:
         click.echo(f"  ! {err['provider']}: {err['error']}", err=True)
 
@@ -212,23 +211,39 @@ def keys_list():
     if not any(vault.values()):
         click.echo("No keys saved yet. Add one with: flexrouter keys add <provider>")
         return
-    for provider, records in sorted(vault.items()):
-        click.echo(provider)
-        for r in records:
-            state = "" if r.enabled else "  (off)"
-            label = f"  {r.label}" if r.label else ""
-            click.echo(f"  {r.id:<16} {keyvault.mask(r.secret)}{label}{state}")
+    tui_render.console().print(tui_render.keys_table(vault))
 
 
 @keys.command("add")
-@click.argument("provider")
-@click.option("--secret", prompt=True, hide_input=True,
+@click.argument("provider", required=False)
+@click.option("--secret", default=None,
               help="The key itself. Leave it off and you'll be asked without it showing.")
 @click.option("--label", default="", help="A name to recognise it by.")
-def keys_add(provider: str, secret: str, label: str):
-    """Save a key for PROVIDER."""
+@click.option("--list", "-l", "show_providers", is_flag=True,
+              help="Show every provider, with and without a key saved. Adds nothing.")
+def keys_add(provider: str | None, secret: str | None, label: str,
+             show_providers: bool):
+    """Save a key for PROVIDER.
+
+    With --list, shows every provider you have added a key for and every one
+    you have not, and saves nothing.
+    """
+    if show_providers:
+        tui_render.console().print(
+            tui_render.providers_table(tui_facts.providers_and_keys()))
+        return
+    if not provider:
+        raise click.UsageError(
+            "Name the provider to save a key for: flexrouter keys add <provider>. "
+            "See them all with: flexrouter keys add --list")
+    # Prompted here rather than by the option's own prompt=, so that --list
+    # never stops to ask for a secret it is not going to save.
+    if secret is None:
+        secret = click.prompt("Secret", hide_input=True)
     record = keyvault.add_key(provider, secret.strip(), label=label)
-    click.echo(f"Saved {record.id} for {provider}: {keyvault.mask(record.secret)}")
+    tui_render.console().print(
+        f"Saved [bold]{tui_render.esc(record.id)}[/bold] for "
+        f"{tui_render.esc(provider)}: {tui_render.esc(keyvault.mask(record.secret))}")
 
 
 @keys.command("rm")
@@ -239,7 +254,8 @@ def keys_rm(provider: str, key_id: str):
     if not keyvault.remove_key(provider, key_id):
         click.echo(f"No key {key_id!r} for {provider}.", err=True)
         raise SystemExit(1)
-    click.echo(f"Removed {key_id} from {provider}.")
+    tui_render.console().print(
+        f"Removed [bold]{tui_render.esc(key_id)}[/bold] from {tui_render.esc(provider)}.")
 
 
 def _scan_old_settings(path: Path) -> tuple[list[tuple[str, str]], bool]:
@@ -285,95 +301,35 @@ def _import_keys_from(path: Path) -> list[tuple[str, str]]:
 def keys_import(old_file: str):
     """Copy the keys out of an old flexrouter.yaml into the shared home."""
     added, saw_env = _scan_old_settings(Path(old_file))
+    out = tui_render.console()
     if not added:
         if saw_env:
-            click.echo("Found no keys to copy — that file only references "
-                       "environment variables, which already work as they are.")
+            out.print("Found no keys to copy — that file only references "
+                      "environment variables, which already work as they are.")
         else:
-            click.echo("Found no keys to copy — nothing importable was found "
-                       "in that file.")
+            out.print("Found no keys to copy — nothing importable was found "
+                      "in that file.")
         return
     for provider, key_id in added:
-        click.echo(f"Copied {provider} -> {key_id}")
-    click.echo(f"\nCopied {len(added)} key(s). Your old file was not changed; "
-               f"delete it when you're happy.")
+        out.print(f"Copied {tui_render.esc(provider)} -> {tui_render.esc(key_id)}")
+    out.print(f"\nCopied {len(added)} key(s). Your old file was not changed; "
+              f"delete it when you're happy.")
 
 
 @cli.command()
 def doctor():
     """Show where flexrouter keeps things and which key it will use."""
-    import os
-    import warnings
-
-    from flexrouter import overrides as ov
-
-    is_new_home = not home.config_path().exists()
-    home.ensure_home()
-    click.echo(f"flexrouter home: {home.home_dir()}")
-    click.echo(f"  settings   {home.config_path().name}")
-    click.echo(f"  keys       {home.keys_path().name}")
-    click.echo(f"  changes    {home.overrides_path().name}")
-    click.echo(f"  records    {home.state_dir().name}{os.sep}")
-    click.echo("")
-    if is_new_home:
-        click.echo("This is a brand-new flexrouter home — nothing was here yet, "
-                   "so an empty starter settings file was just created. The "
-                   "counts below are that empty default, not your own "
-                   "configuration. Add a key to get started: "
-                   "flexrouter keys add <provider>")
-        click.echo("")
-
-    try:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            cfg = load_config()
-    except ConfigFieldError as e:
-        click.echo(f"Your settings file is missing something it needs: {e}",
-                   err=True)
-        raise SystemExit(1)
-    except ConfigError as e:
-        click.echo(f"Could not read your settings: {e}", err=True)
-        raise SystemExit(1)
-
-    models = sum(len(v) for v in cfg.tiers.values())
-    click.echo(f"{len(cfg.tiers)} bucket(s), {models} model(s), "
-               f"{len(cfg.providers)} provider(s). Serving on port {cfg.port}.")
-    click.echo("")
-
-    vault = keyvault.load_keys()
-    click.echo("Which key each provider will use:")
-    for name, provider in sorted(cfg.providers.items()):
-        if not provider.keys:
-            disabled = [r for r in vault.get(name, []) if not r.enabled]
-            if disabled:
-                click.echo(f"  {name:<14} no usable key — {len(disabled)} "
-                           f"saved but disabled")
-            else:
-                click.echo(f"  {name:<14} no key found")
-            continue
-        first = provider.keys[0]
-        if first.source == "env":
-            where = f"{first.label} (environment)"
-        elif first.source == "inline":
-            where = (f"typed into {home.config_path().name} — move it with: "
-                     f"flexrouter keys add {name}")
+    report = tui_facts.doctor_report()
+    if report.error:
+        if report.error_is_missing_field:
+            click.echo(f"Your settings file is missing something it needs: "
+                       f"{report.error}", err=True)
         else:
-            where = f"saved key {first.id}  {keyvault.mask(first.secret)}"
-        extra = f"  (+{len(provider.keys) - 1} more)" if len(provider.keys) > 1 else ""
-        click.echo(f"  {name:<14} {where}{extra}")
-
-    changes = ov.load_overrides()
-    click.echo("")
-    if not changes:
-        click.echo("No dashboard changes on top of your settings file.")
-    else:
-        click.echo("Changes layered on top of your settings file:")
-        for section in ov.SECTIONS:
-            for key, value in (changes.get(section) or {}).items():
-                click.echo(f"  {key}: {value}")
-
-    for w in caught:
-        click.echo(f"\n! {w.message}", err=True)
+            click.echo(f"Could not read your settings: {report.error}", err=True)
+        raise SystemExit(1)
+    tui_render.console().print(tui_render.doctor_panel(report))
+    for warning in report.warnings:
+        click.echo(f"\n! {warning}", err=True)
 
 
 if __name__ == "__main__":  # pragma: no cover

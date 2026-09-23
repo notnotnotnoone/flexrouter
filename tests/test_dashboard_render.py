@@ -44,10 +44,10 @@ def test_text_escapes_every_part_not_only_the_first():
 
 
 def test_areas_lists_all_nine_in_menu_order():
-    slugs = [slug for slug, _, _ in render.AREAS]
+    slugs = [slug for slug, _, _, _ in render.AREAS]
     assert slugs == [
         "overview", "providers", "models", "buckets",
-        "requests", "broken", "brain", "allowance", "settings",
+        "requests", "playground", "broken", "brain", "allowance", "settings",
     ]
 
 
@@ -59,15 +59,16 @@ def test_page_marks_the_current_area():
 
 def test_page_links_every_area():
     html = render.page("Overview", "overview", "")
-    for slug, _, _ in render.AREAS:
+    for slug, _, _, _ in render.AREAS:
         expected = 'href="/"' if slug == "overview" else f'href="/{slug}"'
         assert expected in html, slug
 
 
 def test_page_escapes_its_title():
     html = render.page('<script>', "overview", "")
-    assert "<script>" not in html
-    assert "&lt;script&gt;" in html
+    # The page loads real scripts, so look at the title itself.
+    assert "<title><script>" not in html
+    assert "<title>&lt;script&gt;" in html
 
 
 def test_page_is_a_complete_document():
@@ -75,3 +76,29 @@ def test_page_is_a_complete_document():
     assert html.startswith("<!doctype html>")
     assert "</html>" in html
     assert "<p>hi</p>" in html
+
+
+def test_page_links_the_new_assets_not_the_wireframe():
+    html = render.page("Overview", "overview", "<p>hi</p>")
+    assert "/wire.css" not in html and "/wire.js" not in html
+    assert "/static/app.css?v=" in html
+    assert "/static/app.js?v=" in html
+    assert "/static/vendor/htmx.min.js?v=" in html
+
+
+def test_page_carries_the_motion_preference(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLEXROUTER_HOME", str(tmp_path))
+    (tmp_path / "dashboard.json").write_text('{"motion": "off"}')
+    assert 'data-motion="off"' in render.page("Overview", "overview", "")
+
+
+def test_page_shows_the_wordmark_and_a_badge():
+    html = render.page("Overview", "overview", "", badges={"broken": 2})
+    assert 'class="wm-router"' in html
+    assert 'class="nav-badge"' in html and ">2<" in html
+
+
+def test_every_menu_entry_has_an_icon():
+    html = render.page("Overview", "overview", "")
+    for _, _, _, icon in render.AREAS:
+        assert f'href="#i-{icon}"' in html

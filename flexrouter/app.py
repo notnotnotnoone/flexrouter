@@ -29,11 +29,14 @@ from typing import Any, AsyncIterator, Optional
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from flexrouter.dashboard.api import (
     get_config, get_config_validation, get_health_current, get_last_refresh,
     get_logs, get_stats, get_status, get_uptime, post_config, run_refresh,
 )
+from flexrouter import app_password
+from flexrouter.dashboard.assets import STATIC_DIR
 from flexrouter.dashboard.pages import pages as dashboard_pages
 from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.probe import probe_key, stale_models
@@ -111,7 +114,9 @@ def _check_token(request: Request):
     Guards /v1 only. The dashboard and its data stay open: a browser has no
     way to carry this header, and the service binds to 127.0.0.1. ADR 0009.
     """
-    expected = get_router()._cfg.auth_token
+    # A password generated from the dashboard wins over the settings file's
+    # auth_token (ADR 0015); with neither, /v1 is open as before.
+    expected = app_password.effective(get_router()._cfg.auth_token)
     if not expected:
         return None
     header = request.headers.get("authorization") or ""
@@ -651,7 +656,8 @@ async def api_test_key(request: Request):
     if not base_url:
         return JSONResponse({"error": "base_url is required"}, status_code=400)
 
-    result = await probe_key(base_url, body.get("api_key"))
+    result = await probe_key(base_url, body.get("api_key"),
+                             timeout=get_router()._cfg.probe_timeout_seconds)
     payload = result.as_dict()
 
     # If this names a provider we already route to, say which of its
@@ -674,7 +680,8 @@ async def api_retest_provider(provider: str):
                             status_code=404)
 
     keys = list(pcfg.api_keys or [])
-    result = await probe_key(pcfg.base_url, keys[0] if keys else None)
+    result = await probe_key(pcfg.base_url, keys[0] if keys else None,
+                             timeout=router._cfg.probe_timeout_seconds)
     payload = result.as_dict()
     payload["provider"] = provider
 
@@ -764,5 +771,6 @@ def create_app(config_path: str | None = None) -> FastAPI:
     app.include_router(v1)
     app.include_router(api)
     app.include_router(dashboard_pages)
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     return app

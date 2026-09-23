@@ -96,6 +96,7 @@ Two ways to stretch it further:
 - [Session stickiness](#session-stickiness)
 - [Multiple keys per provider](#multiple-keys-per-provider)
 - [CLI](#cli)
+- [Terminal UI](#terminal-ui)
 - [Dashboard](#dashboard)
 - [Request log](#request-log)
 - [Picking up changes while it's running](#picking-up-changes-while-its-running)
@@ -383,17 +384,36 @@ A key that gets rejected (rate-limited) is skipped immediately in favor of the n
 
 | Command | Does |
 |---|---|
+| `flexrouter tui` | Open the live terminal UI — overview, keys, requests, paths (see [Terminal UI](#terminal-ui)) |
 | `flexrouter serve` | Start the server (API + dashboard) without opening a browser |
 | `flexrouter dashboard` | Start the server and open the dashboard in your browser |
 | `flexrouter status` | Print current spending/health to the terminal |
 | `flexrouter doctor` | Show where your settings, keys, and data live |
 | `flexrouter keys add <name>` | Save a key for a provider |
+| `flexrouter keys add --list` | Show every provider, with and without a key saved (adds nothing) |
 | `flexrouter keys list` | Show your saved keys (masked) |
 | `flexrouter keys rm <name> <id>` | Remove a saved key |
 | `flexrouter refresh` | Check available models and rate limits ([see below](#rebuilding-your-model-list)); changes nothing |
 | `flexrouter config reset` | Undo changes made from the dashboard |
 | `flexrouter config export` | Print a shareable copy of your settings (keys hidden) |
 | `flexrouter config import <token>` | Apply a config exported elsewhere |
+
+## Terminal UI
+
+```bash
+flexrouter tui
+```
+
+The same router, in your terminal, split into four tabs — and it works whether or not the service is running, because it reads your flexrouter home directly rather than talking to a live service:
+
+| Tab | Shows |
+|---|---|
+| **Overview** | Totals and today's spend per provider, straight from what the service has recorded |
+| **Keys** | Every provider, with the keys you have added (masked, never in full). Add a key, remove one, or switch one off without leaving the screen |
+| **Requests** | Your recent requests, newest first |
+| **Doctor** | Where your settings, keys, and records live, and which key each provider will use |
+
+Press `a` to add a key, `d` to remove the selected one, `r` to refresh, `q` to quit. The tabs refresh on their own every couple of seconds.
 
 ## Dashboard
 

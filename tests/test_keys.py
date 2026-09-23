@@ -122,3 +122,58 @@ def test_allow_models_globs_restrict_a_key():
 def test_save_keys_accepts_records_and_reloads_them():
     save_keys({"groq": [KeyRecord(id="groq-1", secret="gsk", weight=3)]})
     assert load_keys()["groq"][0].weight == 3
+
+
+# -- update_key tests --------------------------------------------------
+
+from flexrouter import keys as keystore
+
+
+def test_a_key_can_be_renamed_without_touching_its_secret(tmp_path):
+    path = tmp_path / "keys.json"
+    made = keystore.add_key("groq", "sk-secret-value", "first", path=path)
+    updated = keystore.update_key("groq", made.id, label="renamed", path=path)
+    assert updated.label == "renamed"
+    # The secret is not a field this function can reach.
+    assert keystore.load_keys(path)["groq"][0].secret == "sk-secret-value"
+
+
+def test_a_key_can_be_disabled_and_re_enabled(tmp_path):
+    path = tmp_path / "keys.json"
+    made = keystore.add_key("groq", "sk-x", path=path)
+    assert keystore.update_key("groq", made.id, enabled=False, path=path).enabled is False
+    assert keystore.update_key("groq", made.id, enabled=True, path=path).enabled is True
+
+
+def test_weight_and_globs_are_editable(tmp_path):
+    path = tmp_path / "keys.json"
+    made = keystore.add_key("groq", "sk-x", path=path)
+    out = keystore.update_key(
+        "groq", made.id, weight=5, allow_models=["llama-*", "gemma-*"], path=path)
+    assert out.weight == 5
+    assert out.allow_models == ["llama-*", "gemma-*"]
+
+
+def test_an_omitted_field_is_left_alone(tmp_path):
+    # The difference between "set this to None" and "do not touch this" is
+    # the whole reason every parameter defaults to None rather than to its
+    # own empty value.
+    path = tmp_path / "keys.json"
+    made = keystore.add_key("groq", "sk-x", "keep me", path=path)
+    keystore.update_key("groq", made.id, weight=9, path=path)
+    assert keystore.load_keys(path)["groq"][0].label == "keep me"
+
+
+def test_updating_a_key_that_is_not_there_answers_none(tmp_path):
+    path = tmp_path / "keys.json"
+    keystore.add_key("groq", "sk-x", path=path)
+    assert keystore.update_key("groq", "groq-99", label="x", path=path) is None
+    assert keystore.update_key("nobody", "nobody-1", label="x", path=path) is None
+
+
+def test_an_empty_glob_list_means_all_models(tmp_path):
+    path = tmp_path / "keys.json"
+    made = keystore.add_key("groq", "sk-x", path=path)
+    out = keystore.update_key("groq", made.id, allow_models=[], path=path)
+    assert out.allow_models == ["*"]
+    assert keystore.allows(out, "anything-at-all") is True

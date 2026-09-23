@@ -152,8 +152,12 @@ def refresh_config(config_path: str, state_dir: str, aa_key: str | None = None) 
     store = RateLimitStore(state_dir)
 
     free, paid, errors = asyncio.run(_discover_all(provider_keys, store))
-    free = asyncio.run(score_with_aa(free, aa_key))
-    paid = asyncio.run(score_with_aa(paid, aa_key))
+    # Read straight off the raw settings block: refresh_config is handed a
+    # path, not a FlexConfig, and loading one here just to read a single
+    # number would drag the whole provider/key resolution in with it.
+    fallback = int((raw.get("settings") or {}).get("unscored_fallback_score", 50))
+    free = asyncio.run(score_with_aa(free, aa_key, unscored_fallback=fallback))
+    paid = asyncio.run(score_with_aa(paid, aa_key, unscored_fallback=fallback))
 
     secrets = _known_secrets(provider_keys)
     errors = [{**e, "error": _scrub(e.get("error", ""), secrets)} for e in errors]

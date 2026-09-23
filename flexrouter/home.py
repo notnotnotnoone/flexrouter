@@ -67,6 +67,10 @@ def keys_path() -> Path:
     return home_dir() / "keys.json"
 
 
+def presets_path() -> Path:
+    return home_dir() / "presets.json"
+
+
 def overrides_path() -> Path:
     return home_dir() / "overrides.json"
 

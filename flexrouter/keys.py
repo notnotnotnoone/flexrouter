@@ -121,3 +121,41 @@ def remove_key(provider: str, key_id: str, path: Path | str | None = None) -> bo
     mapping[provider] = kept
     save_keys(mapping, path)
     return True
+
+
+def update_key(provider: str, key_id: str, *,
+               label: str | None = None,
+               weight: int | None = None,
+               allow_models: list[str] | None = None,
+               enabled: bool | None = None,
+               path: Path | str | None = None) -> KeyRecord | None:
+    """Change what a key is *for*, never what it is.
+
+    The secret is deliberately unreachable from here. A key whose secret
+    changed is a different credential with the same name and the same
+    accumulated history in key_state.json - remove it and add the new one
+    instead, so its failure count and cooldown start clean.
+
+    Every parameter defaults to `None` meaning "leave alone", which is why
+    `enabled=False` and `allow_models=[]` both have to be expressible
+    without colliding with "not supplied".
+    """
+    mapping = load_keys(path)
+    for record in mapping.get(provider, []):
+        if record.id != key_id:
+            continue
+        if label is not None:
+            record.label = label
+        if weight is not None:
+            record.weight = max(1, int(weight))
+        if allow_models is not None:
+            # An empty list means every model, spelled the way the rest of
+            # this module already spells it. Storing `[]` would make
+            # `allows()` answer False for everything and silently park the
+            # key forever.
+            record.allow_models = list(allow_models) or ["*"]
+        if enabled is not None:
+            record.enabled = bool(enabled)
+        save_keys(mapping, path)
+        return record
+    return None

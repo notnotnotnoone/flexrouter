@@ -96,9 +96,14 @@ routing logic is fine, the blindness is the problem. Fix the blindness first.
 One small, fast, structured-output model doing the boring classification jobs
 that would otherwise be hand-maintained forever. Two jobs, same machinery.
 
-First classifier: `typesafe/jev-1.13` — a structured-decision model that returns
-a typed choice rather than prose, which is exactly the shape needed here. Keep
-it behind a small interface so it can be swapped; do not hard-wire one vendor.
+First classifier: the plan named `typesafe/jev-1.13`. **That model could not be
+shown to exist** -- it appears nowhere in Artificial Analysis' catalogue of 656
+models across 59 creators, and no session ever produced an endpoint, an auth
+shape or a price for it. So no vendor is hard-wired at all: `HttpDecider` talks
+to any OpenAI-compatible endpoint held to a JSON schema, and `decider_base_url`
+/ `decider_model` are settings. Choosing a vendor is configuration, not code,
+which is what "keep it behind a small interface so it can be swapped" asked for
+in the first place.
 Everything it decides is written to disk, is correctable by hand, and a manual
 correction is never overwritten.
 
@@ -125,6 +130,15 @@ Cost is negligible: it fires only on error text never seen before. Expect a
 handful of calls in the first week and near zero after that.
 
 #### 4b — Working out what a model can do
+
+> **Status 2026-09-21 — specified, deliberately not built.** `4a` ships with a
+> real classifier; `Decider.describe_model` still returns `{}`. Two reasons,
+> neither of them "ran out of time": nothing calls it (there is no caller that
+> hands it a newly-discovered model), and its return shape -- six attributes
+> each carrying its own value/source/confidence -- belongs to Stage 6, which
+> has not defined it. Building it now would mean inventing that shape twice.
+> The interface is already declared, so adding it later is an implementation,
+> not a migration. V2 is complete with this boundary drawn, not despite it.
 
 Same idea, pointed at the model list instead of at errors. When the daily
 refresh finds a model that isn't known yet, one call works out what it is:
@@ -269,9 +283,24 @@ is already better than LiteLLM's and Portkey's. Don't touch it.
 
 ## Still open
 
-- What the buckets should be called and what goes in each.
-- Whether the old 13.5KB config is imported once or rebuilt from scratch in the
-  new screen.
-- Whether `flexrouter/server.py`, `tests/test_server.py`,
-  `flexrouter/dashboard/server.py` and `tests/test_dashboard_server.py` — all
-  superseded and currently dead — get deleted. Asked twice, never answered.
+- ~~What the buckets should be called and what goes in each.~~ **Closed
+  2026-09-21: ratify what is already in use.** The running config answers this
+  on its own -- seven buckets, 96 models: `default` (55), `quick` (12),
+  `chat` (9), `deep` (6), `utility` (5), `frontier` (5), `judgment` (4).
+  These names were arrived at in use rather than designed up front, which is
+  the better provenance. Inventing a fresh vocabulary now would rename
+  something that already works and invalidate every score attached to it.
+
+- ~~Whether the old 13.5KB config is imported once or rebuilt from scratch in
+  the new screen.~~ **Closed 2026-09-21: import once.** The file is 12,950
+  bytes describing 5 providers and 96 models across 7 buckets. Rebuilding that
+  through the dashboard means re-entering 96 models by hand to arrive at what
+  already exists, and every hand-pinned score is lost on the way. The dashboard
+  writes through `overrides.json` and never touches the hand-written config, so
+  importing costs nothing it would otherwise protect.
+- ~~Whether `flexrouter/server.py`, `tests/test_server.py`,
+  `flexrouter/dashboard/server.py` and `tests/test_dashboard_server.py` get
+  deleted.~~ **Closed 2026-09-21: delete — and already done.** Daniel answered
+  "delete them"; the files had in fact been removed back in `28ccb65`, and
+  `tests/test_public_surface.py::test_the_old_server_modules_are_gone` guards
+  them staying gone. This question was stale, not open. Nothing to do.

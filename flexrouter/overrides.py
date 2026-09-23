@@ -25,7 +25,14 @@ ALLOWED_FIELDS: dict[str, frozenset[str]] = {
         "penalty_base_seconds", "penalty_max_seconds", "session_ttl_minutes",
         "sample_interval_seconds", "health_history_days", "key_concurrency_cap",
         "retry_policy", "retries", "backoff_seconds", "provider_budget", "hooks",
+        "decider_base_url", "decider_model", "decider_timeout_seconds",
+        "decider_confidence_threshold", "decider_rule_prior_confidence",
+        "decider_confidence_ceiling", "decider_contested_statuses",
+        "quarantine_seconds", "probe_timeout_seconds", "error_max_length",
+        "unscored_fallback_score",
     }),
+    # Not `decider_api_key`: same rule as auth_token. The classifier's key
+    # lives in keys.json through service_keys.py, masked like any other.
     # Not `auth_token`: it is a credential. A key that could be set from the
     # dashboard could be set by anything that reached the dashboard.
     # Not `api_key`/`api_keys` (credentials never go in settings) and not
@@ -40,6 +47,10 @@ ALLOWED_FIELDS: dict[str, frozenset[str]] = {
     # there.
     "models": frozenset({
         "enabled", "score", "rpm", "tpm", "context_window", "vision", "quotas",
+        # Prices are settings, not credentials: the owner types what the
+        # provider charges so the dashboard can stop guessing that
+        # everything is free.
+        "price_in", "price_out",
     }),
 }
 

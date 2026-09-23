@@ -7,7 +7,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 _HEADERS = ["timestamp", "tier", "provider", "model",
-            "prompt_tokens", "completion_tokens", "cost_usd", "latency_ms", "status"]
+            "prompt_tokens", "completion_tokens", "cost_usd", "latency_ms",
+            "status", "request_id"]
+
+# `request_id` was added after the first release. It is last so that anything
+# reading the older nine columns by position still lines up, and
+# `_migrate_header` below brings an existing file forward rather than writing
+# ten values under a nine-column header.
+_LEGACY_HEADERS = _HEADERS[:-1]
 
 
 class AuditLogger:
@@ -25,6 +32,43 @@ class AuditLogger:
         if not self._csv_path.exists():
             with self._csv_path.open("w", newline="") as f:
                 csv.DictWriter(f, fieldnames=_HEADERS).writeheader()
+        else:
+            self._migrate_header()
+
+    def _migrate_header(self) -> None:
+        """Bring a pre-`request_id` audit file up to the current columns.
+
+        Without this, an existing log keeps its nine-column header while
+        every new row carries ten values, and `DictReader` starts filing
+        the tenth under the key `None`. Rewriting once on startup is
+        cheap and leaves the old rows readable, with an empty request id -
+        which is the truth about them: those requests were never traced.
+        """
+        with self._csv_path.open(newline="") as f:
+            first = f.readline()
+        if not first.strip():
+            with self._csv_path.open("w", newline="") as f:
+                csv.DictWriter(f, fieldnames=_HEADERS).writeheader()
+            return
+
+        header = next(csv.reader([first]), [])
+        if header == _HEADERS or "request_id" in header:
+            return
+        if header != _LEGACY_HEADERS:
+            # Someone else's columns. Leave the file alone rather than
+            # rewriting a file this class does not understand.
+            return
+
+        with self._csv_path.open(newline="") as f:
+            rows = list(csv.DictReader(f))
+        tmp = self._csv_path.with_suffix(".migrating")
+        with tmp.open("w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=_HEADERS)
+            w.writeheader()
+            for row in rows:
+                row.setdefault("request_id", "")
+                w.writerow(row)
+        os.replace(tmp, self._csv_path)
 
     def log(
         self,
@@ -36,7 +80,15 @@ class AuditLogger:
         cost_usd: float,
         latency_ms: int,
         status: str,
+        request_id: str = "",
     ) -> None:
+        """One attempt.
+
+        `request_id` is the trace id of the request this attempt belongs to,
+        so several rows can be recognised as one request that failed over.
+        It defaults to empty rather than being required: a caller that
+        forgets should lose a statistic, not raise mid-request.
+        """
         row = {
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "tier": tier,
@@ -47,6 +99,7 @@ class AuditLogger:
             "cost_usd": cost_usd,
             "latency_ms": latency_ms,
             "status": status,
+            "request_id": request_id,
         }
         with self._csv_path.open("a", newline="") as f:
             csv.DictWriter(f, fieldnames=_HEADERS).writerow(row)
