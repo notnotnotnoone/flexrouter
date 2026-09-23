@@ -112,6 +112,18 @@ def _nav(current: str, badges: dict) -> str:
     return tag("nav", _brand() + tag("div", "".join(out), cls="nav-links") + foot, cls="nav")
 
 
+def _live_badges() -> dict:
+    """Counts for the menu: what needs the owner right now. A menu that
+    cannot be counted (no router yet, a broken state file) shows no badge
+    rather than taking the page down with it."""
+    try:
+        from flexrouter.app import get_router
+        from flexrouter.dashboard import facts
+        return {"broken": len(facts.broken(get_router())["needs_you"])}
+    except Exception:  # noqa: BLE001 - a badge must never break a page
+        return {}
+
+
 def page(title: str, current: str, body: str, *, badges: dict | None = None,
          sheet: str = "") -> str:
     """A complete document. `body` is already-rendered HTML.
@@ -121,6 +133,8 @@ def page(title: str, current: str, body: str, *, badges: dict | None = None,
     """
     from flexrouter.dashboard import assets, prefs, ui  # both import this module
     motion = prefs.load().motion
+    if badges is None:
+        badges = _live_badges()
     scripts = "".join(
         f'<script src="{assets.asset_url(rel)}" defer></script>'
         for rel in ("vendor/htmx.min.js", "vendor/idiomorph-ext.min.js",

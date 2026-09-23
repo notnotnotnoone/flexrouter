@@ -704,6 +704,49 @@ table.log td { padding: 8px 12px; }
 }
 .countdown { font: 500 11px var(--mono); color: var(--ink-2); font-variant-numeric: tabular-nums; }
 
+/* ── what's broken ─────────────────────────────────────── */
+
+.cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.col-head { display: flex; align-items: center; gap: 10px; padding: 0 2px 4px; border-bottom: 1px solid var(--rule); }
+.col-head h2 { margin: 0; font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--ink-2); }
+.col-count { font: 500 10px/1 var(--mono); padding: 3px 6px; border: 1px solid var(--rule-2); color: var(--ink-3); }
+.col-count-you { color: var(--warn); border-color: rgba(251, 191, 36, .3); background: var(--warn-wash); }
+.col-body { display: flex; flex-direction: column; gap: 10px; }
+
+.card {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule-2);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 200ms var(--ease);
+}
+.card-you { border-left-color: var(--warn); }
+.card-service { border-left-color: var(--blue); }
+.card:hover { border-color: var(--rule-2); }
+.card-you:hover { border-left-color: var(--warn); }
+.card-service:hover { border-left-color: var(--blue); }
+.card-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.card-kind { font: 600 13px var(--mono); }
+.card-where { font: 400 11px var(--mono); color: var(--ink-3); }
+.card-why { margin: 0; color: var(--ink-2); font-size: 12px; }
+.card-foot { display: flex; align-items: center; gap: 12px; }
+
+.all-clear {
+  padding: 40px 28px;
+  border: 1px solid var(--rule);
+  background:
+    radial-gradient(ellipse at 0 0, var(--green-wash), transparent 60%),
+    var(--panel);
+}
+.clear-head { display: flex; align-items: center; gap: 12px; }
+.clear-head h2 { margin: 0; font: 600 24px var(--mono); text-transform: uppercase; }
+.clear-dot { color: var(--green); font-size: 18px; animation: breathe 2.4s ease-in-out infinite; }
+
 /* ── the side panel ────────────────────────────────────── */
 
 .sheet-backdrop {

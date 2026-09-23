@@ -24,6 +24,7 @@ from flexrouter import service_keys
 from flexrouter.dashboard import (facts, keytest, overview, pending_actions,
                                   ranking, settings_write, ui)
 from flexrouter.dashboard import allowance_page as allowance_page_mod
+from flexrouter.dashboard import broken_page as broken_page_mod
 from flexrouter.dashboard import requests_page as requests_page_mod
 from flexrouter.dashboard.render import attrs, esc, page, tag
 
@@ -86,40 +87,6 @@ def _panel(title: str, body: str, *, sub: str = "", action: str = "") -> str:
     if action:
         head += tag("span", "", cls="spacer") + action
     return tag("section", tag("div", head, cls="ph") + body, cls="panel")
-
-
-def _broken_table(items) -> str:
-    if not items:
-        return tag("p", "Nothing here.", cls="note")
-    rows = [tag("tr", "".join([
-        tag("th", "What"), tag("th", "Where"), tag("th", "Why"),
-    ]))]
-    for item in items:
-        where = item.provider
-        if item.detail:
-            where = f"{where} - {item.detail}" if where else item.detail
-        rows.append(tag("tr", "".join([
-            tag("td", esc(_KIND_LABELS.get(item.kind, item.kind))),
-            tag("td", esc(where)),
-            tag("td", esc(item.reason)),
-        ])))
-    return tag("table", "".join(rows))
-
-
-def _broken_body(router) -> str:
-    data = facts.broken(router)
-    needs_you, handling_itself = data["needs_you"], data["handling_itself"]
-
-    return (
-        tag("h1", "What's broken", cls="page-title")
-        + tag("p", "Two piles: what only you can fix, and what the service "
-                   "is already handling on its own without you doing "
-                   "anything.", cls="lede")
-        + tag("h3", f"Needs you ({len(needs_you)})")
-        + _broken_table(needs_you)
-        + tag("h3", f"Handling itself ({len(handling_itself)})")
-        + _broken_table(handling_itself)
-    )
 
 
 def _field(label: str, input_html: str) -> str:
@@ -880,8 +847,11 @@ def overview_page(range: str = DEFAULT_RANGE, fragment: str = "") -> HTMLRespons
 
 
 @pages.get("/broken", response_class=HTMLResponse, include_in_schema=False)
-def broken_page() -> HTMLResponse:
-    return HTMLResponse(page("What's broken", "broken", _broken_body(_live_router())))
+def broken_page(fragment: str = "") -> HTMLResponse:
+    router = _live_router()
+    if fragment:
+        return HTMLResponse(broken_page_mod.inner(router))
+    return HTMLResponse(page("What's broken", "broken", broken_page_mod.body(router)))
 
 
 def toast_trigger(message: str, kind: str = "ok") -> dict[str, str]:
