@@ -4,6 +4,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-23
+
+### Added
+
+- **Add models with AI** (`/models/add-with-ai`). A copy-paste flow: the
+  dashboard builds a prompt, you run it in any AI, paste the answer back,
+  review every field and apply. No network calls. Records `kind`; embedding,
+  speech and image models are saved to `state/parked_models.json` and never
+  routed.
+- **JEV via OpenRouter's decisions API.** `typesafe/*` decider models use
+  `/api/alpha/decisions` and report a verdict with probabilities and cost.
+- **Error brain shows everything:** HTTP status, the provider's full response
+  body, where each error happened with links to requests, every classifier
+  probability, and a classifier health panel.
+- Groq and Mistral rate-limit header parsers.
+
+### Changed
+
+- **Automatic model discovery is opt-in** (`experimental_model_discovery`,
+  default off): no startup refresh, no discovery buttons or Pending tray, no
+  model listing when a key is added, `flexrouter refresh` is a no-op.
+- **402 and 403 refuse one model, not the whole key**; only 401 benches a key
+  (ADR 0016).
+- Discovery follows each provider's docs (llm7 free tier, Mistral chat,
+  Groq active text, Google free) and raises instead of returning nothing.
+- Artificial Analysis scores match on exact name tokens.
+- Error text keeps known provider and model names and full bodies; your own
+  keys are still masked exactly (ADR 0017).
+- Dashboard: themed native controls, new logo, tidier Models page.
+
+### Fixed
+
+- Pinging many models failed almost every time: a key at its concurrency cap
+  was treated as a failure. Busy keys now wait without penalty.
+- Cancelled requests now leave a failed trace.
+- Meter bars rendered empty on every page.
+- Test suite passes on Linux CI.
+
 ## [2.1.0] - 2026-09-22
 
 ### Added
