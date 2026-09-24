@@ -228,7 +228,7 @@ def _danger_zone(action: str, what: str, phrase: str, counts: dict) -> str:
                          "penalties and pending suggestions. Keys, providers, settings, "
                          "buckets and request history are not touched. Every changed file "
                          "is backed up to state/backups first."), cls="note")
-            + tag("p", esc(found), cls="state-bad")
+            + tag("p", esc(found), cls="danger-count")
             + tag("form",
                   tag("label", esc(f"Type {phrase} to confirm "))
                   + f"<input{attrs({'name': 'confirm', 'autocomplete': 'off', 'aria-label': 'Confirmation'})}>"
