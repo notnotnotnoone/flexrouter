@@ -435,7 +435,7 @@ class LocalRouter:
                 total_tokens = usage.get("total_tokens", 0)
 
                 self._engine.record_request(route.provider, route.model, total_tokens)
-                self._quota_tracker.record(route.provider, route.model)
+                self._quota_tracker.record(route.provider, route.model, total_tokens)
                 if key_id is not None:
                     self._key_states.mark_success(route.provider, key_id, total_tokens, latency_ms)
                 self._audit.log(
@@ -961,7 +961,7 @@ class LocalRouter:
                 total_tokens = usage.get("total_tokens", 0)
 
                 self._engine.record_request(route.provider, route.model, total_tokens)
-                self._quota_tracker.record(route.provider, route.model)
+                self._quota_tracker.record(route.provider, route.model, total_tokens)
                 if key_id is not None:
                     self._key_states.mark_success(route.provider, key_id, total_tokens, latency_ms)
                 self._audit.log(

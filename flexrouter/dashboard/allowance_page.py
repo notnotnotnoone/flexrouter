@@ -44,16 +44,18 @@ def _stack(stack: dict, colors: dict) -> str:
 def _limit_row(model: str, lim: dict) -> str:
     frac = lim["used"] / lim["limit"] if lim["limit"] else None
     left = max(lim["limit"] - lim["used"], 0)
+    unit_word = "tokens" if lim["unit"] == "tokens" else "requests"
+    label = f"{unit_word} per {lim['window']}"
     note = (ui.countdown(lim["frees_at"], prefix="Frees up in") if lim["frees_at"]
             else tag("span", f"{num(left)} left · rolling {lim['window']}", cls="n"))
     return tag("div",
                tag("div", tag("span", esc(model), cls="lim-model")
-                   + tag("span", f"per {lim['window']}", cls="lim-window"), cls="lim-name")
-               + ui.meter(frac, label=f"{model} per {lim['window']}")
+                   + tag("span", label, cls="lim-window"), cls="lim-name")
+               + ui.meter(frac, label=f"{model} {label}")
                + tag("span", f"{num(lim['used'])} / {num(lim['limit'])}", cls="lim-figs")
                + ui.tag_("your limit")
                + tag("div", note, cls="lim-note"),
-               cls="lim-row", **{"data-row": f"lim:{model}:{lim['window']}",
+               cls="lim-row", **{"data-row": f"lim:{model}:{lim['unit']}:{lim['window']}",
                                  "data-value": lim["used"]})
 
 
