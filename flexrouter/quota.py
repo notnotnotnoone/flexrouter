@@ -5,14 +5,14 @@ import time
 from pathlib import Path
 
 _WINDOWS_SECONDS: dict[str, int] = {
-    "rps": 1, "rph": 3600, "rpd": 86400,
-    "tps": 1, "tph": 3600, "tpd": 86400,
+    "rps": 1, "rpm": 60, "rph": 3600, "rpd": 86400,
+    "tps": 1, "tpm": 60, "tph": 3600, "tpd": 86400,
 }
 
 
 class QuotaTracker:
     """Tracks per-provider/model request *and* token counts against
-    configured rps/rph/rpd/tps/tph/tpd limits, persisted to
+    configured rps/rpm/rph/rpd/tps/tpm/tph/tpd limits, persisted to
     <state_dir>/quotas.json. Survives process restarts, unlike
     RoutingEngine's in-memory SlidingWindow (rpm/tpm), which only ever
     covers one short rolling window.

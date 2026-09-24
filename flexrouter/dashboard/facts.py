@@ -236,6 +236,8 @@ class ModelRow:
     quotas: dict  # rps/rph/rpd/tps/tph/tpd caps beyond rpm/tpm; {} = none set
     state: str  # "available" | "gone"
     why: str
+    requests: int  # lifetime requests logged for this model in audit.csv
+    response_rate: Optional[float]  # answered / requests; None = no requests yet
 
 
 def models(router) -> list[ModelRow]:
@@ -246,6 +248,11 @@ def models(router) -> list[ModelRow]:
     penalties = router._engine._penalties
     facts_store = router._model_facts
     by_key: dict[tuple[str, str], ModelRow] = {}
+
+    from flexrouter.dashboard.stats import compute_stats
+    per_model_stats = {
+        e["model"]: e for e in compute_stats(router._cfg.state_dir)["errors"]["per_model"]
+    }
 
     for tier_name, model_configs in router._cfg.tiers.items():
         for mc in model_configs:
@@ -264,6 +271,9 @@ def models(router) -> list[ModelRow]:
                 or penalties.quarantine_reason(mc.provider, "*")
                 or "temporarily set aside after a recent failure"
             )
+            entry = per_model_stats.get(f"{mc.provider}/{mc.model}")
+            requests = entry["requests"] if entry else 0
+            response_rate = (1.0 - entry["rate"]) if entry else None
             by_key[key] = ModelRow(
                 provider=mc.provider, model=mc.model, buckets=[tier_name],
                 score=mc.score, rpm=mc.rpm, tpm=mc.tpm,
@@ -277,6 +287,8 @@ def models(router) -> list[ModelRow]:
                 quotas=dict(mc.quotas or {}),
                 state="available" if available else "gone",
                 why=reason,
+                requests=requests,
+                response_rate=response_rate,
             )
     return sorted(by_key.values(), key=lambda r: (r.provider, r.model))
 

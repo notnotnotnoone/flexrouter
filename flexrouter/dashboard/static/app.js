@@ -600,6 +600,89 @@
     btn.disabled = false;
   });
 
+  /* ── Buckets: drag a model card onto a bucket to add it there ──── */
+  /* Everything the card needs is already in its own data-* attributes
+     (facts.models() carried them from the model's live config), so a drop
+     just replays the same POST the manual "add a model" form makes -
+     nothing is looked up again, and there is no new endpoint. */
+
+  var draggedCard = null;
+
+  document.addEventListener("dragstart", function (e) {
+    var card = e.target.closest && e.target.closest(".model-card");
+    if (!card) return;
+    draggedCard = card;
+    card.classList.add("is-dragging");
+    e.dataTransfer.effectAllowed = "copy";
+    e.dataTransfer.setData("text/plain", card.getAttribute("data-provider") + "/" +
+      card.getAttribute("data-model"));
+  });
+
+  document.addEventListener("dragend", function (e) {
+    var card = e.target.closest && e.target.closest(".model-card");
+    if (card) card.classList.remove("is-dragging");
+    draggedCard = null;
+  });
+
+  document.addEventListener("dragover", function (e) {
+    var zone = e.target.closest && e.target.closest("[data-dropzone]");
+    if (!zone || !draggedCard) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    zone.classList.add("drag-over");
+  });
+
+  document.addEventListener("dragleave", function (e) {
+    var zone = e.target.closest && e.target.closest("[data-dropzone]");
+    if (zone && !zone.contains(e.relatedTarget)) zone.classList.remove("drag-over");
+  });
+
+  document.addEventListener("drop", async function (e) {
+    var zone = e.target.closest && e.target.closest("[data-dropzone]");
+    if (!zone || !draggedCard) return;
+    e.preventDefault();
+    zone.classList.remove("drag-over");
+    var card = draggedCard;
+    var bucket = zone.getAttribute("data-dropzone");
+    var provider = card.getAttribute("data-provider");
+    var model = card.getAttribute("data-model");
+    var already = zone.querySelector('[data-row="' + provider + "/" + model + '"]');
+    if (already) {
+      window.flex.toast(provider + "/" + model + " is already in " + bucket, "bad");
+      return;
+    }
+    var quotas = {};
+    try { quotas = JSON.parse(card.getAttribute("data-quotas") || "{}"); } catch (err) { quotas = {}; }
+    var body = new URLSearchParams();
+    body.set("provider", provider);
+    body.set("model", model);
+    body.set("score", card.getAttribute("data-score") || "");
+    body.set("rpm", card.getAttribute("data-rpm") || "");
+    body.set("tpm", card.getAttribute("data-tpm") || "");
+    if (card.getAttribute("data-context-window")) {
+      body.set("context_window", card.getAttribute("data-context-window"));
+    }
+    if (card.getAttribute("data-tokens-per-second")) {
+      body.set("tokens_per_second", card.getAttribute("data-tokens-per-second"));
+    }
+    if (card.getAttribute("data-vision") === "1") body.set("vision", "on");
+    Object.keys(quotas).forEach(function (k) { body.set(k, quotas[k]); });
+    try {
+      var r = await fetch("/buckets/" + encodeURIComponent(bucket) + "/models", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+      });
+      if (r.ok || r.redirected) {
+        window.location.reload();
+      } else {
+        window.flex.toast("Could not add " + provider + "/" + model + " to " + bucket, "bad");
+      }
+    } catch (err) {
+      window.flex.toast("Could not add " + provider + "/" + model + " to " + bucket, "bad");
+    }
+  });
+
   /* ── Ctrl+K command bar ──────────────────────────────────── */
 
   var index = null, hits = [], active = 0;

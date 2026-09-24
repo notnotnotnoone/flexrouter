@@ -136,6 +136,21 @@ def test_models_shows_a_quarantined_model_as_gone_and_why(client):
     assert "model gone" in body
 
 
+def test_models_with_no_requests_shows_no_data_yet(client):
+    body = client.get("/models").text
+    assert "no data yet" in body
+
+
+def test_models_shows_its_response_rate(client):
+    router = app_module.get_router()
+    router._audit.log("low", "groq", "llama-3.1-8b-instant", 100, 50, 0.0, 200, "ok")
+    router._audit.log("low", "groq", "llama-3.1-8b-instant", 0, 0, 0.0, 100, "rate_limited")
+    router._audit.log("low", "groq", "llama-3.1-8b-instant", 0, 0, 0.0, 100, "rate_limited")
+    router._audit.log("low", "groq", "llama-3.1-8b-instant", 0, 0, 0.0, 100, "rate_limited")
+    body = client.get("/models").text
+    assert "25% (4 reqs)" in body
+
+
 def test_pending_catalogue_says_nothing_pending_when_empty(client):
     # Automatic discovery is experimental and off by default (see
     # tests/test_experimental_discovery.py for the off-by-default coverage);
@@ -177,6 +192,26 @@ def test_buckets_shows_why_a_model_is_skipped(client):
     router._engine._penalties.quarantine("groq", "llama-3.1-8b-instant", "model gone")
     body = client.get("/buckets").text
     assert "model gone" in body
+
+
+def test_buckets_offers_a_draggable_card_for_every_configured_model(client):
+    body = client.get("/buckets").text
+    assert 'class="model-card"' in body
+    assert 'draggable="true"' in body
+    assert 'data-provider="groq"' in body
+    assert 'data-model="llama-3.1-8b-instant"' in body
+
+
+def test_each_bucket_is_a_drop_zone(client):
+    body = client.get("/buckets").text
+    assert 'data-dropzone="low"' in body
+
+
+def test_with_no_configured_models_the_palette_is_omitted(client):
+    router = app_module.get_router()
+    router._cfg.tiers.clear()
+    body = client.get("/buckets").text
+    assert "All models" not in body
 
 
 def test_requests_is_no_longer_a_stub(client):

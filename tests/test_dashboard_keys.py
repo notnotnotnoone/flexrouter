@@ -91,6 +91,65 @@ def test_editing_a_key_that_vanished_says_so_instead_of_500ing(client):
     assert "ok=0" in r.headers["location"]
 
 
+def test_the_edit_form_offers_a_per_minute_cap(client):
+    body = client.get("/providers/groq").text
+    assert "Requests a minute" in body
+    assert "Tokens a minute" in body
+
+
+def test_a_key_can_set_a_per_minute_cap(client, keys_path):
+    client.post("/providers/groq/keys", data={"secret": "sk-x"}, follow_redirects=False)
+    made = keystore.load_keys(keys_path)["groq"][-1]
+    client.post(f"/providers/groq/keys/{made.id}/edit",
+                data={"enabled": "on", "label": "l", "weight": "1",
+                      "allow_models": "*", "rpm": "30", "tpm": "6000"},
+                follow_redirects=False)
+    after = [k for k in keystore.load_keys(keys_path)["groq"] if k.id == made.id][0]
+    assert after.quotas == {"rpm": 30, "tpm": 6000}
+
+
+def test_copy_to_all_saves_the_source_key_and_matches_others(client, keys_path):
+    client.post("/providers/groq/keys", data={"secret": "sk-first"}, follow_redirects=False)
+    client.post("/providers/groq/keys", data={"secret": "sk-second"}, follow_redirects=False)
+    made = keystore.load_keys(keys_path)["groq"]
+    source, other = made[0], made[1]
+    r = client.post(f"/providers/groq/keys/{source.id}/copy-to-all",
+                    data={"label": "source label", "weight": "3",
+                          "allow_models": "llama-*", "enabled": "on", "rpm": "10"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert "ok=1" in r.headers["location"]
+    records = {k.id: k for k in keystore.load_keys(keys_path)["groq"]}
+    assert records[source.id].label == "source label"
+    assert records[source.id].weight == 3
+    assert records[other.id].weight == 3
+    assert records[other.id].allow_models == ["llama-*"]
+    assert records[other.id].quotas == {"rpm": 10}
+    # The other key's own label is never overwritten by a copy.
+    assert records[other.id].label != "source label"
+
+
+def test_copy_to_all_with_no_other_keys_still_saves(client, keys_path):
+    client.post("/providers/groq/keys", data={"secret": "sk-solo"}, follow_redirects=False)
+    made = keystore.load_keys(keys_path)["groq"][0]
+    r = client.post(f"/providers/groq/keys/{made.id}/copy-to-all",
+                    data={"label": "solo", "weight": "2", "allow_models": "*", "enabled": "on"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert "ok=1" in r.headers["location"]
+    after = keystore.load_keys(keys_path)["groq"][0]
+    assert after.label == "solo"
+    assert after.weight == 2
+
+
+def test_copy_to_all_on_a_vanished_key_says_so(client):
+    r = client.post("/providers/groq/keys/groq-404/copy-to-all",
+                    data={"label": "x", "weight": "1", "allow_models": "*"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert "ok=0" in r.headers["location"]
+
+
 def test_a_key_label_cannot_inject_markup(client, keys_path):
     client.post("/providers/groq/keys",
                 data={"secret": "sk-x", "label": "<script>alert(1)</script>"},

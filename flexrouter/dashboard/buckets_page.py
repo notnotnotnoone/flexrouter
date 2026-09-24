@@ -11,6 +11,7 @@ approved the small cost) and shows who answered.
 """
 from __future__ import annotations
 
+import json
 from urllib.parse import quote
 
 from flexrouter.dashboard import facts, ui
@@ -87,7 +88,42 @@ def _bucket(b, add_model_form: str) -> str:
     return ui.box(b.name, body,
                   sub=f"{len(b.models)} models · {running} could answer now",
                   action=try_it,
-                  **{"data-enter": "", "data-box": f"bucket-{b.name}"})
+                  **{"data-enter": "", "data-box": f"bucket-{b.name}", "data-dropzone": b.name})
+
+
+def _model_card(row) -> str:
+    """One draggable card, carrying everything `add_model()` needs to file
+    this already-configured model into another bucket - so dropping it
+    never has to ask the owner to retype a score or a rate limit it
+    already knows.
+    """
+    return tag(
+        "div",
+        tag("span", esc(f"{row.provider}/{row.model}"), cls="model-card-name")
+        + tag("span", esc(row.score), cls="model-card-score"),
+        cls="model-card", draggable="true", tabindex="0",
+        **{
+            "data-provider": row.provider, "data-model": row.model,
+            "data-score": row.score, "data-rpm": row.rpm, "data-tpm": row.tpm,
+            "data-context-window": row.context_window or "",
+            "data-tokens-per-second": (
+                row.tokens_per_second if row.tokens_per_second is not None else ""),
+            "data-vision": "1" if row.vision_configured else "",
+            "data-quotas": json.dumps(row.quotas or {}),
+        },
+    )
+
+
+def _model_palette(router) -> str:
+    rows = facts.models(router)
+    if not rows:
+        return ""
+    cards = "".join(_model_card(r) for r in sorted(rows, key=lambda r: (r.provider, r.model)))
+    return ui.box(
+        "All models", tag("div", cards, cls="model-card-grid"),
+        sub="drag a model onto a bucket to add it there",
+        **{"data-enter": ""},
+    )
 
 
 def body(router, banner: str, add_model_form, add_bucket_form: str) -> str:
@@ -98,9 +134,10 @@ def body(router, banner: str, add_model_form, add_bucket_form: str) -> str:
                                      "tokens/s, depending on the bucket's strategy.",
                                 cls="page-status"), cls="page-head-text"),
                cls="page-head")
+    palette = _model_palette(router)
     boxes = "".join(_bucket(b, add_model_form(b.name)) for b in all_buckets)
     if not boxes:
         boxes = ui.empty("No buckets yet. A bucket is a name your apps ask for, like fast or "
                          "smart, holding the models that can answer it.")
     add = ui.box("Add a bucket", add_bucket_form, **{"data-enter": ""})
-    return head + banner + tag("div", boxes, cls="bucket-grid") + add
+    return head + banner + palette + tag("div", boxes, cls="bucket-grid") + add

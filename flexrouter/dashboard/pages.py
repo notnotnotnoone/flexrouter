@@ -119,31 +119,39 @@ _QUOTA_FIELDS = (
     ("tph", "Tokens an hour"), ("tpd", "Tokens a day"), ("tps", "Tokens a second"),
 )
 
+# A key's own caps get rpm/tpm too, on top of the six a model has - a key is
+# a real account-level credential and per-minute is the most commonly
+# published window for one. Models don't get these here because ModelConfig
+# already has dedicated rpm/tpm fields outside this dict (models.py's
+# `_model_edit_form`); adding them here too would collide with those field
+# names on that form.
+_KEY_QUOTA_FIELDS = (("rpm", "Requests a minute"), ("tpm", "Tokens a minute")) + _QUOTA_FIELDS
+
 # rps/tps convert from a day/month allowance into a per-second one and are
 # legitimately fractional (e.g. Mistral's real published limits give 2.08,
 # 0.63, 12.5) - live-verified against a provider's real numbers. The other
-# four stay whole numbers. Also used by add_models.py's own parser.
+# fields stay whole numbers. Also used by add_models.py's own parser.
 _FRACTIONAL_QUOTA_FIELDS = frozenset({"rps", "tps"})
 
 
-def _quota_fields_html(quotas: Optional[dict] = None) -> str:
-    """The six optional rps/rph/rpd/tps/tph/tpd inputs, pre-filled from an
-    existing model's `quotas` dict when editing one. Blank means "no cap"."""
+def _quota_fields_html(quotas: Optional[dict] = None, fields=_QUOTA_FIELDS) -> str:
+    """The optional rps/rph/rpd/tps/tph/tpd (and, for a key, rpm/tpm)
+    inputs, pre-filled from an existing quotas dict. Blank means "no cap"."""
     quotas = quotas or {}
     return "".join(
         _field(label, _input(type="number",
                              **({"step": "any"} if name in _FRACTIONAL_QUOTA_FIELDS else {}),
                              name=name, value=esc(quotas[name]) if name in quotas else "",
                              placeholder="no cap"))
-        for name, label in _QUOTA_FIELDS
+        for name, label in fields
     )
 
 
-def _parse_quota_fields(form) -> dict:
-    """The six quota fields from a submitted form, as a `{rph: 100, ...}`
-    dict holding only the ones that were actually filled in."""
+def _parse_quota_fields(form, fields=_QUOTA_FIELDS) -> dict:
+    """The quota fields from a submitted form, as a `{rph: 100, ...}` dict
+    holding only the ones that were actually filled in."""
     out: dict = {}
-    for name, _ in _QUOTA_FIELDS:
+    for name, _ in fields:
         parser = _opt_float if name in _FRACTIONAL_QUOTA_FIELDS else _opt_int
         value = parser(form.get(name))
         if value is not None:
@@ -305,23 +313,31 @@ def _key_row(detail, k) -> str:
         action=f"/providers/{quote(detail.name, safe=':')}/keys/{quote(k.id, safe=':')}/remove",
         cls="key-remove",
     )
+    edit_action = f"/providers/{quote(detail.name, safe=':')}/keys/{quote(k.id, safe=':')}/edit"
+    copy_action = f"/providers/{quote(detail.name, safe=':')}/keys/{quote(k.id, safe=':')}/copy-to-all"
     edit_form = tag(
         "form",
-        _field("Label", _input(type="text", name="label", value=esc(k.label)))
-        + _field("Weight", _input(type="number", name="weight", value=esc(k.weight), min="1"))
-        + _field("Only these models",
-                 _input(type="text", name="allow_models",
-                        value=esc(" ".join(k.allow_models)),
-                        placeholder="* (all)"))
-        + _quota_fields_html(k.quotas)
-        + tag("label",
-              _input(type="checkbox", name="enabled",
-                     **({"checked": True} if k.enabled else {}))
-              + "enabled", cls="check-field")
-        + tag("button", "Save", type="submit"),
-        method="post",
-        action=f"/providers/{quote(detail.name, safe=':')}/keys/{quote(k.id, safe=':')}/edit",
-        cls="grouped-form key-edit",
+        tag("div",
+            _field("Label", _input(type="text", name="label", value=esc(k.label)))
+            + _field("Weight", _input(type="number", name="weight", value=esc(k.weight), min="1"))
+            + _field("Only these models",
+                     _input(type="text", name="allow_models",
+                            value=esc(" ".join(k.allow_models)),
+                            placeholder="* (all)")),
+            cls="key-edit-identity")
+        + tag("div", _quota_fields_html(k.quotas, fields=_KEY_QUOTA_FIELDS), cls="key-edit-quotas")
+        + tag("div",
+              tag("label",
+                  _input(type="checkbox", name="enabled",
+                         **({"checked": True} if k.enabled else {}))
+                  + "enabled", cls="check-field")
+              + tag("button", "Save", type="submit")
+              + tag("button", "Save & copy to all keys", type="submit",
+                    formaction=copy_action, cls="ghost",
+                    title="Save this key, then copy its weight, allowed models, "
+                          "caps and enabled state onto every other key for this provider"),
+              cls="key-edit-actions"),
+        method="post", action=edit_action, cls="key-edit-form",
     )
 
     head = tag(
@@ -592,7 +608,8 @@ def _models_body(router, banner: str = "") -> str:
     header = tag("tr", "".join(
         tag("th", h, cls=c, **({"data-sort": k} if k else {}))
         for h, c, k in [("Model", "", "model"), ("Buckets", "", ""), ("Score", "", "score"),
-                        ("Can do", "", ""), ("State", "", "state"), ("", "", "")]))
+                        ("Answered", "", "response-rate"), ("Can do", "", ""),
+                        ("State", "", "state"), ("", "", "")]))
     rows = []
     top_score = max((r.score for r in rows_data), default=0) or 1
     providers = sorted({r.provider for r in rows_data})
@@ -608,6 +625,8 @@ def _models_body(router, banner: str = "") -> str:
             tag("td", tag("div", tag("span", "", cls="m-bar",
                                      style=f"width:{r.score / top_score * 100:.0f}%"),
                           cls="m-track") + tag("span", esc(r.score), cls="m-score")),
+            tag("td", esc(f"{r.response_rate:.0%} ({r.requests:,} reqs)")
+                if r.response_rate is not None else tag("span", "no data yet", cls="dim")),
             tag("td", tag("div", caps, cls="caps")),
             tag("td", ui.status("ok" if ok else "bad")
                 + (tag("div", esc(r.why), cls="m-why") if r.why else "")),
@@ -615,7 +634,9 @@ def _models_body(router, banner: str = "") -> str:
                           **{"aria-label": f"Details for {r.model}", "data-toggle": f"m-{n}"})),
         ]), cls="m-row", **{"data-search": search, "data-provider": r.provider,
                             "data-score": r.score, "data-model": r.model,
-                            "data-state": r.state, "data-toggle-row": f"m-{n}"}))
+                            "data-state": r.state, "data-toggle-row": f"m-{n}",
+                            "data-response-rate": (
+                                r.response_rate if r.response_rate is not None else "")}))
         detail = tag("div",
                      tag("div",
                          tag("h4", "Change this model")
@@ -624,11 +645,11 @@ def _models_body(router, banner: str = "") -> str:
                                 cls="note") if r.price_in is not None else ""),
                          cls="m-detail-body"),
                      cls="m-detail-inner")
-        rows.append(tag("tr", tag("td", detail, colspan="6"), cls="m-detail", id=f"m-{n}",
+        rows.append(tag("tr", tag("td", detail, colspan="7"), cls="m-detail", id=f"m-{n}",
                         hidden=True))
     if not rows:
         rows.append(tag("tr", tag("td", "No models yet. Add a provider key on Providers & keys "
-                                        "and its models show up here.", colspan="6"),
+                                        "and its models show up here.", colspan="7"),
                         cls="models-empty"))
     provider_opts = "".join(f'<option value="{esc(p)}">{esc(p)}</option>' for p in providers)
     filters = tag("div",
@@ -2330,31 +2351,61 @@ async def provider_key_remove(provider: str, key_id: str) -> RedirectResponse:
         message="key removed" if removed else "that key is already gone")
 
 
+def _parse_key_edit_form(form) -> dict:
+    """The fields a key's edit form always submits, cast and parsed the
+    same way whether the target is a plain save or a save-and-copy."""
+    weight = int(form.get("weight") or 1)
+    return {
+        "label": (form.get("label") or "").strip(),
+        "weight": weight,
+        "allow_models": _globs(form.get("allow_models") or ""),
+        # An unchecked checkbox is simply absent from the form, which is
+        # the only way HTML says "false" without JavaScript.  We test
+        # truthiness (not key-presence) so that the test client can send
+        # an empty string to simulate an unchecked box.
+        "enabled": bool(form.get("enabled")),
+        "quotas": _parse_quota_fields(form, fields=_KEY_QUOTA_FIELDS),
+    }
+
+
 @pages.post("/providers/{provider}/keys/{key_id}/edit", include_in_schema=False)
 async def provider_key_edit(provider: str, key_id: str,
                             request: Request) -> RedirectResponse:
     form = await request.form()
     dest = f"/providers/{quote(provider, safe=':')}"
     try:
-        weight = int(form.get("weight") or 1)
-        quotas = _parse_quota_fields(form)
+        fields = _parse_key_edit_form(form)
     except (TypeError, ValueError):
         return _redirect_with_message(dest, ok=False, message="weight and caps must be numbers")
-    updated = keystore.update_key(
-        provider, key_id,
-        label=(form.get("label") or "").strip(),
-        weight=weight,
-        allow_models=_globs(form.get("allow_models") or ""),
-        # An unchecked checkbox is simply absent from the form, which is
-        # the only way HTML says "false" without JavaScript.  We test
-        # truthiness (not key-presence) so that the test client can send
-        # an empty string to simulate an unchecked box.
-        enabled=bool(form.get("enabled")),
-        quotas=quotas,
-    )
+    updated = keystore.update_key(provider, key_id, **fields)
     if updated is None:
         return _redirect_with_message(dest, ok=False, message="that key is no longer there")
     return _redirect_with_message(dest, ok=True, message="key saved")
+
+
+@pages.post("/providers/{provider}/keys/{key_id}/copy-to-all", include_in_schema=False)
+async def provider_key_copy_to_all(provider: str, key_id: str,
+                                   request: Request) -> RedirectResponse:
+    """Save this key, then apply its weight, allowed models, caps and
+    enabled state to every other key on the same provider - everything an
+    account-level credential setting could plausibly need to agree on.
+    Never touches label, which is each key's own identity."""
+    form = await request.form()
+    dest = f"/providers/{quote(provider, safe=':')}"
+    try:
+        fields = _parse_key_edit_form(form)
+    except (TypeError, ValueError):
+        return _redirect_with_message(dest, ok=False, message="weight and caps must be numbers")
+    updated = keystore.update_key(provider, key_id, **fields)
+    if updated is None:
+        return _redirect_with_message(dest, ok=False, message="that key is no longer there")
+    shared = {k: v for k, v in fields.items() if k != "label"}
+    others = [r.id for r in keystore.load_keys().get(provider, []) if r.id != key_id]
+    for other_id in others:
+        keystore.update_key(provider, other_id, **shared)
+    message = (f"key saved and copied to {len(others)} other key(s)"
+              if others else "key saved (no other keys on this provider)")
+    return _redirect_with_message(dest, ok=True, message=message)
 
 
 @pages.get("/settings", response_class=HTMLResponse, include_in_schema=False)

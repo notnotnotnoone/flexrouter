@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import AsyncIterator, Literal, Optional
 
 from flexrouter.audit import AuditLogger
+from flexrouter.bench import BENCH_INTERVAL_SECONDS, check_response_rates
 from flexrouter.client import AsyncClient, RateLimitError, ProviderError
 from flexrouter.config import FlexConfig, load_config
 from flexrouter import errors, redact
@@ -126,6 +127,11 @@ class LocalRouter:
             self._engine.health_snapshot, self._history.record,
             self._cfg.sample_interval_seconds)
         self._sampler.start()
+        self._bench_sampler = PassiveSampler(
+            lambda: check_response_rates(self._cfg.state_dir, self._penalties),
+            lambda _: None,
+            BENCH_INTERVAL_SECONDS)
+        self._bench_sampler.start()
         self._client = AsyncClient(rate_limit_store=self._rate_limit_store)
         self._hooks = HookRunner()
         self._loop = asyncio.new_event_loop()
@@ -1222,6 +1228,7 @@ class LocalRouter:
 
     def close(self) -> None:
         self._sampler.stop()
+        self._bench_sampler.stop()
         self._loop.close()
 
     def __enter__(self) -> "LocalRouter":

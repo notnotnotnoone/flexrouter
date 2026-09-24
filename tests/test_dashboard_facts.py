@@ -383,6 +383,22 @@ def test_models_reports_unknown_capabilities_as_none(router):
     assert row.reasoning is None
 
 
+def test_a_model_with_no_requests_has_no_response_rate(router):
+    row = facts.models(router)[0]
+    assert row.requests == 0
+    assert row.response_rate is None
+
+
+def test_response_rate_reflects_the_audit_log(router):
+    router._audit.log("low", "groq", "llama-3.1-8b-instant", 100, 50, 0.0, 200, "ok")
+    router._audit.log("low", "groq", "llama-3.1-8b-instant", 0, 0, 0.0, 100, "rate_limited")
+    router._audit.log("low", "groq", "llama-3.1-8b-instant", 0, 0, 0.0, 100, "rate_limited")
+    router._audit.log("low", "groq", "llama-3.1-8b-instant", 0, 0, 0.0, 100, "rate_limited")
+    row = facts.models(router)[0]
+    assert row.requests == 4
+    assert row.response_rate == pytest.approx(0.25)
+
+
 def test_pending_catalogue_is_empty_when_nothing_has_run(router):
     from flexrouter.store import write_json
     # The router's own startup catalogue refresh (a real network call) may

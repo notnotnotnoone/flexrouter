@@ -141,3 +141,27 @@ def test_tps_is_a_one_second_window(tmp_path, monkeypatch):
 
     fake_now[0] += 1.1
     assert tracker.is_available("groq", "m1", {"tps": 500}) is True
+
+
+def test_rpm_is_a_sixty_second_window(tmp_path, monkeypatch):
+    tracker = QuotaTracker(str(tmp_path / ".flexrouter"))
+    fake_now = [1_000_000.0]
+    monkeypatch.setattr(time, "time", lambda: fake_now[0])
+    tracker.record("groq", "m1")
+    assert tracker.is_available("groq", "m1", {"rpm": 1}) is False
+
+    fake_now[0] += 60.1
+    assert tracker.is_available("groq", "m1", {"rpm": 1}) is True
+
+
+def test_tpm_sums_tokens_in_a_sixty_second_window(tmp_path, monkeypatch):
+    tracker = QuotaTracker(str(tmp_path / ".flexrouter"))
+    fake_now = [1_000_000.0]
+    monkeypatch.setattr(time, "time", lambda: fake_now[0])
+    tracker.record("groq", "m1", tokens=400)
+    assert tracker.is_available("groq", "m1", {"tpm": 500}) is True
+    tracker.record("groq", "m1", tokens=200)
+    assert tracker.is_available("groq", "m1", {"tpm": 500}) is False
+
+    fake_now[0] += 60.1
+    assert tracker.is_available("groq", "m1", {"tpm": 500}) is True

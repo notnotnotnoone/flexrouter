@@ -1162,6 +1162,28 @@ tbody tr.m-detail:hover td { background: var(--ground); }
   flex-wrap: wrap;
 }
 
+/* the "All models" drag source, above the bucket grid */
+.model-card-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.model-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--rule-2);
+  background: var(--ground);
+  cursor: grab;
+  user-select: none;
+}
+.model-card:hover, .model-card:focus-visible { border-color: var(--green); }
+.model-card:active { cursor: grabbing; }
+.model-card.is-dragging { opacity: .4; }
+.model-card-name { font: 500 12px var(--mono); }
+.model-card-score { font: 400 11px var(--mono); color: var(--ink-3); }
+
+/* a bucket box while a model card is dragged over it */
+[data-dropzone].drag-over { border-color: var(--green); }
+[data-dropzone].drag-over::before, [data-dropzone].drag-over::after { opacity: 1; }
+
 /* ── playground ────────────────────────────────────────── */
 
 .pg-layout { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 16px; align-items: stretch; min-height: calc(100vh - 150px); }
@@ -1520,7 +1542,25 @@ button.danger:hover { border-color: var(--bad); background: var(--bad-wash); }
 .key-facts { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 10px 14px; }
 .key-facts > * { display: flex; gap: 6px; align-items: baseline; }
 .key-value { font: 400 12px var(--mono); color: var(--ink); }
-.key-edit, .key-test, .key-remove { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--rule); }
+.key-test, .key-remove { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--rule); }
+
+/* The edit form gets its own layout rather than sharing `.grouped-form`'s
+   fixed 170px/360px two-column grid: with 8 quota fields plus identity
+   fields, that grid squeezed everything into one narrow, misaligned
+   column. Each `.field` here stacks its caption above its input (a local
+   override - `.field` elsewhere still relies on the label-left layout
+   `.grouped-form` gives it), and the identity/quota fields each get their
+   own responsive row so they wrap by field, not by character. */
+.key-edit-form { display: block; padding: 12px 14px 14px; border-top: 1px solid var(--rule); max-width: none; }
+.key-edit-form .field { display: flex; flex-direction: column; gap: 4px; }
+.key-edit-identity, .key-edit-quotas {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px 16px;
+  margin-bottom: 12px;
+}
+.key-edit-quotas { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+.key-edit-actions { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
 .model-line { font: 400 12px var(--mono); color: var(--ink-2); margin: 6px 0; }
 
 /* the preset grid on Providers */
