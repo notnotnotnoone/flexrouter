@@ -2,10 +2,9 @@
 
 Builds a ready-made prompt naming one provider and its already-configured
 models, and parses the answer pasted back into a set of proposed model
-rows - one per line, `provider | model | kind | context | rpm | tpm |
-vision | free | score`. No network call happens here, same as ranking.py:
-the owner sends the prompt themselves, wherever they like, and pastes the
-answer back.
+rows: a JSON array of objects, one per model. No network call happens
+here, same as ranking.py: the owner sends the prompt themselves, wherever
+they like, and pastes the answer back.
 
 Nothing here writes anything. `flexrouter/dashboard/pages.py` is what turns
 a parsed row into an override (existing chat models), a brand-new bucket
@@ -15,15 +14,33 @@ apply.
 """
 from __future__ import annotations
 
-import re
+import json
 from dataclasses import dataclass
 from typing import Optional
 
-KINDS = ("chat", "embedding", "speech_to_text", "text_to_speech", "image")
+KINDS = (
+    "chat", "embedding", "speech_to_text", "text_to_speech", "image",
+    "safeguard", "unknown",
+)
 
-_COLUMNS = ("provider", "model", "kind", "context", "rpm", "tpm", "vision", "free", "score")
-_HEADER_NORMALIZED = "".join(_COLUMNS)
-_INT_RE = re.compile(r"-?\d+")
+# Rate/quota columns, beyond the identity/description ones (provider, model,
+# kind, context, vision, free, score). rpm/tpm are the two the routing
+# engine enforces via its in-memory SlidingWindow; rph/rpd/rps/tph/tpd/tps
+# all land in a model's `quotas` dict and are enforced by the persistent
+# QuotaTracker (flexrouter/quota.py), which counts requests for the r*
+# keys and sums tokens-per-call for the t* keys against the same window.
+_RATE_FIELDS = ("rpm", "tpm", "rph", "rpd", "rps", "tph", "tpd", "tps")
+
+# Generation throughput - how many tokens/second the model actually produces
+# once it's running. Separate from `tps` above, which is a provider-enforced
+# *rate limit* (tokens/sec this account is allowed to send), not a speed.
+# Feeds ModelConfig.tokens_per_second, used by "fastest" buckets to rank
+# models by speed instead of score.
+_SPEED_FIELD = "gen_tps"
+
+_REQUIRED_KEYS = (
+    "provider", "model", "kind", "context", *_RATE_FIELDS, "vision", "free", "score",
+)
 
 
 @dataclass
@@ -34,6 +51,13 @@ class ParsedRow:
     context: Optional[int]
     rpm: Optional[int]
     tpm: Optional[int]
+    rph: Optional[int]
+    rpd: Optional[int]
+    rps: Optional[int]
+    tph: Optional[int]
+    tpd: Optional[int]
+    tps: Optional[int]
+    gen_tps: Optional[float]
     vision: bool
     free: bool
     score: Optional[int]
@@ -62,6 +86,12 @@ def providers_with_keys(router) -> list[str]:
 
 
 def build_prompt(provider: str, existing_models: list[str], notes: str) -> str:
+    example = {
+        "provider": provider, "model": "exact-model-id", "kind": "chat",
+        "context": 128000, "rpm": 30, "tpm": 6000, "rph": None, "rpd": 14400,
+        "rps": None, "tph": None, "tpd": None, "tps": None, "gen_tps": 220,
+        "vision": False, "free": True, "score": 70,
+    }
     lines = [
         f"You are helping configure {provider} models for a personal LLM "
         "router (flexrouter). I will tell you what is already configured, "
@@ -80,144 +110,187 @@ def build_prompt(provider: str, existing_models: list[str], notes: str) -> str:
 
     lines += [
         "",
-        "Reply with exactly one line per model, in this form and nothing "
-        "else - no headers, no commentary, no markdown table, no code "
-        "fences:",
-        "provider | model | kind | context | rpm | tpm | vision | free | score",
+        "Reply with nothing but a single JSON array, one object per model - "
+        "no commentary, no markdown table, no code fences. Each object must "
+        "have exactly these keys:",
+        json.dumps(list(_REQUIRED_KEYS)),
+        "",
+        "One example object, showing the shape (not real values for this "
+        "model):",
+        json.dumps(example, indent=2),
         "",
         "Where:",
         "- provider: exactly " + repr(provider),
         "- model: the provider's exact model id, as it expects it in an "
         "API call - never a display name or a guess",
-        "- kind: one of chat, embedding, speech_to_text, text_to_speech, image",
-        "- context: the context window in tokens, an integer, or the word "
-        "none if you don't know",
-        "- rpm: requests per minute this account gets, an integer, or none",
-        "- tpm: tokens per minute this account gets, an integer, or none",
-        "- vision: yes if the model accepts images, otherwise no",
-        "- free: yes if this model has a free tier or is free to use, "
-        "otherwise no",
-        "- score: your own 0-100 quality/capability rating, or none if you "
-        "don't want to guess",
+        "- kind: one of " + ", ".join(repr(k) for k in KINDS) + " - no other value",
+        "- context: the context window in tokens, an integer, or null if "
+        "you don't know",
+        "- rpm/rph/rpd/rps: requests per minute/hour/day/second this "
+        "account gets, each an integer or null",
+        "- tpm/tph/tpd/tps: tokens per minute/hour/day/second this account "
+        "gets, each an integer or null",
+        "- gen_tps: this model's own generation speed in tokens/second "
+        "(how fast it actually produces output, not a rate limit), a "
+        "number or null if you don't know it",
+        "- vision: true if the model accepts images, otherwise false (a "
+        "JSON boolean, not a string)",
+        "- free: true if this model has a free tier or is free to use, "
+        "otherwise false (a JSON boolean, not a string)",
+        "- score: your own 0-100 quality/capability rating as an integer, "
+        "or null if you don't want to guess",
         "",
-        "Write none rather than guess at a number you aren't sure of - a "
-        "wrong guess is worse than admitting you don't know.",
+        "Use null rather than guess at a number you aren't sure of - a "
+        "wrong guess is worse than admitting you don't know. Leave a rate "
+        "or quota null when the provider doesn't publish that particular "
+        "window (most publish only a couple of these, not all eight).",
     ]
     return "\n".join(lines)
 
 
-def _strip_table_pipes(line: str) -> str:
-    """Drop a leading/trailing `|` (a markdown table row) and surrounding
-    backticks (inline code formatting), without touching the pipes that
-    separate real columns."""
-    s = line.strip().strip("`").strip()
-    if s.startswith("|"):
-        s = s[1:]
-    if s.endswith("|"):
-        s = s[:-1]
+def _strip_code_fence(text: str) -> str:
+    s = text.strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else ""
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[: -3]
     return s.strip()
 
 
-def _is_noise_line(line: str) -> bool:
-    """A header row, a markdown table separator (`---|---|---`), or a code
-    fence marker (```) - all expected to show up in a pasted answer, and
-    none of them a real data row worth reporting as unparseable."""
-    s = line.strip()
-    if not s:
-        return True
-    if s.startswith("```"):
-        return True
-    normalized = "".join(ch for ch in s.lower() if ch.isalnum())
-    if normalized == _HEADER_NORMALIZED:
-        return True
-    if all(ch in "-:|" or ch.isspace() for ch in s):
-        return True
-    return False
+def _extract_json_array(text: str) -> str:
+    """Pulls out the `[...]` array even when the AI added a stray sentence
+    before or after it, since that's the most common way a pasted answer
+    fails to be pure JSON."""
+    s = _strip_code_fence(text)
+    start = s.find("[")
+    end = s.rfind("]")
+    if start != -1 and end != -1 and end > start:
+        return s[start:end + 1]
+    return s
 
 
-def _parse_int_or_none(raw: str) -> tuple[Optional[int], bool]:
-    """Returns (value, ok). `ok` is False when `raw` is neither "none" nor
-    a plain integer."""
-    if raw.lower() == "none":
-        return None, True
-    if not _INT_RE.fullmatch(raw):
-        return None, False
-    return int(raw), True
+def _parse_int_or_none(raw, field: str) -> tuple[Optional[int], Optional[str]]:
+    """Returns (value, error). `error` is None on success. `raw` is None
+    for a JSON `null`, already distinguished from a missing key by the
+    caller."""
+    if raw is None:
+        return None, None
+    if isinstance(raw, bool):
+        return None, f"{field} {raw!r} is not a number or null"
+    if isinstance(raw, int):
+        return raw, None
+    if isinstance(raw, str) and raw.strip().lower() == "none":
+        return None, None
+    return None, f"{field} {raw!r} is not a number or null"
 
 
-def _parse_yes_no(raw: str) -> tuple[Optional[bool], bool]:
-    low = raw.lower()
-    if low == "yes":
-        return True, True
-    if low == "no":
-        return False, True
-    return None, False
+def _parse_float_or_none(raw, field: str) -> tuple[Optional[float], Optional[str]]:
+    """Like `_parse_int_or_none`, but for a value that's legitimately
+    fractional (generation speed), not just an integer count."""
+    if raw is None:
+        return None, None
+    if isinstance(raw, bool):
+        return None, f"{field} {raw!r} is not a number or null"
+    if isinstance(raw, (int, float)):
+        return float(raw), None
+    if isinstance(raw, str) and raw.strip().lower() == "none":
+        return None, None
+    return None, f"{field} {raw!r} is not a number or null"
+
+
+def _parse_bool(raw, field: str) -> tuple[Optional[bool], Optional[str]]:
+    if isinstance(raw, bool):
+        return raw, None
+    if isinstance(raw, str) and raw.strip().lower() in ("yes", "no"):
+        return raw.strip().lower() == "yes", None
+    return None, f"{field} {raw!r} must be true or false"
 
 
 def parse_answer(text: str) -> ParseResult:
-    """Tolerant, but nothing is ever silently dropped: every line that
-    isn't blank/header/fence noise either becomes a `ParsedRow` or an entry
-    in `issues` explaining why not.
+    """Tolerant, but nothing is ever silently dropped: every object that
+    doesn't parse into a `ParsedRow` becomes an entry in `issues` explaining
+    why not.
     """
     rows: list[ParsedRow] = []
     issues: list[ParseIssue] = []
     seen: set[str] = set()
 
-    for raw_line in text.splitlines():
-        if _is_noise_line(raw_line):
+    if not text.strip():
+        return ParseResult(rows=rows, issues=issues)
+
+    candidate = _extract_json_array(text)
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        issues.append(ParseIssue(line=text.strip()[:200], reason=f"not valid JSON: {exc}"))
+        return ParseResult(rows=rows, issues=issues)
+
+    if not isinstance(parsed, list):
+        issues.append(ParseIssue(line=json.dumps(parsed)[:200],
+                                  reason="expected a JSON array of objects"))
+        return ParseResult(rows=rows, issues=issues)
+
+    for item in parsed:
+        line = json.dumps(item)
+        if not isinstance(item, dict):
+            issues.append(ParseIssue(line=line, reason="expected a JSON object per model"))
             continue
-        line = raw_line.strip()
 
-        stripped = _strip_table_pipes(line)
-        parts = [p.strip().strip("`").strip() for p in stripped.split("|")]
-        if len(parts) != len(_COLUMNS):
-            issues.append(ParseIssue(
-                line=line,
-                reason=f"expected {len(_COLUMNS)} columns "
-                       f"({' | '.join(_COLUMNS)}), got {len(parts)}"))
+        missing = [k for k in _REQUIRED_KEYS if k not in item]
+        if missing:
+            issues.append(ParseIssue(line=line, reason=f"missing key(s): {', '.join(missing)}"))
             continue
 
-        provider, model, kind, context_raw, rpm_raw, tpm_raw, vision_raw, free_raw, score_raw = parts
-
+        provider = str(item["provider"]).strip()
+        model = str(item["model"]).strip()
         if not provider or not model:
             issues.append(ParseIssue(line=line, reason="provider and model are required"))
             continue
 
-        kind_norm = kind.lower()
+        kind_norm = str(item["kind"]).strip().lower()
         if kind_norm not in KINDS:
             issues.append(ParseIssue(
-                line=line,
-                reason=f"unknown kind {kind!r} - must be one of {', '.join(KINDS)}"))
+                line=line, reason=f"unknown kind {item['kind']!r} - must be one of {', '.join(KINDS)}"))
             continue
 
-        context, ok = _parse_int_or_none(context_raw)
-        if not ok:
-            issues.append(ParseIssue(line=line, reason=f"context {context_raw!r} is not a number or none"))
+        context, err = _parse_int_or_none(item["context"], "context")
+        if err:
+            issues.append(ParseIssue(line=line, reason=err))
             continue
 
-        rpm, ok = _parse_int_or_none(rpm_raw)
-        if not ok:
-            issues.append(ParseIssue(line=line, reason=f"rpm {rpm_raw!r} is not a number or none"))
+        rate_values: dict[str, Optional[int]] = {}
+        rate_err = None
+        for field in _RATE_FIELDS:
+            value, err = _parse_int_or_none(item[field], field)
+            if err:
+                rate_err = err
+                break
+            rate_values[field] = value
+        if rate_err:
+            issues.append(ParseIssue(line=line, reason=rate_err))
             continue
 
-        tpm, ok = _parse_int_or_none(tpm_raw)
-        if not ok:
-            issues.append(ParseIssue(line=line, reason=f"tpm {tpm_raw!r} is not a number or none"))
+        gen_tps, err = _parse_float_or_none(item.get(_SPEED_FIELD), _SPEED_FIELD)
+        if err:
+            issues.append(ParseIssue(line=line, reason=err))
+            continue
+        if gen_tps is not None and gen_tps < 0:
+            issues.append(ParseIssue(line=line, reason=f"{_SPEED_FIELD} cannot be negative"))
             continue
 
-        vision, ok = _parse_yes_no(vision_raw)
-        if not ok:
-            issues.append(ParseIssue(line=line, reason=f"vision {vision_raw!r} must be yes or no"))
+        vision, err = _parse_bool(item["vision"], "vision")
+        if err:
+            issues.append(ParseIssue(line=line, reason=err))
             continue
 
-        free, ok = _parse_yes_no(free_raw)
-        if not ok:
-            issues.append(ParseIssue(line=line, reason=f"free {free_raw!r} must be yes or no"))
+        free, err = _parse_bool(item["free"], "free")
+        if err:
+            issues.append(ParseIssue(line=line, reason=err))
             continue
 
-        score, ok = _parse_int_or_none(score_raw)
-        if not ok:
-            issues.append(ParseIssue(line=line, reason=f"score {score_raw!r} is not a number or none"))
+        score, err = _parse_int_or_none(item["score"], "score")
+        if err:
+            issues.append(ParseIssue(line=line, reason=err))
             continue
         if score is not None and not (0 <= score <= 100):
             issues.append(ParseIssue(line=line, reason=f"score {score} is out of range 0-100"))
@@ -225,13 +298,14 @@ def parse_answer(text: str) -> ParseResult:
 
         ident = f"{provider}/{model}"
         if ident in seen:
-            issues.append(ParseIssue(line=line, reason=f"duplicate of an earlier line for {ident}"))
+            issues.append(ParseIssue(line=line, reason=f"duplicate of an earlier entry for {ident}"))
             continue
         seen.add(ident)
 
         rows.append(ParsedRow(
             provider=provider, model=model, kind=kind_norm, context=context,
-            rpm=rpm, tpm=tpm, vision=vision, free=free, score=score, raw_line=line,
+            gen_tps=gen_tps, vision=vision, free=free, score=score, raw_line=line,
+            **rate_values,
         ))
 
     return ParseResult(rows=rows, issues=issues)

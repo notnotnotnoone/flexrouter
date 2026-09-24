@@ -78,6 +78,56 @@ def test_provider_key_strategy_is_read_from_settings(tmp_path, monkeypatch, mini
     assert loaded.providers["groq"].key_strategy == "round_robin"
 
 
+def test_tokens_per_second_parsed(tmp_path):
+    os.environ["GROQ_API_KEY"] = "k"
+    p = tmp_path / "flexrouter.yaml"
+    p.write_text(yaml.dump({
+        "tiers": {"low": [{"provider": "groq", "model": "m", "score": 50, "rpm": 10,
+                           "tpm": 1000, "context_window": 4096, "tokens_per_second": 142.5}]},
+        "providers": {"groq": {"base_url": "http://groq", "api_keys": [{"env": "GROQ_API_KEY"}]}},
+        "settings": {"state_dir": str(tmp_path)},
+    }))
+    cfg = load_config(p)
+    assert cfg.tiers["low"][0].tokens_per_second == 142.5
+
+
+def test_tokens_per_second_defaults_to_none(config_file):
+    cfg = load_config(config_file)
+    assert cfg.tiers["low"][0].tokens_per_second is None
+
+
+def test_negative_tokens_per_second_becomes_none(tmp_path):
+    os.environ["GROQ_API_KEY"] = "k"
+    p = tmp_path / "flexrouter.yaml"
+    p.write_text(yaml.dump({
+        "tiers": {"low": [{"provider": "groq", "model": "m", "score": 50, "rpm": 10,
+                           "tpm": 1000, "context_window": 4096, "tokens_per_second": -5}]},
+        "providers": {"groq": {"base_url": "http://groq", "api_keys": [{"env": "GROQ_API_KEY"}]}},
+        "settings": {"state_dir": str(tmp_path)},
+    }))
+    cfg = load_config(p)
+    assert cfg.tiers["low"][0].tokens_per_second is None
+
+
+def test_bucket_strategy_parsed(tmp_path):
+    os.environ["GROQ_API_KEY"] = "k"
+    p = tmp_path / "flexrouter.yaml"
+    p.write_text(yaml.dump({
+        "tiers": {"low": [{"provider": "groq", "model": "m", "score": 50, "rpm": 10,
+                           "tpm": 1000, "context_window": 4096}]},
+        "providers": {"groq": {"base_url": "http://groq", "api_keys": [{"env": "GROQ_API_KEY"}]}},
+        "settings": {"state_dir": str(tmp_path)},
+        "bucket_strategy": {"low": "fastest"},
+    }))
+    cfg = load_config(p)
+    assert cfg.bucket_strategy == {"low": "fastest"}
+
+
+def test_bucket_strategy_defaults_to_empty(config_file):
+    cfg = load_config(config_file)
+    assert cfg.bucket_strategy == {}
+
+
 def test_key_concurrency_cap_defaults_to_four(config_file):
     cfg = load_config(config_file)
     assert cfg.key_concurrency_cap == 4

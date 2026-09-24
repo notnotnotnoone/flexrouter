@@ -754,7 +754,7 @@ def _rank_proposal_body(changes: list, skipped_manual: list) -> str:
         body = tag(
             "form", tag("table", "".join(rows_html))
             + tag("button", "Apply checked scores", type="submit"),
-            method="post", action="/models/rank/apply",
+            method="post", action="/models/rank/apply", cls="table-form",
         )
 
     skipped_note = (
@@ -841,7 +841,7 @@ def _rate_limits_proposal_body(changes: list, skipped_manual: list) -> str:
         body = tag(
             "form", tag("table", "".join(rows_html))
             + tag("button", "Apply checked limits", type="submit"),
-            method="post", action="/models/rate-limits/apply",
+            method="post", action="/models/rate-limits/apply", cls="table-form",
         )
 
     skipped_note = (
@@ -902,8 +902,8 @@ def _add_with_ai_body(providers: list[str], provider: str, notes: str, prompt: s
             "form",
             _input(type="hidden", name="provider", value=esc(provider))
             + _textarea("", name="answer", rows="10",
-                       placeholder="paste the AI's reply here, one line per model: provider | "
-                                   "model | kind | context | rpm | tpm | vision | free | score")
+                       placeholder="paste the AI's reply here: a JSON array, one object per "
+                                   "model")
             + " " + tag("button", "Show what would be added", type="submit"),
             method="post", action="/models/add-with-ai/review",
         ))
@@ -944,24 +944,32 @@ def _add_with_ai_row_html(i: int, row, bucket_names: list, is_update: bool, old)
         if row.kind == "chat":
             old_ctx = old.learned_context or old.context_window
             detail = (f"was: context {old_ctx}, rpm {old.rpm}, tpm {old.tpm}, "
-                      f"score {old.score}")
+                      f"score {old.score}, tokens/s {old.tokens_per_second}")
         else:
             detail = (f"was: context {old.get('context')}, rpm {old.get('rpm')}, "
-                      f"tpm {old.get('tpm')}, score {old.get('score')}")
+                      f"tpm {old.get('tpm')}, score {old.get('score')}, "
+                      f"quotas {old.get('quotas', {})}")
         status += tag("div", esc(detail), cls="dim")
 
     cells = [
         tag("td", _chk("apply", True)),
-        tag("td", status),
+        tag("td", _txt("score", row.score)),
         tag("td", _txt("provider", row.provider)),
-        tag("td", _txt("model", row.model)),
+        tag("td", tag("span", _txt("model", row.model), cls="stretch")),
         tag("td", kind_select),
         tag("td", _txt("context", row.context)),
         tag("td", _txt("rpm", row.rpm)),
         tag("td", _txt("tpm", row.tpm)),
+        tag("td", _txt("rph", row.rph)),
+        tag("td", _txt("rpd", row.rpd)),
+        tag("td", _txt("rps", row.rps)),
+        tag("td", _txt("tph", row.tph)),
+        tag("td", _txt("tpd", row.tpd)),
+        tag("td", _txt("tps", row.tps)),
+        tag("td", _txt("gen_tps", row.gen_tps)),
         tag("td", _chk("vision", row.vision)),
         tag("td", _chk("free", row.free)),
-        tag("td", _txt("score", row.score)),
+        tag("td", status),
         tag("td", bucket_cell),
     ]
     return tag("tr", "".join(cells))
@@ -976,8 +984,9 @@ def _add_with_ai_review_body(rows_info: list, issues: list, bucket_names: list) 
     ]
     if rows_info:
         header = tag("tr", "".join(tag("th", h) for h in [
-            "Apply", "Status", "Provider", "Model", "Kind", "Context", "RPM", "TPM",
-            "Vision", "Free", "Score", "Bucket",
+            "Apply", "Score", "Provider", "Model", "Kind", "Context",
+            "RPM", "TPM", "RPH", "RPD", "RPS", "TPH", "TPD", "TPS", "Tok/s",
+            "Vision", "Free", "Status", "Bucket",
         ]))
         body_rows = "".join(
             _add_with_ai_row_html(i, row, bucket_names, is_update, old)
@@ -988,7 +997,7 @@ def _add_with_ai_review_body(rows_info: list, issues: list, bucket_names: list) 
             _input(type="hidden", name="row_count", value=str(len(rows_info)))
             + table
             + tag("button", "Apply checked rows", type="submit"),
-            method="post", action="/models/add-with-ai/apply",
+            method="post", action="/models/add-with-ai/apply", cls="table-form",
         ))
     else:
         parts.append(tag("p", "Nothing parsed from that answer.", cls="note"))
@@ -1015,6 +1024,8 @@ def _add_model_form(bucket: str) -> str:
         + _input(type="number", name="tpm", placeholder="tpm") + " "
         + _input(type="number", name="context_window",
               placeholder="context window (optional)") + " "
+        + _input(type="number", name="tokens_per_second", step="any",
+              placeholder="tokens/s (optional)") + " "
         + tag("label", _input(type="checkbox", name="vision") + "vision") + " "
         + tag("button", "Add model", type="submit"),
         method="post", action=f"/buckets/{quote(bucket, safe=':')}/models",
@@ -1537,6 +1548,15 @@ def _opt_int(raw) -> Optional[int]:
     return int(s)
 
 
+def _opt_float(raw) -> Optional[float]:
+    """Like `_opt_int`, for `gen_tps` - the one review-form field that's
+    legitimately fractional."""
+    s = (raw or "").strip()
+    if not s or s.lower() == "none":
+        return None
+    return float(s)
+
+
 @pages.get("/models/add-with-ai", response_class=HTMLResponse, include_in_schema=False)
 def models_add_with_ai_page(provider: str = "", notes: str = "") -> HTMLResponse:
     router = _live_router()
@@ -1606,12 +1626,24 @@ async def models_add_with_ai_apply(request: Request) -> RedirectResponse:
             context = _opt_int(form.get(f"context:{i}"))
             rpm = _opt_int(form.get(f"rpm:{i}"))
             tpm = _opt_int(form.get(f"tpm:{i}"))
+            rph = _opt_int(form.get(f"rph:{i}"))
+            rpd = _opt_int(form.get(f"rpd:{i}"))
+            rps = _opt_int(form.get(f"rps:{i}"))
+            tph = _opt_int(form.get(f"tph:{i}"))
+            tpd = _opt_int(form.get(f"tpd:{i}"))
+            tps = _opt_int(form.get(f"tps:{i}"))
+            gen_tps = _opt_float(form.get(f"gen_tps:{i}"))
             score = _opt_int(form.get(f"score:{i}"))
         except ValueError as e:
             errors.append(f"{ident}: {e}")
             continue
         vision = bool(form.get(f"vision:{i}"))
         free = bool(form.get(f"free:{i}"))
+        quotas = {
+            k: v for k, v in
+            {"rph": rph, "rpd": rpd, "rps": rps, "tph": tph, "tpd": tpd, "tps": tps}.items()
+            if v is not None
+        }
 
         if kind == "chat":
             if ident in existing_chat:
@@ -1624,6 +1656,10 @@ async def models_add_with_ai_apply(request: Request) -> RedirectResponse:
                     fields["tpm"] = tpm
                 if context is not None:
                     fields["context_window"] = context
+                if quotas:
+                    fields["quotas"] = quotas
+                if gen_tps is not None:
+                    fields["tokens_per_second"] = gen_tps
                 if free:
                     fields["price_in"] = 0
                     fields["price_out"] = 0
@@ -1647,6 +1683,10 @@ async def models_add_with_ai_apply(request: Request) -> RedirectResponse:
                 }
                 if context is not None:
                     new_fields["context_window"] = context
+                if quotas:
+                    new_fields["quotas"] = quotas
+                if gen_tps is not None:
+                    new_fields["tokens_per_second"] = gen_tps
                 if free:
                     new_fields["price_in"] = 0
                     new_fields["price_out"] = 0
@@ -1665,6 +1705,7 @@ async def models_add_with_ai_apply(request: Request) -> RedirectResponse:
             # ever pick it from (flexrouter/parked_models.py).
             entry = {
                 "kind": kind, "context": context, "rpm": rpm, "tpm": tpm,
+                "quotas": quotas,
                 "vision": vision, "free": free, "score": score,
                 "price_in": 0 if free else None, "price_out": 0 if free else None,
                 "source": "ai_paste",
@@ -1829,6 +1870,9 @@ async def buckets_add_model(bucket: str, request: Request) -> RedirectResponse:
         context_window = form.get("context_window")
         if context_window:
             fields["context_window"] = int(context_window)
+        tokens_per_second = form.get("tokens_per_second")
+        if tokens_per_second:
+            fields["tokens_per_second"] = float(tokens_per_second)
         if "vision" in form:
             fields["vision"] = True
         ov.add_model(bucket, fields)
@@ -1836,6 +1880,18 @@ async def buckets_add_model(bucket: str, request: Request) -> RedirectResponse:
         return _redirect_with_message("/buckets", ok=False, message=str(e))
     return _redirect_with_message(
         "/buckets", ok=True, message=f"{fields['provider']}/{fields['model']} added")
+
+
+@pages.post("/buckets/{bucket}/strategy", include_in_schema=False)
+async def buckets_set_strategy(bucket: str, request: Request) -> RedirectResponse:
+    form = await request.form()
+    strategy = (form.get("strategy") or "").strip()
+    try:
+        settings_write.set_bucket_strategy(bucket, strategy)
+    except ValueError as e:
+        return _redirect_with_message("/buckets", ok=False, message=str(e))
+    return _redirect_with_message(
+        "/buckets", ok=True, message=f"{bucket!r} now ranks by {strategy}")
 
 
 @pages.get("/providers", response_class=HTMLResponse, include_in_schema=False)

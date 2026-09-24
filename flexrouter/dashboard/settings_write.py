@@ -36,6 +36,10 @@ def clear_provider(provider: str, path: Optional[Path] = None) -> None:
     ov.clear_override("providers", provider, path)
 
 
+def set_bucket_strategy(bucket: str, strategy: str, path: Optional[Path] = None) -> None:
+    ov.set_bucket_strategy(bucket, strategy, path)
+
+
 def set_model_fields(provider: str, model: str, fields: dict, path: Optional[Path] = None) -> None:
     ov.check_fields("models", fields)
     ident = f"{provider}/{model}"

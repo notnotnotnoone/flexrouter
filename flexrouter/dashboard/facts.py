@@ -230,6 +230,7 @@ class ModelRow:
     size_class: Optional[str]
     price_in: Optional[float]   # USD per million input tokens; None = not priced
     price_out: Optional[float]  # USD per million output tokens; None = not priced
+    tokens_per_second: Optional[float]  # generation speed; None = not recorded
     state: str  # "available" | "gone"
     why: str
 
@@ -269,6 +270,7 @@ def models(router) -> list[ModelRow]:
                 learned_context=mf.context.value if mf.context else None,
                 size_class=mf.size_class.value if mf.size_class else None,
                 price_in=mc.price_in, price_out=mc.price_out,
+                tokens_per_second=mc.tokens_per_second,
                 state="available" if available else "gone",
                 why=reason,
             )
@@ -280,6 +282,7 @@ class BucketModelRow:
     provider: str
     model: str
     score: int
+    tokens_per_second: Optional[float]
     available: bool
     in_the_running: bool
     reason: Optional[str]
@@ -289,7 +292,8 @@ class BucketModelRow:
 @dataclass
 class Bucket:
     name: str
-    models: list  # BucketModelRow, best score first
+    strategy: str  # "smartest" (ranks by score) or "fastest" (ranks by tokens_per_second)
+    models: list  # BucketModelRow, best-ranked first
 
 
 def buckets(router) -> list[Bucket]:
@@ -301,29 +305,43 @@ def buckets(router) -> list[Bucket]:
     uses - so this can never disagree with what a real request would do
     (Stage 8 roadmap ruling R8). The one thing added here is "in the
     running": the engine picks randomly among everything within 20% of
-    the top score, so being available is not the same as being a live
-    candidate.
+    the top-ranked value, so being available is not the same as being a
+    live candidate. Which value that is depends on the bucket's strategy
+    - score for "smartest", tokens_per_second for "fastest" - the same
+    choice engine.py._pick() makes.
     """
     out = []
     for name in router._cfg.tiers:
+        strategy = router._cfg.bucket_strategy.get(name, "smartest")
         rows = router._engine.explain_unavailable(name)
-        available_scores = [r["score"] for r in rows if r["available"]]
-        threshold = max(available_scores) * 0.8 if available_scores else None
+
+        def _value(r: dict) -> Optional[float]:
+            return r["tokens_per_second"] if strategy == "fastest" else r["score"]
+
+        available_values = [v for r in rows if r["available"] and (v := _value(r)) is not None]
+        threshold = max(available_values) * 0.8 if available_values else None
 
         bucket_rows = [
             BucketModelRow(
                 provider=r["provider"], model=r["model"], score=r["score"],
+                tokens_per_second=r["tokens_per_second"],
                 available=r["available"],
                 in_the_running=bool(
-                    r["available"] and threshold is not None and r["score"] >= threshold
+                    r["available"] and threshold is not None
+                    and _value(r) is not None and _value(r) >= threshold
                 ),
                 reason=r["reason"], detail=r["detail"],
             )
             for r in rows
         ]
-        bucket_rows.sort(key=lambda row: row.score, reverse=True)
-        out.append(Bucket(name=name, models=bucket_rows))
+        bucket_rows.sort(key=lambda row: (_value_or_low(row, strategy)), reverse=True)
+        out.append(Bucket(name=name, strategy=strategy, models=bucket_rows))
     return out
+
+
+def _value_or_low(row: "BucketModelRow", strategy: str) -> float:
+    value = row.tokens_per_second if strategy == "fastest" else row.score
+    return value if value is not None else float("-inf")
 
 
 def disabled_models() -> list[str]:
@@ -503,7 +521,13 @@ def allowance(router) -> list[AllowanceRow]:
     return sorted(rows, key=lambda r: (r.provider, r.model))
 
 
-_QUOTA_WINDOWS = {"rpd": ("day", 86400), "rph": ("hour", 3600)}
+# word, window seconds, is this a token-count cap (True) or a request-count
+# cap (False) - two caps can share the same window word ("day") but count
+# different things, so callers must key on (window, unit), not window alone.
+_QUOTA_WINDOWS = {
+    "rps": ("second", 1, False), "rph": ("hour", 3600, False), "rpd": ("day", 86400, False),
+    "tps": ("second", 1, True), "tph": ("hour", 3600, True), "tpd": ("day", 86400, True),
+}
 
 
 def _quota_usage(router, provider: str, model: str, quotas: dict, now: float) -> list[dict]:
@@ -511,23 +535,37 @@ def _quota_usage(router, provider: str, model: str, quotas: dict, now: float) ->
 
     `frees_at` is when the next request becomes allowed again - only set
     when the cap is actually reached. These windows roll (the last 24
-    hours, not "today"), so a full cap frees up one request at a time as
-    the oldest request in the window ages out.
+    hours, not "today"), so a full cap frees up one request (or enough
+    tokens) at a time as the oldest event in the window ages out.
     """
-    stamps = sorted(router._quota_tracker._state.get(f"{provider}/{model}", []))
+    events = sorted(router._quota_tracker._state.get(f"{provider}/{model}", []))
     out = []
     for q_type, limit in quotas.items():
         if q_type not in _QUOTA_WINDOWS or not limit:
             continue
-        word, seconds = _QUOTA_WINDOWS[q_type]
-        in_window = [t for t in stamps if t > now - seconds]
-        used = len(in_window)
+        word, seconds, is_token = _QUOTA_WINDOWS[q_type]
+        unit = "tokens" if is_token else "requests"
+        in_window = [e for e in events if e[0] > now - seconds]
+        if is_token:
+            used = sum(tokens for _, tokens in in_window)
+        else:
+            used = len(in_window)
         frees_at = None
         if used >= limit:
-            frees_at = in_window[used - limit] + seconds
-        out.append({"window": word, "used": used, "limit": int(limit),
+            if is_token:
+                remaining = used
+                for ts, tokens in in_window:
+                    remaining -= tokens
+                    if remaining < limit:
+                        frees_at = ts + seconds
+                        break
+            else:
+                frees_at = in_window[used - limit][0] + seconds
+        out.append({"window": word, "unit": unit, "used": used, "limit": int(limit),
                     "frees_at": frees_at, "source": "yours"})
-    return sorted(out, key=lambda lim: 0 if lim["window"] == "day" else 1)
+    return sorted(out, key=lambda lim: (0 if lim["window"] == "day" else
+                                        1 if lim["window"] == "hour" else 2,
+                                        lim["unit"]))
 
 
 def _provider_says(router, provider: str, model: str, now: float) -> list[dict]:
@@ -585,7 +623,7 @@ def allowance_stack(router, now: Optional[float] = None) -> dict:
         total = used = 0
         for m in g["models"]:
             for lim in m["limits"]:
-                if lim["window"] == "day":
+                if lim["window"] == "day" and lim["unit"] == "requests":
                     total += lim["limit"]
                     used += min(lim["used"], lim["limit"])
         if total:

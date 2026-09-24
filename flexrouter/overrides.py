@@ -51,8 +51,12 @@ ALLOWED_FIELDS: dict[str, frozenset[str]] = {
         # provider charges so the dashboard can stop guessing that
         # everything is free.
         "price_in", "price_out",
+        # Generation speed, manually entered - see ModelConfig.tokens_per_second.
+        "tokens_per_second",
     }),
 }
+
+_VALID_BUCKET_STRATEGIES = frozenset({"smartest", "fastest"})
 
 # Fields `add_model()` requires, on top of `ALLOWED_FIELDS["models"]` - the
 # identity a brand-new model needs that an *existing* model must never have
@@ -138,6 +142,17 @@ def add_bucket(name: str, path: Path | str | None = None) -> None:
     save_overrides(data, path)
 
 
+def set_bucket_strategy(bucket: str, strategy: str, path: Path | str | None = None) -> None:
+    """How `bucket` ranks its candidates: "smartest" (by score, the
+    default) or "fastest" (by tokens_per_second). See engine.py._pick."""
+    if strategy not in _VALID_BUCKET_STRATEGIES:
+        raise ValueError(
+            f"strategy must be one of {', '.join(sorted(_VALID_BUCKET_STRATEGIES))}")
+    data = load_overrides(path)
+    data.setdefault("bucket_strategy", {})[bucket] = strategy
+    save_overrides(data, path)
+
+
 def add_model(bucket: str, fields: dict, path: Path | str | None = None) -> None:
     """Represent a model `config.yaml` has never heard of, in `bucket`.
 
@@ -191,6 +206,9 @@ def apply_overrides(raw: dict, ov: dict) -> dict:
 
     for key, value in (ov.get("settings") or {}).items():
         merged.setdefault("settings", {})[key] = value
+
+    for name, strategy in (ov.get("bucket_strategy") or {}).items():
+        merged.setdefault("bucket_strategy", {})[name] = strategy
 
     # A brand-new provider is layered in before ordinary provider overrides
     # are applied, so nothing about how those are merged needs to change to

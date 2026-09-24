@@ -3,6 +3,7 @@ import pytest
 from flexrouter.overrides import (
     add_bucket, add_model, add_provider,
     apply_overrides, clear_override, load_overrides, save_overrides, set_override,
+    set_bucket_strategy,
 )
 
 
@@ -167,6 +168,24 @@ def test_add_model_requires_provider_and_model():
 def test_add_model_requires_score_rpm_tpm():
     with pytest.raises(ValueError):
         add_model("smart", {"provider": "openrouter", "model": "brand-new"})
+
+
+def test_add_model_accepts_tokens_per_second():
+    add_model("smart", {"provider": "openrouter", "model": "brand-new",
+                        "score": 90, "rpm": 20, "tpm": 10000, "tokens_per_second": 150})
+    merged = apply_overrides(BASE, load_overrides())
+    assert merged["buckets"]["smart"][-1]["tokens_per_second"] == 150
+
+
+def test_set_bucket_strategy_rejects_unknown_strategy():
+    with pytest.raises(ValueError):
+        set_bucket_strategy("smart", "cheapest")
+
+
+def test_set_bucket_strategy_appears_after_apply_overrides():
+    set_bucket_strategy("smart", "fastest")
+    merged = apply_overrides(BASE, load_overrides())
+    assert merged["bucket_strategy"] == {"smart": "fastest"}
 
 
 def test_add_model_rejects_an_unknown_field():

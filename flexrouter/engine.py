@@ -71,11 +71,12 @@ class RoutingEngine:
             if result:
                 return result
 
-        candidates = self._score_candidates(models, estimated_tokens, vision)
+        strategy = self._strategy(tier)
+        candidates = self._score_candidates(models, estimated_tokens, vision, strategy)
         if not candidates:
             return None
 
-        result = self._pick(candidates, tier)
+        result = self._pick(candidates, tier, strategy)
 
         if session_id:
             self._sessions[session_id] = (result.provider, result.model, time.monotonic())
@@ -158,7 +159,8 @@ class RoutingEngine:
         answers "how much room is there," not "would a specific prompt fit."
         """
         models = self._cfg.tiers[tier]  # raises KeyError for unknown tier
-        scored = self._score_candidates(models, estimated_tokens=0, vision=False)
+        strategy = self._strategy(tier)
+        scored = self._score_candidates(models, estimated_tokens=0, vision=False, strategy=strategy)
         if not scored:
             return {}
         best_score = max(score for score, _ in scored)
@@ -179,6 +181,9 @@ class RoutingEngine:
 
     # --- internals ---
 
+    def _strategy(self, tier: str) -> str:
+        return self._cfg.bucket_strategy.get(tier, "smartest")
+
     def _try_session(
         self, session_id: str, tier: str, estimated_tokens: int, vision: bool
     ) -> Optional[RouteResult]:
@@ -195,13 +200,14 @@ class RoutingEngine:
         pinned = next((m for m in models if m.provider == provider and m.model == model), None)
         if not pinned:
             return None
-        if not self._model_available(pinned, estimated_tokens, vision, emit_warning=False):
+        if not self._model_available(pinned, estimated_tokens, vision, emit_warning=False,
+                                     strategy=self._strategy(tier)):
             return None  # fall through to normal selection
         self._sessions[session_id] = (provider, model, time.monotonic())
         return self._make_result(pinned, tier)
 
     def _skip_reason(
-        self, m: ModelConfig, estimated_tokens: int, vision: bool
+        self, m: ModelConfig, estimated_tokens: int, vision: bool, strategy: str = "smartest"
     ) -> Optional[tuple[str, str]]:
         """Why this model cannot take the request right now, or None if it can.
 
@@ -213,6 +219,9 @@ class RoutingEngine:
         """
         if vision and not m.vision:
             return ("not_vision_capable", "request needs image support")
+        if strategy == "fastest" and m.tokens_per_second is None:
+            return ("no_speed_data", "this bucket ranks by speed, but no "
+                    "tokens/s is recorded for this model")
         # Checked before is_penalized, which also reports True for quarantined
         # routes — quarantine has the more specific explanation.
         if self._penalties.is_quarantined(m.provider, m.model):
@@ -236,18 +245,22 @@ class RoutingEngine:
                     f"local rate window full (rpm {self._model_rpm(m)}, tpm {self._model_tpm(m)})")
         return None
 
+    def _rank_value(self, m: ModelConfig, strategy: str) -> float:
+        return m.tokens_per_second if strategy == "fastest" else m.score
+
     def _score_candidates(
-        self, models: list[ModelConfig], estimated_tokens: int, vision: bool
-    ) -> list[tuple[int, ModelConfig]]:
+        self, models: list[ModelConfig], estimated_tokens: int, vision: bool,
+        strategy: str = "smartest",
+    ) -> list[tuple[float, ModelConfig]]:
         ctx_skipped = False
         scored = []
         for m in models:
-            skip = self._skip_reason(m, estimated_tokens, vision)
+            skip = self._skip_reason(m, estimated_tokens, vision, strategy)
             if skip is not None:
                 if skip[0] == "context_too_small":
                     ctx_skipped = True
                 continue
-            scored.append((m.score, m))
+            scored.append((self._rank_value(m, strategy), m))
 
         if ctx_skipped:
             warnings.warn(
@@ -267,25 +280,29 @@ class RoutingEngine:
         usually discards — this is only worth computing on the failure path,
         or when the dashboard asks.
         """
+        strategy = self._strategy(tier)
         out = []
         for m in self._cfg.tiers.get(tier, []):
-            skip = self._skip_reason(m, estimated_tokens, vision)
+            skip = self._skip_reason(m, estimated_tokens, vision, strategy)
             out.append({
                 "provider": m.provider,
                 "model": m.model,
                 "score": m.score,
+                "tokens_per_second": m.tokens_per_second,
                 "available": skip is None,
                 "reason": skip[0] if skip else None,
                 "detail": skip[1] if skip else "",
             })
         return out
 
-    def _pick(self, scored: list[tuple[int, ModelConfig]], tier: str) -> RouteResult:
+    def _pick(self, scored: list[tuple[float, ModelConfig]], tier: str,
+              strategy: str = "smartest") -> RouteResult:
         scored.sort(key=lambda x: x[0], reverse=True)
-        best_score = scored[0][0]
-        assert best_score > 0, f"Model scores must be positive (1-100), got {best_score}"
-        threshold = best_score * 0.8
-        top = [m for score, m in scored if score >= threshold]
+        best = scored[0][0]
+        label = "tokens_per_second" if strategy == "fastest" else "score"
+        assert best > 0, f"Model {label} values must be positive, got {best}"
+        threshold = best * 0.8
+        top = [m for value, m in scored if value >= threshold]
         chosen = random.choice(top)
         return self._make_result(chosen, tier)
 
@@ -317,9 +334,12 @@ class RoutingEngine:
         return m.tpm
 
     def _model_available(
-        self, m: ModelConfig, estimated_tokens: int, vision: bool, emit_warning: bool
+        self, m: ModelConfig, estimated_tokens: int, vision: bool, emit_warning: bool,
+        strategy: str = "smartest",
     ) -> bool:
         if vision and not m.vision:
+            return False
+        if strategy == "fastest" and m.tokens_per_second is None:
             return False
         if self._penalties.is_penalized(m.provider, m.model):
             return False

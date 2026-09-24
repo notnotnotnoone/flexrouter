@@ -3,6 +3,8 @@
 Same shape as the rank-models tests in test_dashboard_pages.py: build a
 prompt, paste an answer back, review, apply. No network call is ever made.
 """
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -16,9 +18,18 @@ def client(config_file):
         yield c
 
 
-ANSWER_ONE_NEW_CHAT_MODEL = (
-    "groq | new-chat-model | chat | 8192 | 30 | 6000 | no | yes | 70"
-)
+def _row(**overrides) -> dict:
+    row = {
+        "provider": "groq", "model": "new-chat-model", "kind": "chat",
+        "context": 8192, "rpm": 30, "tpm": 6000, "rph": None, "rpd": None,
+        "rps": None, "tph": None, "tpd": None, "tps": None,
+        "vision": False, "free": True, "score": 70,
+    }
+    row.update(overrides)
+    return row
+
+
+ANSWER_ONE_NEW_CHAT_MODEL = json.dumps([_row()])
 
 
 def test_the_button_is_on_the_models_page(client):
@@ -34,14 +45,15 @@ def test_step1_only_lists_providers_that_have_a_key(client, config_file):
 
 def test_step1_with_no_provider_chosen_shows_no_prompt_yet(client):
     body = client.get("/models/add-with-ai").text
-    assert "paste the ai" not in body.lower() or "provider | model | kind" not in body
+    assert "paste the ai" not in body.lower() or "json array" not in body.lower()
 
 
 def test_choosing_a_provider_builds_a_prompt_naming_it_and_its_models(client):
     body = client.get("/models/add-with-ai", params={"provider": "groq"}).text
     assert "groq" in body
     assert "llama-3.1-8b-instant" in body
-    assert "provider | model | kind | context | rpm | tpm | vision | free | score" in body
+    assert "JSON array" in body
+    assert "&quot;kind&quot;" in body or '"kind"' in body
 
 
 def test_the_prompt_has_a_copy_button(client):
@@ -52,7 +64,7 @@ def test_the_prompt_has_a_copy_button(client):
 def test_an_unknown_or_keyless_provider_is_rejected(client):
     body = client.get("/models/add-with-ai", params={"provider": "no-such-provider"}).text
     assert "no-such-provider" in body
-    assert "provider | model | kind" not in body
+    assert "JSON array" not in body
 
 
 def test_review_shows_a_parsed_row(client):
@@ -66,19 +78,23 @@ def test_review_shows_a_parsed_row(client):
 def test_review_marks_an_existing_model_as_update_with_old_and_new_values(client):
     body = client.post("/models/add-with-ai/review", data={
         "provider": "groq",
-        "answer": "groq | llama-3.1-8b-instant | chat | 200000 | 60 | 60000 | yes | no | 99",
+        "answer": json.dumps([_row(
+            model="llama-3.1-8b-instant", context=200000, rpm=60, tpm=60000,
+            vision=True, free=False, score=99,
+        )]),
     }).text
     assert "update" in body.lower()
     assert "131072" in body  # old context window
     assert "200000" in body  # proposed new one
 
 
-def test_review_lists_an_unparseable_line_with_its_reason_never_dropping_it(client):
+def test_review_lists_an_unparseable_entry_with_its_reason_never_dropping_it(client):
     body = client.post("/models/add-with-ai/review", data={
-        "provider": "groq", "answer": "groq | broken | chat | not-a-number",
+        "provider": "groq",
+        "answer": json.dumps([_row(model="broken", context="not-a-number")]),
     }).text
     assert "broken" in body.lower() or "not-a-number" in body.lower()
-    assert "could not" in body.lower() or "reason" in body.lower() or "columns" in body.lower()
+    assert "could not" in body.lower() or "reason" in body.lower() or "not a number" in body.lower()
 
 
 def test_review_offers_a_bucket_picker_for_a_chat_row(client):
@@ -92,7 +108,10 @@ def test_review_offers_a_bucket_picker_for_a_chat_row(client):
 def test_review_has_no_bucket_picker_for_a_non_chat_row(client):
     body = client.post("/models/add-with-ai/review", data={
         "provider": "groq",
-        "answer": "groq | whisper-ish | speech_to_text | none | none | none | no | yes | none",
+        "answer": json.dumps([_row(
+            model="whisper-ish", kind="speech_to_text", context=None, rpm=None,
+            tpm=None, vision=False, free=True, score=None,
+        )]),
     }).text
     assert 'name="bucket:0"' not in body
 
@@ -100,7 +119,7 @@ def test_review_has_no_bucket_picker_for_a_non_chat_row(client):
 def test_pasted_text_is_escaped_not_injected(client):
     body = client.post("/models/add-with-ai/review", data={
         "provider": "groq",
-        "answer": "groq | <script>bad</script> | chat | not-a-number | x | x | x | x | x",
+        "answer": json.dumps([_row(model="<script>bad</script>", context="not-a-number")]),
     }).text
     assert "<script>bad</script>" not in body
     assert "&lt;script&gt;bad&lt;/script&gt;" in body

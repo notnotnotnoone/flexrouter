@@ -9,7 +9,7 @@ from flexrouter.engine import RoutingEngine, RouteResult
 from flexrouter.rate_limits import RateLimitStore
 
 
-def make_engine(models=None):
+def make_engine(models=None, bucket_strategy=None):
     if models is None:
         models = [
             ModelConfig("groq", "llama-8b", score=85, rpm=60, tpm=60000, context_window=131072),
@@ -18,6 +18,7 @@ def make_engine(models=None):
     cfg = FlexConfig(
         tiers={"low": models},
         providers={"groq": ProviderConfig("http://groq", ["key"])},
+        bucket_strategy=bucket_strategy or {},
         window_seconds=60,
         penalty_base_seconds=30,
         penalty_max_seconds=1800,
@@ -213,3 +214,57 @@ def test_score_candidates_skips_quota_exhausted_model():
         chosen_models = [m.model for _, m in scored]
         assert "m1" not in chosen_models
         assert "m2" in chosen_models
+
+
+# ── "fastest" bucket strategy ───────────────────────────────────────────
+
+def test_default_strategy_is_smartest_ranks_by_score():
+    engine = make_engine()
+    result = engine.select("low", estimated_tokens=0, vision=False)
+    assert result.model == "llama-8b"  # higher score (85 > 60)
+
+
+def test_fastest_strategy_ranks_by_tokens_per_second_not_score():
+    models = [
+        ModelConfig("groq", "smart-slow", score=95, rpm=60, tpm=60000, tokens_per_second=20),
+        ModelConfig("groq", "dumb-fast", score=10, rpm=60, tpm=60000, tokens_per_second=500),
+    ]
+    engine = make_engine(models, bucket_strategy={"low": "fastest"})
+    result = engine.select("low", estimated_tokens=0, vision=False)
+    assert result.model == "dumb-fast"
+
+
+def test_fastest_strategy_picks_within_top_20_percent_of_speed():
+    models = [
+        ModelConfig("groq", "fastest", score=50, rpm=60, tpm=60000, tokens_per_second=100),
+        ModelConfig("groq", "close-second", score=50, rpm=60, tpm=60000, tokens_per_second=85),
+        ModelConfig("groq", "too-slow", score=50, rpm=60, tpm=60000, tokens_per_second=50),
+    ]
+    engine = make_engine(models, bucket_strategy={"low": "fastest"})
+    seen = {engine.select("low", estimated_tokens=0, vision=False).model for _ in range(50)}
+    assert seen == {"fastest", "close-second"}
+
+
+def test_fastest_strategy_skips_models_with_no_speed_data():
+    models = [
+        ModelConfig("groq", "has-speed", score=50, rpm=60, tpm=60000, tokens_per_second=100),
+        ModelConfig("groq", "no-speed", score=90, rpm=60, tpm=60000),
+    ]
+    engine = make_engine(models, bucket_strategy={"low": "fastest"})
+    result = engine.select("low", estimated_tokens=0, vision=False)
+    assert result.model == "has-speed"
+
+
+def test_fastest_strategy_with_no_speed_data_anywhere_returns_none():
+    models = [ModelConfig("groq", "no-speed", score=90, rpm=60, tpm=60000)]
+    engine = make_engine(models, bucket_strategy={"low": "fastest"})
+    result = engine.select("low", estimated_tokens=0, vision=False)
+    assert result is None
+
+
+def test_explain_unavailable_reports_no_speed_data_reason():
+    models = [ModelConfig("groq", "no-speed", score=90, rpm=60, tpm=60000)]
+    engine = make_engine(models, bucket_strategy={"low": "fastest"})
+    out = engine.explain_unavailable("low")
+    assert out[0]["reason"] == "no_speed_data"
+    assert out[0]["available"] is False

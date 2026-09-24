@@ -1147,6 +1147,8 @@ tbody tr.m-detail:hover td { background: var(--ground); }
 .ladder-cut { position: absolute; top: -4px; bottom: -4px; width: 1px; background: var(--ink-2); }
 .ladder-score { font: 500 12px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
 .ladder-word { justify-self: start; }
+.inline-form { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
+.inline-form select { font-size: 12px; padding: 5px 8px; }
 .try-result:empty { display: none; }
 .try-result {
   margin-top: 12px;
@@ -1466,9 +1468,20 @@ p.state-bad { background: var(--bad-wash); }
 form { display: inline; }
 td form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 td input[type="text"], td input[type="number"], td input:not([type]) { width: 84px; padding: 4px 7px; font-size: 12px; }
+/* A cell whose value can run long (e.g. a model name) - drag the corner
+   grip to widen just that cell's input without resizing the whole column. */
+.stretch {
+  display: inline-block;
+  resize: horizontal;
+  overflow: hidden;
+  min-width: 84px;
+  max-width: 480px;
+  vertical-align: middle;
+}
+td .stretch > input[type="text"] { width: 100%; }
 td select { padding: 4px 7px; font-size: 12px; }
 td form label { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ink-3); }
-main > form, .grouped-form {
+main > form:not(.table-form), .grouped-form {
   display: grid;
   grid-template-columns: 170px minmax(0, 360px);
   gap: 10px 16px;
@@ -1479,7 +1492,19 @@ main > form, .grouped-form {
   margin: 10px 0 16px;
   max-width: 620px;
 }
-main > form > button, .grouped-form > button { grid-column: 2; justify-self: start; }
+main > form:not(.table-form) > button, .grouped-form > button { grid-column: 2; justify-self: start; }
+
+/* Forms that wrap a review table (add-with-ai, rank/rate-limit proposals):
+   plain block flow so the table can size itself, not the settings-form grid. */
+main > form.table-form {
+  display: block;
+  max-width: none;
+  margin: 10px 0 16px;
+}
+main > form.table-form > table,
+main > form.table-form > .scroll {
+  margin-bottom: 12px;
+}
 .field { display: contents; }
 .field > label, .field > span:first-child { font: 500 10px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--ink-3); }
 .check-field { display: flex; align-items: center; gap: 8px; grid-column: 2; font-size: 12px; color: var(--ink-2); }

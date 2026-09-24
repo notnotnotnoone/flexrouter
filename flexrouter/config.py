@@ -35,6 +35,12 @@ class ModelConfig:
     # here are on a free tier; some, like the decider, are not.
     price_in: Optional[float] = None
     price_out: Optional[float] = None
+    # Generation throughput, tokens/second. Manual for now - typed in by the
+    # owner (or pasted from an AI's answer), the same way score/rpm/tpm are.
+    # `None` means nobody has recorded it, distinct from 0. Not to be
+    # confused with `quotas["tps"]`, which is a *rate limit* the provider
+    # enforces, not how fast the model generates.
+    tokens_per_second: Optional[float] = None
 
 @dataclass
 class ProviderConfig:
@@ -49,12 +55,13 @@ class RetryConfig:
     retries: int = 3
     backoff_seconds: float = 2.0
 
-def _price(raw) -> Optional[float]:
-    """A price per million tokens, or `None` for "not priced".
+def _nonneg_float(raw) -> Optional[float]:
+    """An optional non-negative float, or `None` for "not known".
 
-    An empty string is how the dashboard's form says "clear this", and a
-    negative price is a typo rather than a discount; both become `None`
-    so a bad edit costs the owner a figure, not a crash on every request.
+    An empty string is how a dashboard form says "clear this", and a
+    negative value is a typo rather than a meaningful reading; both become
+    `None` so a bad edit costs the owner a figure, not a crash on every
+    request.
     """
     if raw is None or raw == "":
         return None
@@ -63,6 +70,12 @@ def _price(raw) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return value if value >= 0 else None
+
+
+def _price(raw) -> Optional[float]:
+    """A price per million tokens, or `None` for "not priced" (see
+    `_nonneg_float` - same rules, just a more specific name at call sites)."""
+    return _nonneg_float(raw)
 
 
 def _bool(settings: dict, name: str, default: bool) -> bool:
@@ -130,6 +143,10 @@ class DeciderConfig:
 class FlexConfig:
     tiers: dict[str, list[ModelConfig]]
     providers: dict[str, ProviderConfig]
+    # Per-bucket ranking strategy: "smartest" (rank by score, today's
+    # behaviour) or "fastest" (rank by tokens_per_second instead). A bucket
+    # missing here defaults to "smartest" - existing configs are unaffected.
+    bucket_strategy: dict[str, str] = field(default_factory=dict)
     state_dir: str = ".flexrouter"
     window_seconds: int = 60
     penalty_base_seconds: int = 30
@@ -502,6 +519,7 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
                 quotas=m.get("quotas", {}),
                 price_in=_price(m.get("price_in")),
                 price_out=_price(m.get("price_out")),
+                tokens_per_second=_nonneg_float(m.get("tokens_per_second")),
             ))
         tiers[bucket_name] = parsed_models
 
@@ -526,9 +544,15 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
         confidence_ceiling=_number(settings, "decider_confidence_ceiling", 0.95, float),
         contested_statuses=_statuses(settings.get("decider_contested_statuses"), (400, 403, 429)),
     )
+    bucket_strategy = {
+        str(name): str(strategy)
+        for name, strategy in (raw.get("bucket_strategy") or {}).items()
+    }
+
     return FlexConfig(
         tiers=tiers,
         providers=providers,
+        bucket_strategy=bucket_strategy,
         state_dir=settings.get("state_dir", str(home.state_dir())),
         window_seconds=_number(settings, "window_seconds", 60, int),
         penalty_base_seconds=_number(settings, "penalty_base_seconds", 30, int),
