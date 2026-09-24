@@ -1,4 +1,20 @@
+import pytest
+
+from flexrouter import redact
 from flexrouter.redact import scrub
+
+
+@pytest.fixture(autouse=True)
+def _heuristic_redaction_on():
+    """This whole file tests Rule A/Rule B, the heuristic "this looks like
+    a credential" scrubbing - which is opt-in (redact_errors, default off)
+    since it has no way to tell a provider/model identifier apart from an
+    actual secret and used to mangle names it hadn't already been told
+    about. Exact-known-secret replacement (scrub_body's `_secrets` loop) is
+    unaffected by this flag and is not what these tests are about."""
+    redact.set_enabled(True)
+    yield
+    redact.set_enabled(False)
 
 
 def test_an_openai_style_key_is_cut_down_to_its_tail():

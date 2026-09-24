@@ -57,6 +57,36 @@ class StreamChunk:
     reasoning: str | None = None
     tool_call_delta: dict | None = None
     usage: dict | None = None
+    # "stop" | "length" | "content_filter" | "tool_calls" | provider-specific,
+    # or None until the provider sends its final chunk. `length` on an
+    # otherwise-empty completion means the model spent its whole token
+    # budget on reasoning and never got to an answer; `content_filter` means
+    # it was blocked, not that nothing was generated. Previously discarded
+    # entirely, which made both of those indistinguishable from a bare
+    # empty response with no explanation at all.
+    finish_reason: str | None = None
+
+
+# Request fields flexrouter's own passthrough list (app.py._PASSTHROUGH)
+# assumes every OpenAI-compatible endpoint accepts, but a specific one
+# doesn't. Keyed by a substring of the provider's base_url rather than the
+# provider's own (user-chosen) name, so this applies no matter what the
+# owner called the provider in their settings.
+_UNSUPPORTED_PARAMS: dict[str, frozenset[str]] = {
+    # Google AI Studio's OpenAI-compat endpoint (live-verified): a request
+    # carrying either one gets a hard 400, "Invalid JSON payload received.
+    # Unknown name '...': Cannot find field." - every single time, not a
+    # soft ignore - so a caller who sets either param failed on every
+    # Gemini model it was routed to.
+    "generativelanguage.googleapis.com": frozenset({"presence_penalty", "frequency_penalty"}),
+}
+
+
+def _drop_unsupported_params(base_url: str, payload: dict) -> None:
+    for host, unsupported in _UNSUPPORTED_PARAMS.items():
+        if host in base_url:
+            for key in unsupported:
+                payload.pop(key, None)
 
 
 class AsyncClient:
@@ -72,6 +102,7 @@ class AsyncClient:
     ) -> dict:
         url = f"{route.base_url.rstrip('/')}/chat/completions"
         payload = {"model": route.model, "messages": messages, **kwargs}
+        _drop_unsupported_params(route.base_url, payload)
         headers = {"Authorization": f"Bearer {route.api_key}"} if route.api_key else {}
 
         try:
@@ -133,6 +164,7 @@ class AsyncClient:
         url = f"{route.base_url.rstrip('/')}/chat/completions"
         payload = {"model": route.model, "messages": messages, "stream": True,
                    "stream_options": {"include_usage": True}, **kwargs}
+        _drop_unsupported_params(route.base_url, payload)
         headers = {"Authorization": f"Bearer {route.api_key}"} if route.api_key else {}
 
         # Deliberately NOT `async with self._client.stream(...)`. That helper
@@ -221,7 +253,8 @@ class AsyncClient:
                     usage = chunk.get("usage")
                     choices = chunk.get("choices") or []
                     delta = choices[0].get("delta") if choices else None
-                    if delta is None and usage is None:
+                    finish_reason = choices[0].get("finish_reason") if choices else None
+                    if delta is None and usage is None and finish_reason is None:
                         continue
 
                     content = delta.get("content") if isinstance(delta, dict) else None
@@ -244,11 +277,12 @@ class AsyncClient:
                                     "raw": tc,
                                 },
                             )
-                            yield StreamChunk(tool_call_delta=tc)
+                            yield StreamChunk(tool_call_delta=tc, finish_reason=finish_reason)
                         continue
 
-                    if content or reasoning or usage:
-                        yield StreamChunk(content=content or None, reasoning=reasoning or None, usage=usage)
+                    if content or reasoning or usage or finish_reason:
+                        yield StreamChunk(content=content or None, reasoning=reasoning or None,
+                                          usage=usage, finish_reason=finish_reason)
             except httpx.HTTPError as exc:
                 # Connection failures, malformed requests, timeouts, or a dropped
                 # connection mid-stream — anything below the HTTP-response level.

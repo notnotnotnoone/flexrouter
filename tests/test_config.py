@@ -142,3 +142,45 @@ def test_key_concurrency_cap_is_read_from_settings(tmp_path, monkeypatch, minima
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
     loaded = load_config(p)
     assert loaded.key_concurrency_cap == 8
+
+
+def test_a_model_matching_a_non_chat_pattern_is_left_out_of_its_bucket(
+        tmp_path, monkeypatch, minimal_config):
+    # Live-verified: a video/image-generation or embedding model routed a
+    # real chat completion fails every single time with "does not support
+    # chat endpoints" - not flaky, guaranteed. Rather than let the engine
+    # pick it and burn a request on a sure failure, it's dropped at load
+    # time and a warning names it instead.
+    cfg = minimal_config
+    cfg["settings"]["state_dir"] = str(tmp_path / ".flexrouter")
+    bucket = next(iter(cfg["tiers"].values()))
+    non_chat = dict(bucket[0])
+    non_chat["model"] = "seedance-2.0"
+    bucket.append(non_chat)
+    p = tmp_path / "flexrouter.yaml"
+    p.write_text(yaml.dump(cfg))
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    with pytest.warns(UserWarning, match="non-chat name pattern"):
+        loaded = load_config(p)
+    models = [m.model for models in loaded.tiers.values() for m in models]
+    assert "seedance-2.0" not in models
+
+
+def test_a_chat_shaped_model_whose_name_merely_contains_guard_is_kept(
+        tmp_path, monkeypatch, minimal_config):
+    # Regression: the first version of this filter used the full
+    # (warn-only) NON_CHAT_PATTERNS list to also block routing, and
+    # "guard" matching "gpt-oss-safeguard-20b" - a real OpenAI chat-
+    # completions safety classifier - silently dropped a working model.
+    cfg = minimal_config
+    cfg["settings"]["state_dir"] = str(tmp_path / ".flexrouter")
+    bucket = next(iter(cfg["tiers"].values()))
+    guard_model = dict(bucket[0])
+    guard_model["model"] = "gpt-oss-safeguard-20b"
+    bucket.append(guard_model)
+    p = tmp_path / "flexrouter.yaml"
+    p.write_text(yaml.dump(cfg))
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    loaded = load_config(p)
+    models = [m.model for models in loaded.tiers.values() for m in models]
+    assert "gpt-oss-safeguard-20b" in models

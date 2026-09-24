@@ -1,7 +1,18 @@
 import time
 
+import pytest
+
+from flexrouter import redact
 from flexrouter.decider import ErrorVerdict
 from flexrouter.error_brain import ErrorBrain, classify_by_rule, fingerprint
+
+
+@pytest.fixture(autouse=True)
+def _heuristic_redaction_on():
+    """redact_errors defaults to off (2026-09-24) - see test_error_envelope.py."""
+    redact.set_enabled(True)
+    yield
+    redact.set_enabled(False)
 
 
 class _StubDecider:

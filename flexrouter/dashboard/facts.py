@@ -54,6 +54,7 @@ class KeyDetail:
     enabled: bool
     weight: int
     allow_models: list
+    quotas: dict  # rps/rph/rpd/tps/tph/tpd caps on this key; {} = none set
     status: str
     reason: str
     until: Optional[float]
@@ -186,6 +187,7 @@ def provider_detail(router, provider: str, now: Optional[float] = None) -> Optio
             enabled=record.enabled,
             weight=record.weight,
             allow_models=list(record.allow_models),
+            quotas=dict(record.quotas or {}),
             status=state.status,
             reason=state.reason,
             until=state.until,
@@ -231,6 +233,7 @@ class ModelRow:
     price_in: Optional[float]   # USD per million input tokens; None = not priced
     price_out: Optional[float]  # USD per million output tokens; None = not priced
     tokens_per_second: Optional[float]  # generation speed; None = not recorded
+    quotas: dict  # rps/rph/rpd/tps/tph/tpd caps beyond rpm/tpm; {} = none set
     state: str  # "available" | "gone"
     why: str
 
@@ -271,6 +274,7 @@ def models(router) -> list[ModelRow]:
                 size_class=mf.size_class.value if mf.size_class else None,
                 price_in=mc.price_in, price_out=mc.price_out,
                 tokens_per_second=mc.tokens_per_second,
+                quotas=dict(mc.quotas or {}),
                 state="available" if available else "gone",
                 why=reason,
             )
@@ -648,6 +652,7 @@ _SETTINGS_ATTR = {
     "error_max_length": "error_max_length",
     "unscored_fallback_score": "unscored_fallback_score",
     "experimental_model_discovery": "experimental_model_discovery",
+    "redact_errors": "redact_errors",
 }
 
 # Nested under cfg.decider rather than sitting flat on FlexConfig, so these

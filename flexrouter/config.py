@@ -170,6 +170,14 @@ class FlexConfig:
     `flexrouter refresh` CLI command, and a preset's auto-import after
     adding a key) reads this before doing so. The discovery code itself is
     untouched - only gated."""
+    redact_errors: bool = False
+    """Off by default: error text is shown exactly as the provider sent it.
+    On, flexrouter.redact's heuristic rules also blank anything shaped like
+    a credential (16+ letters/digits/-/./, in a row) wherever it appears in
+    an error, which can catch an unregistered provider/model identifier
+    along with it - the illegible "...lash" this setting exists to let the
+    owner turn off. A key flexrouter itself holds is masked either way
+    (redact.set_known_secrets, an exact match, never a heuristic)."""
     retry: RetryConfig = field(default_factory=RetryConfig)
     decider: DeciderConfig = field(default_factory=DeciderConfig)
     provider_budget: dict[str, float] = field(default_factory=dict)
@@ -508,6 +516,24 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
                     raise ConfigFieldError(
                         f"buckets.{bucket_name}[{i}].{field_name} is missing "
                         f"in {source}")
+            if is_definitely_not_a_chat_model(str(m["model"])):
+                # A model whose name matches _DEFINITELY_NOT_CHAT (video/
+                # image generation, embeddings, OCR, ...) fails every single
+                # chat completion sent to it - not flaky, guaranteed, every
+                # time, live-verified against real "does not support chat
+                # endpoints" 400s. Leaving it in the bucket means the engine
+                # picks it, burns a request, and fails on it forever. This
+                # runs after apply_overrides (above), so it catches a model
+                # added by hand, through overrides.json, or by discovery,
+                # not just one written in config.yaml.
+                warnings.warn(
+                    f"buckets.{bucket_name}[{i}]: {m['model']!r} matches a "
+                    f"non-chat name pattern and was left out of routing - "
+                    f"it would fail every chat request. Remove it, or "
+                    f"rename it if this is a false match.",
+                    UserWarning, stacklevel=2,
+                )
+                continue
             parsed_models.append(ModelConfig(
                 provider=m["provider"],
                 model=m["model"],
@@ -568,6 +594,7 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
         error_max_length=_number(settings, "error_max_length", 300, int),
         unscored_fallback_score=_number(settings, "unscored_fallback_score", 50, int),
         experimental_model_discovery=_bool(settings, "experimental_model_discovery", False),
+        redact_errors=_bool(settings, "redact_errors", False),
         retry=retry,
         decider=decider,
         provider_budget=settings.get("provider_budget", {}),
@@ -579,13 +606,38 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
 NON_CHAT_PATTERNS = ("whisper", "tts", "orpheus", "image", "lyria", "guard",
                      "native-audio", "-live", "embed", "rerank", "ocr",
                      "moderation", "transcribe", "deplot", "safety", "reward",
-                     "detector", "parse", "clip", "translate")
+                     "detector", "parse", "clip", "translate",
+                     # Video/image generation, live-verified against real
+                     # "does not support chat endpoints" 400s: seedance and
+                     # kling are video generators, chroma-v is an image
+                     # diffusion model - none of them speak chat completions.
+                     "seedance", "kling", "chroma-v", "veo", "sora-",
+                     "sound-", "music-")
+
+# The subset of NON_CHAT_PATTERNS confident enough to block routing
+# outright rather than just warn about, used below to drop a bucket model
+# that would fail every single request. Deliberately narrower than the full
+# list: "guard"/"safety"/"reward"/"detector"/"parse"/"clip" each have a real
+# chat-shaped counter-example (gpt-oss-safeguard-20b, OpenAI's own chat-
+# completions safety classifier, live-verified false positive from the
+# first version of this filter, which used the full list here and silently
+# dropped a model that actually worked). Those stay warn-only.
+_DEFINITELY_NOT_CHAT = (
+    "whisper", "tts", "orpheus", "image", "lyria", "native-audio", "-live",
+    "embed", "rerank", "ocr", "moderation", "transcribe", "deplot", "translate",
+    "seedance", "kling", "chroma-v", "veo", "sora-", "sound-", "music-",
+)
 _LOCAL_HOST_HINTS = ("localhost", "127.0.0.1", "::1")
 
 
 def is_probably_chat_model(model_id: str) -> bool:
     mid = (model_id or "").lower()
     return not any(p in mid for p in NON_CHAT_PATTERNS)
+
+
+def is_definitely_not_a_chat_model(model_id: str) -> bool:
+    mid = (model_id or "").lower()
+    return any(p in mid for p in _DEFINITELY_NOT_CHAT)
 
 
 def _has_a_credential(name: str, praw: dict,

@@ -12,8 +12,21 @@ import yaml
 from click.testing import CliRunner
 from fastapi.testclient import TestClient
 
-from flexrouter import cli, home
+from flexrouter import cli, home, redact
 from flexrouter.app import create_app
+
+
+@pytest.fixture(autouse=True)
+def _heuristic_redaction_on():
+    """redact_errors defaults to off (2026-09-24) - see test_error_envelope.py.
+    Most of this file's protection is the exact-known-secret match, which
+    is unaffected by the flag; the three sidelined-route tests below use a
+    credential that isn't one of the router's own configured keys, which is
+    what the heuristic rules (opt-in now) are for."""
+    redact.set_enabled(True)
+    yield
+    redact.set_enabled(False)
+
 
 SECRET = "gsk-DO-NOT-LEAK-THIS-abcd1234"
 
@@ -408,6 +421,10 @@ def _sideline_client(tmp_path, monkeypatch):
             providers={"groq": ProviderConfig(
                 base_url="https://api.groq.com/openai/v1", api_keys=["k"])},
             state_dir=str(tmp_path / "state"),
+            # The fixture's set_enabled(True) gets overwritten the moment
+            # the router builds (_register_known_identifiers reads
+            # cfg.redact_errors), so it has to be set here too.
+            redact_errors=True,
         )
 
     monkeypatch.setattr("flexrouter._router.load_config", _cfg)

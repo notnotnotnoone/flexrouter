@@ -111,6 +111,46 @@ def _field(label: str, input_html: str) -> str:
     return tag("label", tag("span", esc(label)) + input_html, cls="field")
 
 
+# name -> caption, shared by every place a model's rate limits can be set
+# (add-model forms, the edit form, the AI-paste review table) so "where do I
+# set rps/tps" has one answer instead of depending on which form you're on.
+_QUOTA_FIELDS = (
+    ("rph", "Requests an hour"), ("rpd", "Requests a day"), ("rps", "Requests a second"),
+    ("tph", "Tokens an hour"), ("tpd", "Tokens a day"), ("tps", "Tokens a second"),
+)
+
+# rps/tps convert from a day/month allowance into a per-second one and are
+# legitimately fractional (e.g. Mistral's real published limits give 2.08,
+# 0.63, 12.5) - live-verified against a provider's real numbers. The other
+# four stay whole numbers. Also used by add_models.py's own parser.
+_FRACTIONAL_QUOTA_FIELDS = frozenset({"rps", "tps"})
+
+
+def _quota_fields_html(quotas: Optional[dict] = None) -> str:
+    """The six optional rps/rph/rpd/tps/tph/tpd inputs, pre-filled from an
+    existing model's `quotas` dict when editing one. Blank means "no cap"."""
+    quotas = quotas or {}
+    return "".join(
+        _field(label, _input(type="number",
+                             **({"step": "any"} if name in _FRACTIONAL_QUOTA_FIELDS else {}),
+                             name=name, value=esc(quotas[name]) if name in quotas else "",
+                             placeholder="no cap"))
+        for name, label in _QUOTA_FIELDS
+    )
+
+
+def _parse_quota_fields(form) -> dict:
+    """The six quota fields from a submitted form, as a `{rph: 100, ...}`
+    dict holding only the ones that were actually filled in."""
+    out: dict = {}
+    for name, _ in _QUOTA_FIELDS:
+        parser = _opt_float if name in _FRACTIONAL_QUOTA_FIELDS else _opt_int
+        value = parser(form.get(name))
+        if value is not None:
+            out[name] = value
+    return out
+
+
 def _add_provider_form() -> str:
     return tag(
         "form",
@@ -273,6 +313,7 @@ def _key_row(detail, k) -> str:
                  _input(type="text", name="allow_models",
                         value=esc(" ".join(k.allow_models)),
                         placeholder="* (all)"))
+        + _quota_fields_html(k.quotas)
         + tag("label",
               _input(type="checkbox", name="enabled",
                      **({"checked": True} if k.enabled else {}))
@@ -297,6 +338,8 @@ def _key_row(detail, k) -> str:
         "div",
         _key_fact("Weight", k.weight)
         + _key_fact("Allowed", ", ".join(k.allow_models) or "all")
+        + (_key_fact("Key caps", ", ".join(f"{n}={v}" for n, v in k.quotas.items()))
+           if k.quotas else "")
         + _key_fact("Today", f"{k.requests_today:,} req / {k.tokens_today:,} tok")
         + _key_fact("Failures (24h)", k.failures_24h)
         + _key_fact("Consecutive fails", k.consecutive_failures)
@@ -353,6 +396,9 @@ def _provider_add_model_form(provider: str, bucket_names: list) -> str:
         + _field("RPM", _input(type="number", name="rpm", placeholder="rpm"))
         + _field("TPM", _input(type="number", name="tpm", placeholder="tpm"))
         + _field("Context", _input(type="number", name="context_window",
+              placeholder="optional"))
+        + _quota_fields_html()
+        + _field("Gen tokens/s", _input(type="number", name="tokens_per_second", step="any",
               placeholder="optional"))
         + tag("label", _input(type="checkbox", name="vision") + "vision", cls="check-field")
         + tag("button", "Add model", type="submit"),
@@ -522,6 +568,9 @@ def _model_edit_form(r) -> str:
         + _field("Tokens a minute", _input(type="number", name="tpm", value=esc(r.tpm)))
         + _field("Context window", _input(type="number", name="context_window",
                                           value=esc(r.context_window)))
+        + _quota_fields_html(r.quotas)
+        + _field("Gen tokens/s", _input(type="number", name="tokens_per_second", step="any",
+              value=esc(r.tokens_per_second) if r.tokens_per_second is not None else ""))
         + tag("label", _input(type="checkbox", name="vision",
                               **{"checked": True} if vision_checked else {})
               + "Can see images", cls="check-field")
@@ -1026,6 +1075,8 @@ def _add_model_form(bucket: str) -> str:
               placeholder="context window (optional)") + " "
         + _input(type="number", name="tokens_per_second", step="any",
               placeholder="tokens/s (optional)") + " "
+        + "".join(_input(type="number", name=name, placeholder=name) + " "
+                 for name, _ in _QUOTA_FIELDS)
         + tag("label", _input(type="checkbox", name="vision") + "vision") + " "
         + tag("button", "Add model", type="submit"),
         method="post", action=f"/buckets/{quote(bucket, safe=':')}/models",
@@ -1048,7 +1099,7 @@ _INT_SETTINGS = frozenset({
 })
 _FLOAT_SETTINGS = frozenset({"backoff_seconds"})
 _JSON_SETTINGS = frozenset({"provider_budget", "hooks"})
-_BOOL_SETTINGS = frozenset({"experimental_model_discovery"})
+_BOOL_SETTINGS = frozenset({"experimental_model_discovery", "redact_errors"})
 
 
 def _cast_setting(field: str, raw_value: str):
@@ -1628,10 +1679,16 @@ async def models_add_with_ai_apply(request: Request) -> RedirectResponse:
             tpm = _opt_int(form.get(f"tpm:{i}"))
             rph = _opt_int(form.get(f"rph:{i}"))
             rpd = _opt_int(form.get(f"rpd:{i}"))
-            rps = _opt_int(form.get(f"rps:{i}"))
+            # rps/tps convert from a day/month allowance into a per-second
+            # one and are legitimately fractional (e.g. Mistral's 2.08) -
+            # the bug this fixes rejected the AI's own correct answer as
+            # "not a number or null" the moment it reached this second,
+            # editable-form parse (add_models.py's parse_answer already
+            # accepts a float for these two; this handler hadn't).
+            rps = _opt_float(form.get(f"rps:{i}"))
             tph = _opt_int(form.get(f"tph:{i}"))
             tpd = _opt_int(form.get(f"tpd:{i}"))
-            tps = _opt_int(form.get(f"tps:{i}"))
+            tps = _opt_float(form.get(f"tps:{i}"))
             gen_tps = _opt_float(form.get(f"gen_tps:{i}"))
             score = _opt_int(form.get(f"score:{i}"))
         except ValueError as e:
@@ -1745,6 +1802,13 @@ async def model_write(ident: str, request: Request) -> RedirectResponse:
                 raw_value = form.get(name)
                 if raw_value not in (None, ""):
                     fields[name] = int(raw_value)
+            tokens_per_second = form.get("tokens_per_second")
+            if tokens_per_second not in (None, ""):
+                fields["tokens_per_second"] = float(tokens_per_second)
+            # Every quota field left blank means "no cap on that one" - the
+            # whole dict is replaced, not merged, same as every other field
+            # here, so clearing a field in the form actually clears it.
+            fields["quotas"] = _parse_quota_fields(form)
             fields["vision"] = "vision" in form
             settings_write.set_model_fields(provider, model, fields)
             state_dir = _live_router()._cfg.state_dir
@@ -1873,6 +1937,9 @@ async def buckets_add_model(bucket: str, request: Request) -> RedirectResponse:
         tokens_per_second = form.get("tokens_per_second")
         if tokens_per_second:
             fields["tokens_per_second"] = float(tokens_per_second)
+        quotas = _parse_quota_fields(form)
+        if quotas:
+            fields["quotas"] = quotas
         if "vision" in form:
             fields["vision"] = True
         ov.add_model(bucket, fields)
@@ -2041,6 +2108,12 @@ async def provider_add_model(provider: str, request: Request) -> RedirectRespons
         context_window = form.get("context_window")
         if context_window:
             fields["context_window"] = int(context_window)
+        tokens_per_second = form.get("tokens_per_second")
+        if tokens_per_second:
+            fields["tokens_per_second"] = float(tokens_per_second)
+        quotas = _parse_quota_fields(form)
+        if quotas:
+            fields["quotas"] = quotas
         if "vision" in form:
             fields["vision"] = True
         ov.add_model(bucket, fields)
@@ -2264,8 +2337,9 @@ async def provider_key_edit(provider: str, key_id: str,
     dest = f"/providers/{quote(provider, safe=':')}"
     try:
         weight = int(form.get("weight") or 1)
+        quotas = _parse_quota_fields(form)
     except (TypeError, ValueError):
-        return _redirect_with_message(dest, ok=False, message="weight must be a number")
+        return _redirect_with_message(dest, ok=False, message="weight and caps must be numbers")
     updated = keystore.update_key(
         provider, key_id,
         label=(form.get("label") or "").strip(),
@@ -2276,6 +2350,7 @@ async def provider_key_edit(provider: str, key_id: str,
         # truthiness (not key-presence) so that the test client can send
         # an empty string to simulate an unchecked box.
         enabled=bool(form.get("enabled")),
+        quotas=quotas,
     )
     if updated is None:
         return _redirect_with_message(dest, ok=False, message="that key is no longer there")

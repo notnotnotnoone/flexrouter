@@ -58,6 +58,23 @@ class QuotaTracker:
     def _key(provider: str, model: str) -> str:
         return f"{provider}/{model}"
 
+    # A key's own rps/rph/rpd/tps/tph/tpd cap (KeyRecord.quotas) is tracked
+    # in the same store, under a namespace no real model name can collide
+    # with, so it gets identical window logic without a second tracker.
+    @staticmethod
+    def _key_ns(key_id: str) -> str:
+        return f"__key__:{key_id}"
+
+    def key_is_available(self, provider: str, key_id: str, quotas: dict[str, int]) -> bool:
+        return self.is_available(provider, self._key_ns(key_id), quotas)
+
+    def key_seconds_until_available(self, provider: str, key_id: str,
+                                     quotas: dict[str, int]) -> float:
+        return self.seconds_until_available(provider, self._key_ns(key_id), quotas)
+
+    def record_key(self, provider: str, key_id: str, tokens: int = 0) -> None:
+        self.record(provider, self._key_ns(key_id), tokens)
+
     def record(self, provider: str, model: str, tokens: int = 0) -> None:
         key = self._key(provider, model)
         now = time.time()

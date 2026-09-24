@@ -29,7 +29,7 @@ from flexrouter.recovery import PenaltyBox
 from flexrouter.redact import scrub
 from flexrouter.refresh import refresh_config
 from flexrouter.sampler import PassiveSampler
-from flexrouter.scheduler import RoundRobinCounters, pick_key
+from flexrouter.scheduler import RoundRobinCounters, key_quota_ok, pick_key
 from flexrouter.traces import TraceWriter, new_trace_id
 
 logger = logging.getLogger(__name__)
@@ -164,6 +164,7 @@ class LocalRouter:
 
     def _register_known_identifiers(self) -> None:
         """Let error text keep the provider and model names these settings use."""
+        redact.set_enabled(self._cfg.redact_errors)
         names: set[str] = set(self._cfg.providers)
         for models in self._cfg.tiers.values():
             for m in models:
@@ -434,10 +435,67 @@ class LocalRouter:
                 completion_tokens = usage.get("completion_tokens", 0)
                 total_tokens = usage.get("total_tokens", 0)
 
+                # The streaming path (agenerate_stream, below) has always
+                # detected an empty completion and retried the next provider.
+                # This non-streaming path never did: chat() only raises if
+                # choices[0].message.content is *missing*, not if it's an
+                # empty string, so a 200 OK with nothing in it sailed through
+                # as a recorded success and was handed straight to the
+                # caller. Since every OpenAI-compatible client defaults to
+                # stream:false, this was the path most callers actually hit -
+                # the live symptom (empty replies with nothing in the Error
+                # brain to explain them) was this gap, not the streaming one.
+                message = (result.get("choices") or [{}])[0].get("message") or {}
+                content = message.get("content") or ""
+                tool_calls = message.get("tool_calls") or []
+                finish_reason = (result.get("choices") or [{}])[0].get("finish_reason")
+                if not content.strip() and not tool_calls:
+                    empty_detail = (
+                        f"empty response (no content, no tool calls); "
+                        f"finish_reason={finish_reason!r}, usage={usage!r}"
+                    )
+                    logger.warning(
+                        "empty completion, retrying next provider",
+                        extra={
+                            "event": "router.chat.empty_completion",
+                            "provider": route.provider, "model": route.model,
+                            "attempt": attempt + 1, "max_attempts": retries + 1,
+                            "finish_reason": finish_reason,
+                        },
+                    )
+                    self._engine.penalize(route.provider, route.model)
+                    self._events.record(
+                        route.provider, route.model, "server_error",
+                        detail=empty_detail,
+                        penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                    self._audit.log(
+                        tier=tier, provider=route.provider, model=route.model,
+                        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, cost_usd=0.0,
+                        latency_ms=latency_ms, status="empty_response",
+                        request_id=trace_id,
+                    )
+                    self._history.record(self._engine.health_snapshot())
+                    verdict = await self._classify(empty_detail, None, route, trace_id)
+                    if vision and verdict.verdict in ("bad_request", "model_gone") and \
+                            verdict.confidence >= self._error_brain.confidence_threshold:
+                        self._model_facts.record_contradicting_failure(
+                            route.provider, route.model, "vision", trace_id)
+                    attempts.append({"n": attempt + 1, "provider": route.provider,
+                                     "model": route.model, "status": None,
+                                     "provider_message": empty_detail, "key_id": key_id,
+                                     "verdict": verdict.verdict,
+                                     "ms": int((time.monotonic() - start) * 1000)})
+                    if attempt == retries:
+                        _write_trace(ok=False)
+                        raise RouterBusy(f"All retries exhausted for tier {tier!r}")
+                    await asyncio.sleep(backoff)
+                    continue
+
                 self._engine.record_request(route.provider, route.model, total_tokens)
                 self._quota_tracker.record(route.provider, route.model, total_tokens)
                 if key_id is not None:
                     self._key_states.mark_success(route.provider, key_id, total_tokens, latency_ms)
+                    self._quota_tracker.record_key(route.provider, key_id, total_tokens)
                 self._audit.log(
                     tier=tier,
                     provider=route.provider,
@@ -717,10 +775,13 @@ class LocalRouter:
                 tool_call_order: list[str] = []
                 last_key_by_index: dict[int, str] = {}
                 first_token_at: Optional[float] = None
+                finish_reason: Optional[str] = None
 
                 def _events_for(sc) -> list:
-                    nonlocal has_tool_calls, first_token_at
+                    nonlocal has_tool_calls, first_token_at, finish_reason
                     events: list = []
+                    if sc.finish_reason:
+                        finish_reason = sc.finish_reason
                     if first_token_at is None and (sc.content or sc.reasoning or sc.tool_call_delta):
                         first_token_at = time.monotonic()
                     if sc.content:
@@ -835,6 +896,18 @@ class LocalRouter:
                 # model swap streaming is not allowed to do. That case falls
                 # through to the `any_yielded` branch below instead of retrying.
                 if not full_text and not has_tool_calls:
+                    # The real diagnosis, not just the fact of emptiness: a
+                    # `length` finish_reason with completion_tokens pinned at
+                    # (or near) the request's max_tokens means the model spent
+                    # its whole budget on reasoning and never reached an
+                    # answer — a caller-side budget problem, not a provider
+                    # fault. `content_filter` means the provider blocked it.
+                    # Both used to collapse into the same generic string,
+                    # which is why the Error brain could never say why.
+                    empty_detail = (
+                        f"empty response (no content, no tool calls); "
+                        f"finish_reason={finish_reason!r}, usage={final_usage!r}"
+                    )
                     if any_yielded:
                         logger.warning(
                             "empty completion after partial output, failing "
@@ -854,7 +927,7 @@ class LocalRouter:
                         self._engine.penalize(route.provider, route.model)
                         self._events.record(
                             route.provider, route.model, "server_error",
-                            detail="empty response after partial output (no content, no tool calls)",
+                            detail="empty response after partial output - " + empty_detail,
                             penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
                         self._audit.log(
                             tier=tier, provider=route.provider, model=route.model,
@@ -874,8 +947,8 @@ class LocalRouter:
                                 int((first_token_at - start) * 1000) if first_token_at else None),
                         )
                         raise RouterError(
-                            f"{route.provider}/{route.model}: empty completion "
-                            "after partial output (no content, no tool calls)")
+                            f"{route.provider}/{route.model}: empty completion after partial "
+                            f"output - {empty_detail}")
 
                     logger.warning(
                         "empty completion, retrying next provider",
@@ -888,7 +961,7 @@ class LocalRouter:
                     self._engine.penalize(route.provider, route.model)
                     self._events.record(
                         route.provider, route.model, "server_error",
-                        detail="empty response (no content, no tool calls)",
+                        detail=empty_detail,
                         penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
                     self._audit.log(
                         tier=tier, provider=route.provider, model=route.model,
@@ -897,21 +970,21 @@ class LocalRouter:
                         request_id=trace_id,
                     )
                     self._history.record(self._engine.health_snapshot())
-                    verdict = await self._classify("empty response (no content, no tool calls)", None, route, trace_id)
+                    verdict = await self._classify(empty_detail, None, route, trace_id)
                     if vision and verdict.verdict in ("bad_request", "model_gone") and \
                             verdict.confidence >= self._error_brain.confidence_threshold:
                         self._model_facts.record_contradicting_failure(
                             route.provider, route.model, "vision", trace_id)
                     attempts.append({"n": attempt + 1, "provider": route.provider,
                                      "model": route.model, "status": None,
-                                     "provider_message": "empty response (no content, no tool calls)",
+                                     "provider_message": empty_detail,
                                      "key_id": key_id,
                                      "verdict": verdict.verdict,
                                      "ms": int((time.monotonic() - start) * 1000)})
                     yield AttemptFailedEvent(
                         attempt=attempt + 1, max_attempts=max_attempts,
                         provider=route.provider, model=route.model, reason="provider_error",
-                        detail="empty response (no content, no tool calls)",
+                        detail=empty_detail,
                     )
                     if attempt == retries:
                         _write_trace(ok=False)
@@ -964,6 +1037,7 @@ class LocalRouter:
                 self._quota_tracker.record(route.provider, route.model, total_tokens)
                 if key_id is not None:
                     self._key_states.mark_success(route.provider, key_id, total_tokens, latency_ms)
+                    self._quota_tracker.record_key(route.provider, key_id, total_tokens)
                 self._audit.log(
                     tier=tier,
                     provider=route.provider,
@@ -1070,17 +1144,34 @@ class LocalRouter:
             candidates, route.provider, model_id, provider_cfg.key_strategy,
             self._key_states, self._cfg.key_concurrency_cap,
             counters=self._round_robin if provider_cfg.key_strategy == "round_robin" else None,
+            quota_tracker=self._quota_tracker,
         )
         if chosen is None:
-            if any(allows(r, model_id) and self._key_states.is_available(route.provider, r.id)
-                   for r in candidates):
-                return None, None, True
+            # A key that's allowed and not benched/cooling but still didn't
+            # get picked is blocked by one of two very different things: the
+            # concurrency cap (frees up in seconds, as soon as an in-flight
+            # request on it returns — worth a short poll) or its own quota
+            # (frees up whenever that window rolls over, possibly a whole
+            # day — polling every KEY_BUSY_POLL_SECONDS for that would just
+            # spin). Sort candidates into those two buckets instead of
+            # treating every non-benched key as "busy" the same way.
+            live_allowed = [r for r in candidates
+                            if allows(r, model_id) and self._key_states.is_available(route.provider, r.id)]
+            quota_blocked = [r for r in live_allowed
+                             if not key_quota_ok(self._quota_tracker, route.provider, r)]
+            if len(quota_blocked) < len(live_allowed):
+                return None, None, True  # at least one is only cap-limited
             key_ids = [r.id for r in candidates]
             if self._key_states.all_benched_or_disabled(route.provider, key_ids):
                 self._penalties.quarantine_provider(
                     route.provider, "every configured key is benched")
             else:
                 wait = self._key_states.min_seconds_until_available(route.provider, key_ids)
+                if quota_blocked:
+                    quota_wait = min(
+                        self._quota_tracker.key_seconds_until_available(route.provider, r.id, r.quotas)
+                        for r in quota_blocked)
+                    wait = quota_wait if wait == float("inf") else min(wait, quota_wait)
                 if wait != float("inf"):
                     self._penalties.penalize_short(
                         route.provider, route.model, int(max(wait, 30.0)))

@@ -1,7 +1,18 @@
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
+from flexrouter import redact
 from flexrouter.traces import TraceWriter, new_trace_id
+
+
+@pytest.fixture(autouse=True)
+def _heuristic_redaction_on():
+    """redact_errors defaults to off (2026-09-24) - see test_error_envelope.py."""
+    redact.set_enabled(True)
+    yield
+    redact.set_enabled(False)
 
 
 def test_new_trace_id_has_the_req_prefix():

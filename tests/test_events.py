@@ -1,6 +1,18 @@
 # tests/test_events.py
 import csv
+
+import pytest
+
+from flexrouter import redact
 from flexrouter.events import EventLogger
+
+
+@pytest.fixture(autouse=True)
+def _heuristic_redaction_on():
+    """redact_errors defaults to off (2026-09-24) - see test_error_envelope.py."""
+    redact.set_enabled(True)
+    yield
+    redact.set_enabled(False)
 
 def test_creates_csv_with_headers(tmp_path):
     log = EventLogger(str(tmp_path))

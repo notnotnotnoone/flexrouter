@@ -31,6 +31,13 @@ KINDS = (
 # keys and sums tokens-per-call for the t* keys against the same window.
 _RATE_FIELDS = ("rpm", "tpm", "rph", "rpd", "rps", "tph", "tpd", "tps")
 
+# rps/tps convert from a per-day or per-month allowance into a per-second
+# one, which is legitimately fractional - live-verified against Mistral's
+# published limits (e.g. 500 requests/day -> 2.08 rps once weighted per
+# model). The other rate fields stay whole numbers. Rejecting the AI's
+# correct float here as "not a number" was the bug, not the AI's answer.
+_FRACTIONAL_RATE_FIELDS = frozenset({"rps", "tps"})
+
 # Generation throughput - how many tokens/second the model actually produces
 # once it's running. Separate from `tps` above, which is a provider-enforced
 # *rate limit* (tokens/sec this account is allowed to send), not a speed.
@@ -258,10 +265,11 @@ def parse_answer(text: str) -> ParseResult:
             issues.append(ParseIssue(line=line, reason=err))
             continue
 
-        rate_values: dict[str, Optional[int]] = {}
+        rate_values: dict[str, Optional[float]] = {}
         rate_err = None
         for field in _RATE_FIELDS:
-            value, err = _parse_int_or_none(item[field], field)
+            parser = _parse_float_or_none if field in _FRACTIONAL_RATE_FIELDS else _parse_int_or_none
+            value, err = parser(item[field], field)
             if err:
                 rate_err = err
                 break

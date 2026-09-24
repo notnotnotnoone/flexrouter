@@ -61,6 +61,10 @@ def classify_by_rule(text: str, status: Optional[int]) -> Optional[ErrorVerdict]
     lowered = text.lower()
     if any(s in lowered for s in _TOO_LONG_SUBSTRINGS):
         return ErrorVerdict(verdict="message_too_long", source="rule", confidence=0.9)
+    if "finish_reason='content_filter'" in lowered:
+        # The provider generated nothing on purpose - moderation blocked the
+        # request or the reply, not a transport failure or a flaky model.
+        return ErrorVerdict(verdict="bad_request", source="rule", confidence=0.9)
 
     return None
 

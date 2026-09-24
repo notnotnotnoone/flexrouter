@@ -357,3 +357,44 @@ async def test_stream_chat_raises_on_inband_error_event():
         with pytest.raises(ProviderError, match="tool_use_failed"):
             async for _ in client.stream_chat(ROUTE, MESSAGES):
                 pass
+
+
+GOOGLE_ROUTE = RouteResult(
+    provider="googleai",
+    model="gemini-3.8-flash",
+    api_key="test-key",
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+    tier="low",
+)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_presence_and_frequency_penalty_are_dropped_for_google_ai_studio():
+    # Live-verified: Google AI Studio's OpenAI-compat endpoint hard-400s on
+    # either field ("Invalid JSON payload received. Unknown name
+    # 'frequency_penalty': Cannot find field."), so a caller who set either
+    # one failed on every single Gemini model it was routed to.
+    route = respx.post(
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    ).mock(return_value=httpx.Response(200, json=OK_RESPONSE))
+    async with AsyncClient() as client:
+        await client.chat(GOOGLE_ROUTE, MESSAGES, presence_penalty=0.5, frequency_penalty=0.2,
+                          temperature=0.7)
+    sent = __import__("json").loads(route.calls.last.request.content)
+    assert "presence_penalty" not in sent
+    assert "frequency_penalty" not in sent
+    assert sent["temperature"] == 0.7  # an unrelated param is untouched
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_presence_and_frequency_penalty_are_kept_for_other_providers():
+    route = respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=OK_RESPONSE)
+    )
+    async with AsyncClient() as client:
+        await client.chat(ROUTE, MESSAGES, presence_penalty=0.5, frequency_penalty=0.2)
+    sent = __import__("json").loads(route.calls.last.request.content)
+    assert sent["presence_penalty"] == 0.5
+    assert sent["frequency_penalty"] == 0.2

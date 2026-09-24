@@ -1,10 +1,20 @@
 # tests/test_trace_e2e.py
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
+from flexrouter import redact
 from flexrouter.app import create_app
 from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig
+
+
+@pytest.fixture(autouse=True)
+def _heuristic_redaction_on():
+    """redact_errors defaults to off (2026-09-24) - see test_error_envelope.py."""
+    redact.set_enabled(True)
+    yield
+    redact.set_enabled(False)
 
 
 def _cfg(tmp_path):
@@ -14,6 +24,10 @@ def _cfg(tmp_path):
         providers={"alpha": ProviderConfig(base_url="https://alpha.test/v1",
                                            api_keys=["sk-live-not-a-real-key-ABCDEFGH"])},
         state_dir=str(tmp_path / "state"),
+        # The fixture's set_enabled(True) gets overwritten the moment the
+        # router builds (LocalRouter._register_known_identifiers reads
+        # cfg.redact_errors), so it has to be set here too.
+        redact_errors=True,
     )
 
 

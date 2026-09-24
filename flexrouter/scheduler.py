@@ -62,6 +62,13 @@ def _weighted(live: list[KeyRecord], provider: str, states: KeyStateStore) -> Ke
     return random.choices(live, weights=weights, k=1)[0]
 
 
+def key_quota_ok(quota_tracker, provider: str, r: KeyRecord) -> bool:
+    """Whether `r`'s own rps/rph/rpd/tps/tph/tpd cap (if any) still has
+    headroom. No quota_tracker or no quotas set both mean "no cap"."""
+    return quota_tracker is None or not r.quotas or \
+        quota_tracker.key_is_available(provider, r.id, r.quotas)
+
+
 def pick_key(
     candidates: list[KeyRecord],
     provider: str,
@@ -71,12 +78,14 @@ def pick_key(
     cap: int,
     now: Optional[float] = None,
     counters: Optional[RoundRobinCounters] = None,
+    quota_tracker=None,
 ) -> Optional[KeyRecord]:
     live = [
         r for r in candidates
         if allows(r, model_id)
         and states.is_available(provider, r.id, now=now)
         and states.get(provider, r.id).active_requests < cap
+        and key_quota_ok(quota_tracker, provider, r)
     ]
     if not live:
         return None

@@ -59,6 +59,13 @@ META: dict[str, tuple[str, str, str, str, bool]] = {
                                    "Status codes where a rule is only a first guess.", False),
     "error_max_length": ("Error brain", "Longest error kept", "characters",
                          "Provider messages are cut to this length.", False),
+    "redact_errors": ("Error brain", "Redact error text", "",
+                      "Off by default: error text is shown exactly as the provider sent it, "
+                      "including full model names. On, a heuristic also blanks anything shaped "
+                      "like a credential (16+ letters/digits/-/./, in a row) wherever it appears "
+                      "in an error - which can catch a provider/model name that isn't registered "
+                      "yet along with it. A key flexrouter itself holds is masked either way.",
+                      False),
     "health_history_days": ("History", "Keep health history for", "days", "", False),
     "sample_interval_seconds": ("History", "Health sample every", "seconds", "", False),
     "session_ttl_minutes": ("History", "Session lasts", "minutes",

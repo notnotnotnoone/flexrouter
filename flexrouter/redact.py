@@ -300,6 +300,26 @@ def set_known_identifiers(names) -> None:
 
 _secrets: tuple[str, ...] = ()
 
+# Off by default (2026-09-24): Rule A's blind "16+ token characters is a
+# credential" heuristic has no way to tell a provider/model identifier apart
+# from an actual secret, and catches one whenever it isn't already in
+# `_known` - which an id discovered or scored after the last reload never
+# is. That turned "googleai/gemini-3.8-flash" into "...lash" in stored
+# errors, with no way to get the real name back. Exact-known-secret
+# replacement (the `_secrets` loop below) is unaffected by this flag and
+# always runs: it only ever matches a credential flexrouter itself holds,
+# character for character, so it has no false-positive cost to weigh
+# against - unlike the heuristic rules, which are what this flag gates.
+_enabled = False
+
+
+def set_enabled(value: bool) -> None:
+    """Point the heuristic redaction rules (Rule A, Rule B, the cue-word
+    window) at a configured on/off value. Called from router startup and on
+    reload, like set_max_length and set_known_identifiers."""
+    global _enabled
+    _enabled = bool(value)
+
 
 def set_known_secrets(secrets) -> None:
     """Every credential flexrouter holds, for scrub_body. Longest first, so a
@@ -312,17 +332,20 @@ def scrub_body(text: str) -> str:
     """A provider's whole response body, readable, minus every credential.
 
     A provider can only echo back a key flexrouter sent it, and every key
-    flexrouter sends is one of `_secrets`, so those are masked exactly. Rule
-    B still runs as a backstop for a value right after a cue word. Rule A's
-    blind cut of every 16-character run does not: in a response body it
-    mostly destroys error codes ("INVALID_ARGUMENT", "labs_not_enabled"),
-    which are the part worth reading. ADR 0017.
+    flexrouter sends is one of `_secrets`, so those are masked exactly,
+    always. Rule B (the heuristic backstop for a value right after a cue
+    word) only runs when `set_enabled(True)` has been called. Rule A's
+    blind cut of every 16-character run never runs here regardless: in a
+    response body it mostly destroys error codes ("INVALID_ARGUMENT",
+    "labs_not_enabled"), which are the part worth reading. ADR 0017.
     """
     if not text:
         return text
     for secret in _secrets:
         if secret in text:
             text = text.replace(secret, _tail(secret))
+    if not _enabled:
+        return text
     text, kept = _shield(text)
     return _unshield(_scrub_cued(text), kept)
 
@@ -350,8 +373,21 @@ def _unshield(text: str, kept: list[str]) -> str:
 
 
 def scrub(text: str) -> str:
-    """The same text with anything that could be a credential cut to a tail."""
+    """The same text with anything that could be a credential cut to a tail.
+
+    Unlike scrub_body, this has no response body to pull an exact `_secrets`
+    match from a fixed list against - it runs on flexrouter's own generated
+    text (`str(exc)`, an event's detail), which is why it leans on the
+    heuristic rules instead. Those only run when `set_enabled(True)` has
+    been called; a known secret is still matched exactly and replaced
+    either way, same as scrub_body.
+    """
     if not text:
+        return text
+    if not _enabled:
+        for secret in _secrets:
+            if secret in text:
+                text = text.replace(secret, _tail(secret))
         return text
     text, kept = _shield(text)
 

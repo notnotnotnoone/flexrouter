@@ -24,6 +24,11 @@ class KeyRecord:
     allow_models: list[str] = field(default_factory=lambda: ["*"])
     enabled: bool = True
     source: str = "keys"  # keys | env | inline
+    # rps/rph/rpd/tps/tph/tpd caps on this one key, on top of whatever the
+    # model it's used for already limits - e.g. a provider that gives each
+    # key its own 500 req/day allowance regardless of which model it calls.
+    # {} means no cap beyond the model's own (flexrouter/quota.py).
+    quotas: dict[str, int] = field(default_factory=dict)
 
     def public(self) -> dict:
         """Everything about this key except the secret itself."""
@@ -69,6 +74,7 @@ def load_keys(path: Path | str | None = None) -> dict[str, list[KeyRecord]]:
                 allow_models=list(e.get("allow_models") or ["*"]),
                 enabled=bool(e.get("enabled", True)),
                 source=e.get("source", "keys"),
+                quotas=dict(e.get("quotas") or {}),
             ))
         out[provider] = records
     return out
@@ -128,6 +134,7 @@ def update_key(provider: str, key_id: str, *,
                weight: int | None = None,
                allow_models: list[str] | None = None,
                enabled: bool | None = None,
+               quotas: dict[str, int] | None = None,
                path: Path | str | None = None) -> KeyRecord | None:
     """Change what a key is *for*, never what it is.
 
@@ -156,6 +163,8 @@ def update_key(provider: str, key_id: str, *,
             record.allow_models = list(allow_models) or ["*"]
         if enabled is not None:
             record.enabled = bool(enabled)
+        if quotas is not None:
+            record.quotas = dict(quotas)
         save_keys(mapping, path)
         return record
     return None
