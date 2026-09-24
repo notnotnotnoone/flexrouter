@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import time
+from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request
@@ -19,14 +20,15 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from flexrouter import keys as keystore
 from flexrouter import log_setup
 from flexrouter import overrides as ov
+from flexrouter import parked_models
 from flexrouter import presets
 from flexrouter import rate_limit_facts
 from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.probe import probe_key
 from flexrouter import score_facts
 from flexrouter import service_keys
-from flexrouter.dashboard import (facts, keytest, overview, pending_actions,
-                                  ranking, settings_write, ui)
+from flexrouter.dashboard import (add_models, facts, keytest, overview,
+                                  pending_actions, ranking, settings_write, ui)
 from flexrouter.dashboard import allowance_page as allowance_page_mod
 from dataclasses import asdict
 
@@ -583,6 +585,18 @@ def _models_body(router, banner: str = "") -> str:
         else tag("p", "No disabled models.", cls="note")
     )
 
+    parked = parked_models.all(router._cfg.state_dir)
+    parked_rows = "".join(tag("tr", "".join([
+        tag("td", esc(p.get("provider"))),
+        tag("td", esc(p.get("model"))),
+        tag("td", esc(p.get("kind"))),
+    ])) for p in parked)
+    parked_section = (
+        tag("table", tag("tr", "".join(tag("th", h) for h in ["Provider", "Model", "Kind"]))
+            + parked_rows)
+        if parked else tag("p", "Nothing parked.", cls="note")
+    )
+
     n_pending = sum(len(b.get(kind) or []) for b in pending.values() if isinstance(b, dict)
                     for kind in ("appeared", "vanished", "changed"))
     status = f"{len(rows_data)} models in use · {len(disabled)} disabled"
@@ -594,7 +608,9 @@ def _models_body(router, banner: str = "") -> str:
                + tag("div", ui.button("Rank models with an AI", href="/models/rank",
                                       icon_name="brain")
                      + ui.button("Get rate limits with an AI", href="/models/rate-limits",
-                                icon_name="gauge"), cls="page-actions"),
+                                icon_name="gauge")
+                     + ui.button("Add models with AI", href="/models/add-with-ai",
+                                icon_name="plus"), cls="page-actions"),
                cls="page-head")
     legend = tag("div", tag("span", "Tag styles say where a fact came from:")
                  + "".join(tag("span", tag("span", label, cls=f"cap cap-{kind}") + esc(meaning),
@@ -610,7 +626,8 @@ def _models_body(router, banner: str = "") -> str:
                tag("p", "What the last catalogue check found. Accepting a new model adds it "
                         "to the bucket you choose; accepting a vanished one disables it; "
                         "accepting a changed field applies the provider's new value.",
-                   cls="note") + _pending_body(pending, bucket_names),
+                   cls="note") + _import_all_form(bucket_names)
+               + _pending_body(pending, bucket_names),
                cls="tray" + (" has-items" if n_pending else ""),
                id="pending", **{"data-enter": ""})
         if discovery_on else ""
@@ -620,6 +637,12 @@ def _models_body(router, banner: str = "") -> str:
         + tag("div", tag("div", table, cls="scroll"), cls="box flush", **{"data-enter": ""})
         + legend
         + ui.box("Disabled models", disabled_section, **{"data-enter": ""})
+        + ui.box("Saved, not routable yet",
+                 tag("p", "Models 'Add models with AI' learned about that aren't chat "
+                          "models - flexrouter only ever routes chat requests, so these "
+                          "can never go in a bucket, but their fields are kept here.",
+                     cls="note") + parked_section,
+                 cls="tray" + (" has-items" if parked else ""), **{"data-enter": ""})
         + pending_tray
     )
 
@@ -808,6 +831,150 @@ def _rate_limits_proposal_body(changes: list, skipped_manual: list) -> str:
         + skipped_note
         + body
     )
+
+
+def _add_with_ai_step1_form(providers: list[str], provider: str, notes: str) -> str:
+    opts = [tag("option", "choose a provider", value="")]
+    opts += [
+        tag("option", esc(p), value=esc(p), **({"selected": True} if p == provider else {}))
+        for p in providers
+    ]
+    picker = f"<select{attrs({'name': 'provider'})}>{''.join(opts)}</select>"
+    return tag(
+        "form",
+        _field("Provider", picker)
+        + _field("Docs or model list (optional)",
+                 _textarea(esc(notes), name="notes", rows="6",
+                          placeholder="paste provider docs or a model list here (optional)"))
+        + tag("button", "Build prompt", type="submit"),
+        method="get", action="/models/add-with-ai", cls="grouped-form",
+    )
+
+
+def _add_with_ai_body(providers: list[str], provider: str, notes: str, prompt: str,
+                      error: str = "") -> str:
+    parts = [
+        tag("h1", "Add models with AI", cls="page-title"),
+        tag("p", "Builds a ready-made prompt naming one provider and whatever it already "
+                 "has configured, plus any docs or model list you paste in. Send it "
+                 "yourself, or copy it into whatever chat you're already in, then paste "
+                 "the answer back below. Nothing is applied until you've reviewed every "
+                 "row on the next page and say so.", cls="lede"),
+    ]
+    if error:
+        parts.append(tag("p", esc(error), cls="state-bad"))
+    parts.append(tag("h3", "1. Choose a provider"))
+    parts.append(_add_with_ai_step1_form(providers, provider, notes))
+    if prompt:
+        parts.append(tag("h3", "2. The prompt - copy this"))
+        parts.append(_textarea(esc(prompt), rows="16", readonly=True, id="add-ai-prompt"))
+        parts.append(ui.button("Copy prompt", icon_name="check", **{"data-copy": "#add-ai-prompt"}))
+        parts.append(tag("h3", "3. Paste the answer back"))
+        parts.append(tag(
+            "form",
+            _input(type="hidden", name="provider", value=esc(provider))
+            + _textarea("", name="answer", rows="10",
+                       placeholder="paste the AI's reply here, one line per model: provider | "
+                                   "model | kind | context | rpm | tpm | vision | free | score")
+            + " " + tag("button", "Show what would be added", type="submit"),
+            method="post", action="/models/add-with-ai/review",
+        ))
+    return "".join(parts)
+
+
+def _add_with_ai_row_html(i: int, row, bucket_names: list, is_update: bool, old) -> str:
+    """One editable review row. `old` is the existing `ModelRow` (chat) or
+    parked-models entry (anything else) when `is_update`, else None."""
+    def _txt(field: str, value) -> str:
+        shown = "none" if value is None else str(value)
+        return _input(type="text", name=f"{field}:{i}", value=esc(shown))
+
+    def _chk(field: str, checked: bool) -> str:
+        return _input(type="checkbox", name=f"{field}:{i}",
+                      **({"checked": True} if checked else {}))
+
+    kind_opts = "".join(
+        tag("option", k, value=k, **({"selected": True} if k == row.kind else {}))
+        for k in add_models.KINDS)
+    kind_select = f"<select{attrs({'name': f'kind:{i}'})}>{kind_opts}</select>"
+
+    bucket_cell = ""
+    if row.kind == "chat":
+        default_bucket = ""
+        if is_update and old is not None and getattr(old, "buckets", None):
+            default_bucket = old.buckets[0]
+        elif bucket_names:
+            default_bucket = bucket_names[0]
+        bopts = "".join(
+            tag("option", esc(b), value=esc(b),
+                **({"selected": True} if b == default_bucket else {}))
+            for b in bucket_names)
+        bucket_cell = f"<select{attrs({'name': f'bucket:{i}'})}>{bopts}</select>"
+
+    status = tag("span", "update" if is_update else "new", cls="tag")
+    if is_update and old is not None:
+        if row.kind == "chat":
+            old_ctx = old.learned_context or old.context_window
+            detail = (f"was: context {old_ctx}, rpm {old.rpm}, tpm {old.tpm}, "
+                      f"score {old.score}")
+        else:
+            detail = (f"was: context {old.get('context')}, rpm {old.get('rpm')}, "
+                      f"tpm {old.get('tpm')}, score {old.get('score')}")
+        status += tag("div", esc(detail), cls="dim")
+
+    cells = [
+        tag("td", _chk("apply", True)),
+        tag("td", status),
+        tag("td", _txt("provider", row.provider)),
+        tag("td", _txt("model", row.model)),
+        tag("td", kind_select),
+        tag("td", _txt("context", row.context)),
+        tag("td", _txt("rpm", row.rpm)),
+        tag("td", _txt("tpm", row.tpm)),
+        tag("td", _chk("vision", row.vision)),
+        tag("td", _chk("free", row.free)),
+        tag("td", _txt("score", row.score)),
+        tag("td", bucket_cell),
+    ]
+    return tag("tr", "".join(cells))
+
+
+def _add_with_ai_review_body(rows_info: list, issues: list, bucket_names: list) -> str:
+    parts = [
+        tag("h1", "Review what to add", cls="page-title"),
+        tag("p", "Nothing here is applied until you press the button below. Every cell "
+                 "is editable - fix anything the AI got wrong before applying it. Uncheck "
+                 "any row you don't want.", cls="lede"),
+    ]
+    if rows_info:
+        header = tag("tr", "".join(tag("th", h) for h in [
+            "Apply", "Status", "Provider", "Model", "Kind", "Context", "RPM", "TPM",
+            "Vision", "Free", "Score", "Bucket",
+        ]))
+        body_rows = "".join(
+            _add_with_ai_row_html(i, row, bucket_names, is_update, old)
+            for i, row, is_update, old in rows_info)
+        table = tag("div", tag("table", header + body_rows, cls="matrix"), cls="scroll")
+        parts.append(tag(
+            "form",
+            _input(type="hidden", name="row_count", value=str(len(rows_info)))
+            + table
+            + tag("button", "Apply checked rows", type="submit"),
+            method="post", action="/models/add-with-ai/apply",
+        ))
+    else:
+        parts.append(tag("p", "Nothing parsed from that answer.", cls="note"))
+
+    if issues:
+        items = "".join(
+            tag("li", tag("code", esc(issue.line)) + " - " + esc(issue.reason))
+            for issue in issues)
+        parts.append(ui.box(
+            f"{len(issues)} line(s) could not be read",
+            tag("p", "Never silently dropped - fix these in the AI's answer and paste "
+                     "it back in, or ignore them.", cls="note") + tag("ul", items)))
+
+    return "".join(parts)
 
 
 def _add_model_form(bucket: str) -> str:
@@ -1329,6 +1496,168 @@ async def models_import_all(request: Request) -> RedirectResponse:
               f"model(s) into {bucket!r}" if count else
               "Checked every provider with a valid key - nothing new to import")
     return _redirect_with_message("/models", ok=True, message=message)
+
+
+def _opt_int(raw) -> Optional[int]:
+    """`context`/`rpm`/`tpm`/`score` from the review form: blank or "none"
+    (any case) means "not known", same as add_models.parse_answer treats
+    the pasted answer. Raises ValueError for anything else unparseable, so
+    a bad hand-edit is reported per-row rather than silently ignored."""
+    s = (raw or "").strip()
+    if not s or s.lower() == "none":
+        return None
+    return int(s)
+
+
+@pages.get("/models/add-with-ai", response_class=HTMLResponse, include_in_schema=False)
+def models_add_with_ai_page(provider: str = "", notes: str = "") -> HTMLResponse:
+    router = _live_router()
+    providers = add_models.providers_with_keys(router)
+    prompt = ""
+    error = ""
+    if provider:
+        if provider not in providers:
+            error = f"{provider!r} has no key configured here, so there is nothing to ask about."
+        else:
+            existing = sorted({r.model for r in facts.models(router) if r.provider == provider})
+            prompt = add_models.build_prompt(provider, existing, notes)
+    return HTMLResponse(page("Add models with AI", "models",
+                             _add_with_ai_body(providers, provider, notes, prompt, error)))
+
+
+@pages.post("/models/add-with-ai/review", response_class=HTMLResponse, include_in_schema=False)
+async def models_add_with_ai_review(request: Request) -> HTMLResponse:
+    form = await request.form()
+    answer = form.get("answer") or ""
+    router = _live_router()
+    state_dir = router._cfg.state_dir
+    bucket_names = list(router._cfg.tiers)
+
+    result = add_models.parse_answer(answer)
+    existing_chat = {f"{r.provider}/{r.model}": r for r in facts.models(router)}
+
+    rows_info = []
+    for i, row in enumerate(result.rows):
+        ident = f"{row.provider}/{row.model}"
+        if row.kind == "chat":
+            old = existing_chat.get(ident)
+        else:
+            old = parked_models.get(state_dir, row.provider, row.model)
+        rows_info.append((i, row, old is not None, old))
+
+    return HTMLResponse(page("Add models with AI", "models",
+                             _add_with_ai_review_body(rows_info, result.issues, bucket_names)))
+
+
+@pages.post("/models/add-with-ai/apply", include_in_schema=False)
+async def models_add_with_ai_apply(request: Request) -> RedirectResponse:
+    form = await request.form()
+    router = _live_router()
+    state_dir = router._cfg.state_dir
+    try:
+        count = int(form.get("row_count") or 0)
+    except ValueError:
+        count = 0
+
+    existing_chat = {f"{r.provider}/{r.model}" for r in facts.models(router)}
+
+    added = updated = parked = 0
+    errors: list[str] = []
+    for i in range(count):
+        if not form.get(f"apply:{i}"):
+            continue
+        provider = (form.get(f"provider:{i}") or "").strip()
+        model = (form.get(f"model:{i}") or "").strip()
+        kind = (form.get(f"kind:{i}") or "").strip().lower()
+        ident = f"{provider}/{model}"
+        try:
+            if not provider or not model:
+                raise ValueError("provider and model are required")
+            if kind not in add_models.KINDS:
+                raise ValueError(f"unknown kind {kind!r}")
+            context = _opt_int(form.get(f"context:{i}"))
+            rpm = _opt_int(form.get(f"rpm:{i}"))
+            tpm = _opt_int(form.get(f"tpm:{i}"))
+            score = _opt_int(form.get(f"score:{i}"))
+        except ValueError as e:
+            errors.append(f"{ident}: {e}")
+            continue
+        vision = bool(form.get(f"vision:{i}"))
+        free = bool(form.get(f"free:{i}"))
+
+        if kind == "chat":
+            if ident in existing_chat:
+                fields: dict = {"vision": vision}
+                if score is not None:
+                    fields["score"] = score
+                if rpm is not None:
+                    fields["rpm"] = rpm
+                if tpm is not None:
+                    fields["tpm"] = tpm
+                if context is not None:
+                    fields["context_window"] = context
+                if free:
+                    fields["price_in"] = 0
+                    fields["price_out"] = 0
+                try:
+                    settings_write.set_model_fields(provider, model, fields)
+                except ValueError as e:
+                    errors.append(f"{ident}: {e}")
+                    continue
+                updated += 1
+            else:
+                bucket = (form.get(f"bucket:{i}") or "").strip()
+                if not bucket:
+                    errors.append(f"{ident}: choose a bucket")
+                    continue
+                new_fields: dict = {
+                    "provider": provider, "model": model,
+                    "score": score if score is not None else router._cfg.unscored_fallback_score,
+                    "rpm": rpm if rpm is not None else 60,
+                    "tpm": tpm if tpm is not None else 60000,
+                    "vision": vision,
+                }
+                if context is not None:
+                    new_fields["context_window"] = context
+                if free:
+                    new_fields["price_in"] = 0
+                    new_fields["price_out"] = 0
+                try:
+                    ov.add_model(bucket, new_fields)
+                except ValueError as e:
+                    errors.append(f"{ident}: {e}")
+                    continue
+                added += 1
+            if score is not None:
+                score_facts.record(state_dir, provider, model, "ai_paste")
+            if rpm is not None or tpm is not None:
+                rate_limit_facts.record(state_dir, provider, model, "ai_paste")
+        else:
+            # Never bucketed - a non-chat model has nowhere the engine could
+            # ever pick it from (flexrouter/parked_models.py).
+            entry = {
+                "kind": kind, "context": context, "rpm": rpm, "tpm": tpm,
+                "vision": vision, "free": free, "score": score,
+                "price_in": 0 if free else None, "price_out": 0 if free else None,
+                "source": "ai_paste",
+            }
+            was_update = parked_models.add(state_dir, provider, model, entry)
+            if was_update:
+                updated += 1
+            else:
+                parked += 1
+
+    bits = []
+    if added:
+        bits.append(f"{added} added")
+    if updated:
+        bits.append(f"{updated} updated")
+    if parked:
+        bits.append(f"{parked} saved (not routable yet)")
+    if errors:
+        bits.append(f"{len(errors)} skipped - {'; '.join(errors)}")
+    message = ", ".join(bits) if bits else "nothing was checked"
+    return _redirect_with_message("/models", ok=bool(added or updated or parked), message=message)
 
 
 @pages.post("/models/{ident:path}", include_in_schema=False)

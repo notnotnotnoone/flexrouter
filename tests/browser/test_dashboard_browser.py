@@ -118,3 +118,32 @@ def test_the_playground_shows_the_message_it_sends(page, server):
     page.fill("#pg-input", "hello")
     page.keyboard.press("Enter")
     expect(page.locator(".pg-user .pg-text")).to_have_text("hello")
+
+
+def test_add_with_ai_builds_a_prompt_and_the_copy_button_works(page, server, errors):
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+    page.goto(server + "/models")
+    page.click("text=Add models with AI")
+    expect(page).to_have_url(server + "/models/add-with-ai")
+    page.select_option("select[name=provider]", "groq")
+    page.click("button:has-text('Build prompt')")
+    expect(page.locator("#add-ai-prompt")).to_be_visible()
+    page.click("[data-copy='#add-ai-prompt']")
+    expect(page.locator(".toast")).to_contain_text("Copied")
+    copied = page.evaluate("navigator.clipboard.readText()")
+    assert "groq" in copied
+    assert errors == []
+
+
+def test_add_with_ai_review_lets_you_edit_and_apply_a_row(page, server, errors):
+    page.goto(server + "/models/add-with-ai")
+    page.select_option("select[name=provider]", "groq")
+    page.click("button:has-text('Build prompt')")
+    page.fill("textarea[name=answer]",
+              "groq | new-model-x | chat | 8192 | 30 | 6000 | no | yes | 70")
+    page.click("button:has-text('Show what would be added')")
+    expect(page.locator("input[name='model:0']")).to_have_value("new-model-x")
+    page.click("button:has-text('Apply checked rows')")
+    expect(page).to_have_url(server + "/models?ok=1&message=1%20added")
+    expect(page.locator("body")).to_contain_text("added")
+    assert errors == []

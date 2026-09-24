@@ -25,7 +25,7 @@ from flexrouter.store import harden, read_json, write_json
 
 @dataclass
 class ScoreSource:
-    source: str  # manual | ai-ranked | aa
+    source: str  # manual | ai-ranked | aa | ai_paste
     at: str
 
 

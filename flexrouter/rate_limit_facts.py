@@ -27,7 +27,7 @@ from flexrouter.store import harden, read_json, write_json
 
 @dataclass
 class RateLimitSource:
-    source: str  # manual | ai-doc
+    source: str  # manual | ai-doc | ai_paste
     at: str
 
 
