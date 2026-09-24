@@ -1586,3 +1586,7 @@ html[data-motion="reduced"] [data-enter] { opacity: 1 !important; transform: non
   .live-dot, .shimmer { animation: none; }
   .box, .btn, button, .nav-marker { transition: none; }
 }
+
+/* Danger zone: destructive resets on the Providers pages. */
+.danger-zone { margin-top: 24px; }
+.danger-zone > * { border-color: rgba(248, 113, 113, .4); }

@@ -18,6 +18,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from flexrouter import keys as keystore
+from flexrouter import model_reset
 from flexrouter import log_setup
 from flexrouter import overrides as ov
 from flexrouter import parked_models
@@ -209,7 +210,32 @@ def _providers_body(router, banner: str = "") -> str:
         + tag("p", "Every provider you've configured, and every key it "
                    "holds. Click a provider for its keys.", cls="lede")
         + tag("div", providers_panel + add_panel + custom_panel, cls="panel-page")
+        + _danger_zone("/providers/reset-all", "the models of every provider", "reset all",
+                       model_reset.preview(router._cfg.state_dir))
     )
+
+
+def _danger_zone(action: str, what: str, phrase: str, counts: dict) -> str:
+    """A reset form that only works once `phrase` is typed exactly
+    (flexrouter/model_reset.py does the work, and backs up first)."""
+    found = (f"{counts.get('models', 0):,} model(s), {counts.get('field_edits', 0):,} "
+             f"field edit(s) and {counts.get('facts', 0):,} learned fact(s) would be deleted.")
+    return tag("div", _panel(
+        "Danger zone",
+        tag("div",
+            tag("p", esc(f"Deletes {what}: models in every bucket, field edits, parked "
+                         "models, scores, rate limits, capability facts, quarantine, "
+                         "penalties and pending suggestions. Keys, providers, settings, "
+                         "buckets and request history are not touched. Every changed file "
+                         "is backed up to state/backups first."), cls="note")
+            + tag("p", esc(found), cls="state-bad")
+            + tag("form",
+                  tag("label", esc(f"Type {phrase} to confirm "))
+                  + f"<input{attrs({'name': 'confirm', 'autocomplete': 'off', 'aria-label': 'Confirmation'})}>"
+                  + " " + tag("button", "Reset models and scores", type="submit", cls="danger"),
+                  method="post", action=action, cls="set-actions"),
+            cls="pb"),
+    ), cls="danger-zone")
 
 
 def _key_fact(label: str, value: object) -> str:
@@ -343,7 +369,7 @@ def _provider_models_line(label: str, models: list) -> str:
 
 
 def _provider_detail_body(detail, editable: dict, bucket_names: list,
-                          banner: str = "") -> str:
+                          banner: str = "", reset_counts: dict | None = None) -> str:
     quarantine_note = (
         tag("p", esc(detail.quarantine_reason), cls="state-bad")
         if detail.quarantined else ""
@@ -398,6 +424,8 @@ def _provider_detail_body(detail, editable: dict, bucket_names: list,
         + tag("div",
               models_panel + add_model_panel + keys_panel + edit_panel,
               cls="panel-page")
+        + _danger_zone(f"/providers/{quote(detail.name, safe=':')}/reset",
+                       f"every {detail.name} model", detail.name, reset_counts or {})
     )
 
 
@@ -1990,7 +2018,9 @@ def provider_detail_page(provider: str, tested: str = "", ok: str = "",
     bucket_names = list(router._cfg.tiers)
     return HTMLResponse(
         page(f"{provider} - Providers & keys", "providers",
-             _provider_detail_body(detail, editable, bucket_names, banner))
+             _provider_detail_body(detail, editable, bucket_names, banner,
+                                   model_reset.preview(router._cfg.state_dir,
+                                                       provider=provider)))
     )
 
 
@@ -2086,6 +2116,37 @@ async def provider_edit(provider: str, request: Request) -> RedirectResponse:
     except ValueError as e:
         return _redirect_with_message(dest, ok=False, message=str(e))
     return _redirect_with_message(dest, ok=True, message="saved")
+
+
+def _reset_models(provider: str | None, dest: str) -> RedirectResponse:
+    router = _live_router()
+    result = model_reset.reset(router._cfg.state_dir, provider=provider)
+    model_reset.forget_live(router, provider)
+    router.reload()
+    c = result.counts
+    message = (f"deleted {c['models']:,} model(s), {c['field_edits']:,} field edit(s) and "
+               f"{c['facts']:,} learned fact(s)"
+               + (f"; backup in {result.backup_dir}" if result.backup_dir else ""))
+    return _redirect_with_message(dest, ok=True, message=message)
+
+
+@pages.post("/providers/reset-all", include_in_schema=False)
+async def providers_reset_all(request: Request) -> RedirectResponse:
+    form = await request.form()
+    if (form.get("confirm") or "").strip() != "reset all":
+        return _redirect_with_message("/providers", ok=False,
+                                      message="Nothing reset: type reset all to confirm")
+    return _reset_models(None, "/providers")
+
+
+@pages.post("/providers/{provider}/reset", include_in_schema=False)
+async def provider_reset(provider: str, request: Request) -> RedirectResponse:
+    form = await request.form()
+    dest = f"/providers/{quote(provider, safe=':')}"
+    if (form.get("confirm") or "").strip() != provider:
+        return _redirect_with_message(dest, ok=False,
+                                      message=f"Nothing reset: type {provider} to confirm")
+    return _reset_models(provider, dest)
 
 
 @pages.post("/providers/{provider}/clear", include_in_schema=False)
