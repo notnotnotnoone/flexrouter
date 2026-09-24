@@ -609,6 +609,7 @@ _SETTINGS_ATTR = {
     "probe_timeout_seconds": "probe_timeout_seconds",
     "error_max_length": "error_max_length",
     "unscored_fallback_score": "unscored_fallback_score",
+    "experimental_model_discovery": "experimental_model_discovery",
 }
 
 # Nested under cfg.decider rather than sitting flat on FlexConfig, so these

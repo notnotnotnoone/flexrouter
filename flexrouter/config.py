@@ -65,6 +65,22 @@ def _price(raw) -> Optional[float]:
     return value if value >= 0 else None
 
 
+def _bool(settings: dict, name: str, default: bool) -> bool:
+    """Read one true/false setting.
+
+    A hand-written settings file gives a native YAML bool; overrides.json
+    (JSON, from the dashboard's checkbox) does too. Either way this stays
+    forgiving the same way `_statuses` is, rather than a bare truthiness
+    test that would read the string "false" as true.
+    """
+    value = settings.get(name, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def _statuses(raw, default: tuple[int, ...]) -> tuple[int, ...]:
     """Accept either a YAML list or a comma-separated string.
 
@@ -128,6 +144,15 @@ class FlexConfig:
     probe_timeout_seconds: float = 15.0
     error_max_length: int = 300
     unscored_fallback_score: int = 50
+    experimental_model_discovery: bool = False
+    """Off by default (2026-09-23): the owner now adds models by hand, and
+    asking every provider's /models endpoint on every startup and on demand
+    is an experimental feature someone opts into, not a given. Every call
+    site that would otherwise probe a provider (the startup catalogue
+    refresh, the dashboard's "check for new models"/discover routes, the
+    `flexrouter refresh` CLI command, and a preset's auto-import after
+    adding a key) reads this before doing so. The discovery code itself is
+    untouched - only gated."""
     retry: RetryConfig = field(default_factory=RetryConfig)
     decider: DeciderConfig = field(default_factory=DeciderConfig)
     provider_budget: dict[str, float] = field(default_factory=dict)
@@ -518,6 +543,7 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
         probe_timeout_seconds=_number(settings, "probe_timeout_seconds", 15.0, float),
         error_max_length=_number(settings, "error_max_length", 300, int),
         unscored_fallback_score=_number(settings, "unscored_fallback_score", 50, int),
+        experimental_model_discovery=_bool(settings, "experimental_model_discovery", False),
         retry=retry,
         decider=decider,
         provider_budget=settings.get("provider_budget", {}),

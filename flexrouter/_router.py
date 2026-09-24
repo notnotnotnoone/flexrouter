@@ -1257,7 +1257,16 @@ class LocalRouter:
         but that meant the refresh never actually ran under uvicorn. A
         thread with no event loop of its own can call `asyncio.run()`
         freely regardless of what the calling thread is doing.
+
+        Skipped entirely unless `experimental_model_discovery` is on
+        (default off, 2026-09-23): the owner now adds models by hand, and
+        calling every configured provider's real /models endpoint on every
+        single startup is not something that should happen without being
+        asked for.
         """
+        if not self._cfg.experimental_model_discovery:
+            return
+
         import concurrent.futures
 
         from flexrouter import service_keys

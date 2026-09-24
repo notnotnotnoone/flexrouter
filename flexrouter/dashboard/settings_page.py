@@ -68,6 +68,9 @@ META: dict[str, tuple[str, str, str, str, bool]] = {
                                 "Used to rank a model nobody has scored yet.", False),
     "dashboard_port": ("Advanced", "Dashboard port (old)", "",
                        "A leftover from when the dashboard had its own port; same as Port.", True),
+    "experimental_model_discovery": (
+        "Advanced", "Experimental: automatic model discovery", "",
+        "Asks each provider's /models endpoint for new models.", False),
 }
 
 
@@ -82,13 +85,25 @@ def _row(f) -> str:
     group, label, unit, help_, restart = META.get(
         f.name, ("Advanced", f.name.replace("_", " ").capitalize(), "", "", False))
     changed = tag("span", "", cls="set-dot", title="changed here") if f.overridden else ""
-    value = _display(f.value)
-    form = tag("form",
-               f'<input type="text" name="value" value="{esc(value)}" '
-               f'aria-label="{esc(label)}" class="set-input">'
-               + (tag("span", esc(unit), cls="set-unit") if unit else "")
-               + tag("button", "Save", type="submit"),
-               method="post", action=f"/settings/{f.name}", cls="set-form")
+    if isinstance(f.value, bool):
+        # A checkbox alone omits itself from the form when unchecked, which
+        # `_cast_setting` would read as "field left blank" rather than
+        # "explicitly turned off". The hidden fallback submits "false" in
+        # that case; when checked, both are sent and the checkbox (which
+        # comes first) wins - see `_cast_setting`'s `_BOOL_SETTINGS` branch.
+        control = (f'<input type="checkbox" name="value" value="true"'
+                   f'{" checked" if f.value else ""} aria-label="{esc(label)}">'
+                   '<input type="hidden" name="value" value="false">')
+        form = tag("form", control + tag("button", "Save", type="submit"),
+                   method="post", action=f"/settings/{f.name}", cls="set-form set-bool")
+    else:
+        value = _display(f.value)
+        form = tag("form",
+                   f'<input type="text" name="value" value="{esc(value)}" '
+                   f'aria-label="{esc(label)}" class="set-input">'
+                   + (tag("span", esc(unit), cls="set-unit") if unit else "")
+                   + tag("button", "Save", type="submit"),
+                   method="post", action=f"/settings/{f.name}", cls="set-form")
     reset = (tag("form", tag("button", "Reset", type="submit", cls="ghost-btn"),
                  method="post", action=f"/settings/{f.name}/clear", cls="set-reset")
              if f.overridden else "")
@@ -225,9 +240,15 @@ def _about(router) -> str:
             ("Data", str(router._cfg.state_dir))]
     table = "".join(tag("div", tag("span", esc(k), cls="stat-label") + tag("code", esc(v)),
                         cls="about-row") for k, v in rows)
-    check = tag("form", tag("button", "Check for new models now", type="submit"),
-                method="post", action="/settings/refresh-models",
-                **{"data-busy": "Checking every provider with a valid key..."})
+    if router._cfg.experimental_model_discovery:
+        check = tag("form", tag("button", "Check for new models now", type="submit"),
+                    method="post", action="/settings/refresh-models",
+                    **{"data-busy": "Checking every provider with a valid key..."})
+        sub = "new models found go to the Models page to accept"
+    else:
+        check = tag("p", "Turn on Experimental: automatic model discovery above to check "
+                         "providers for new models.", cls="set-help")
+        sub = ""
     test_limits = tag("form",
                       tag("button", "Test rate limits for every model", type="submit"),
                       method="post", action="/settings/test-rate-limits", cls="set-actions",
@@ -239,8 +260,7 @@ def _about(router) -> str:
                              "numbers a real request would teach it over time, just immediately "
                              "instead of waiting for traffic. Costs a little quota per model.",
                         cls="note"),
-                  sub="new models found go to the Models page to accept",
-                  id="g-about", **{"data-enter": ""})
+                  sub=sub, id="g-about", **{"data-enter": ""})
 
 
 def body(router, banner: str, service_keys_html: str, shown_password: str = "") -> str:

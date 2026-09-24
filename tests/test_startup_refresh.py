@@ -4,13 +4,37 @@ from flexrouter._router import LocalRouter
 from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig
 
 
-def _cfg(tmp_path):
+def _cfg(tmp_path, experimental_model_discovery=True):
+    # Automatic discovery is opt-in (experimental_model_discovery, off by
+    # default) - every test in this module is specifically about the startup
+    # refresh, so it turns discovery on unless it is testing the off switch
+    # itself.
     return FlexConfig(
         tiers={"smart": [ModelConfig(provider="alpha", model="big", score=99,
                                      rpm=60, tpm=60000, context_window=100_000)]},
         providers={"alpha": ProviderConfig(base_url="https://alpha.test/v1", api_keys=["k"])},
         state_dir=str(tmp_path / "state"),
+        experimental_model_discovery=experimental_model_discovery,
     )
+
+
+def test_startup_skips_refresh_when_discovery_is_off(tmp_path, monkeypatch):
+    monkeypatch.setattr("flexrouter._router.load_config",
+                        lambda _p: _cfg(tmp_path, experimental_model_discovery=False))
+
+    calls = []
+
+    def fake_refresh_config(config_path, state_dir, aa_key=None):
+        calls.append((config_path, state_dir))
+        from flexrouter.refresh import RefreshResult
+        return RefreshResult(timestamp="2026-09-21T00:00:00Z", added=[], removed=[],
+                             changed=[], provider_errors=[], pending_path=None)
+
+    monkeypatch.setattr("flexrouter._router.refresh_config", fake_refresh_config)
+    router = LocalRouter(str(tmp_path / "config.yaml"))
+    router.close()
+
+    assert calls == []
 
 
 def test_startup_calls_refresh_and_writes_catalog_pending(tmp_path, monkeypatch):

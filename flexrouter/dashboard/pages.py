@@ -563,7 +563,8 @@ def _models_body(router, banner: str = "") -> str:
     table = tag("table", tag("thead", header) + tag("tbody", "".join(rows)),
                 cls="models-table", **{"data-sortable": ""})
 
-    pending = facts.pending_catalogue(router)
+    discovery_on = router._cfg.experimental_model_discovery
+    pending = facts.pending_catalogue(router) if discovery_on else {}
     bucket_names = list(router._cfg.tiers)
 
     disabled = facts.disabled_models()
@@ -604,20 +605,22 @@ def _models_body(router, banner: str = "") -> str:
                                ("faded", "guessed", "a guess"),
                                ("underlined", "manual", "set by you")]),
                  cls="note cap-legend")
+    pending_tray = (
+        ui.box("Pending catalogue changes",
+               tag("p", "What the last catalogue check found. Accepting a new model adds it "
+                        "to the bucket you choose; accepting a vanished one disables it; "
+                        "accepting a changed field applies the provider's new value.",
+                   cls="note") + _pending_body(pending, bucket_names),
+               cls="tray" + (" has-items" if n_pending else ""),
+               id="pending", **{"data-enter": ""})
+        if discovery_on else ""
+    )
     return (
         head + banner + filters
         + tag("div", tag("div", table, cls="scroll"), cls="box flush", **{"data-enter": ""})
         + legend
         + ui.box("Disabled models", disabled_section, **{"data-enter": ""})
-        + ui.box("Pending catalogue changes",
-                 tag("p", "What the last catalogue check found. Accepting a new model adds it "
-                          "to the bucket you choose; accepting a vanished one disables it; "
-                          "accepting a changed field applies the provider's new value.",
-                     cls="note")
-                 + _import_all_form(bucket_names)
-                 + _pending_body(pending, bucket_names),
-                 cls="tray" + (" has-items" if n_pending else ""),
-                 id="pending", **{"data-enter": ""})
+        + pending_tray
     )
 
 
@@ -839,6 +842,7 @@ _INT_SETTINGS = frozenset({
 })
 _FLOAT_SETTINGS = frozenset({"backoff_seconds"})
 _JSON_SETTINGS = frozenset({"provider_budget", "hooks"})
+_BOOL_SETTINGS = frozenset({"experimental_model_discovery"})
 
 
 def _cast_setting(field: str, raw_value: str):
@@ -850,6 +854,8 @@ def _cast_setting(field: str, raw_value: str):
         if not raw_value.strip():
             return {} if field == "provider_budget" else []
         return json.loads(raw_value)
+    if field in _BOOL_SETTINGS:
+        return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
     return raw_value
 
 
@@ -1308,6 +1314,11 @@ async def models_import_all(request: Request) -> RedirectResponse:
     if not bucket:
         return _redirect_with_message("/models", ok=False, message="Pick a bucket to import into")
     router = _live_router()
+    if not router._cfg.experimental_model_discovery:
+        return _redirect_with_message(
+            "/models", ok=False,
+            message="Model discovery is off. Turn on experimental_model_discovery "
+                    "in Settings to use it.")
     state_dir = router._cfg.state_dir
     try:
         await asyncio.to_thread(run_refresh, state_dir)
@@ -1509,6 +1520,7 @@ async def providers_add(request: Request) -> RedirectResponse:
 
 @pages.post("/providers/add", include_in_schema=False)
 async def provider_add_from_preset(request: Request) -> RedirectResponse:
+    router = _live_router()
     form = await request.form()
     name = (form.get("name") or "").strip()
     preset = presets.get(name)
@@ -1531,7 +1543,7 @@ async def provider_add_from_preset(request: Request) -> RedirectResponse:
         except (ValueError, OSError) as e:
             return _redirect_with_message(
                 dest, ok=False, message=f"{name} added, but its key failed: {e}")
-    if preset.models_path and secret:
+    if router._cfg.experimental_model_discovery and preset.models_path and secret:
         return RedirectResponse(url=f"{dest}/discover", status_code=303)
     return _redirect_with_message(dest, ok=True, message=f"{name} added")
 
@@ -1664,6 +1676,18 @@ async def provider_discover(provider: str) -> HTMLResponse:
             page("Providers & keys", "providers",
                  tag("h1", "No such provider", cls="page-title") + tag("p", esc(provider))),
             status_code=404)
+    if not router._cfg.experimental_model_discovery:
+        # No network call to the provider: discovery is experimental and off
+        # by default (see FlexConfig.experimental_model_discovery).
+        return HTMLResponse(
+            page(f"{provider} - Providers & keys", "providers",
+                 tag("h1", esc(provider), cls="page-title")
+                 + tag("p", "Model discovery is off. Turn on Experimental: automatic "
+                            "model discovery (experimental_model_discovery) in Settings "
+                            "to ask this provider what it offers.", cls="note")
+                 + tag("p", tag("a", "Back to the provider",
+                                href=f"/providers/{quote(provider, safe=':')}",
+                                cls="button-link"))))
     result = await probe_key(
         pcfg.base_url,
         pcfg.api_keys[0] if pcfg.api_keys else None,
@@ -1903,8 +1927,14 @@ async def settings_reset_all() -> RedirectResponse:
 async def settings_refresh_models() -> RedirectResponse:
     import asyncio
     from flexrouter.dashboard.api import run_refresh
+    router = _live_router()
+    if not router._cfg.experimental_model_discovery:
+        return _redirect_with_message(
+            "/settings", ok=False,
+            message="Model discovery is off. Turn on experimental_model_discovery "
+                    "in Settings to use it.")
     try:
-        await asyncio.to_thread(run_refresh, _live_router()._cfg.state_dir)
+        await asyncio.to_thread(run_refresh, router._cfg.state_dir)
     except Exception as e:  # noqa: BLE001 - report, don't 500
         return _redirect_with_message("/settings", ok=False, message=f"Check failed: {e}")
     return _redirect_with_message("/models", ok=True,

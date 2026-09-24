@@ -3,6 +3,8 @@
 `probe.probe_key` has done the discovery half since Stage 4 and was
 reachable only from the JSON API. These tests are about the page.
 """
+import os
+
 import pytest
 import respx
 import httpx
@@ -10,6 +12,18 @@ from fastapi.testclient import TestClient
 
 from flexrouter.app import create_app
 from flexrouter import keys as keystore, home
+
+
+@pytest.fixture
+def minimal_config(minimal_config):
+    # Automatic discovery is experimental and off by default; every test in
+    # this module is specifically about the "paste a key, see its models"
+    # flow, so it turns discovery on. The off case (no auto-listing at all)
+    # is tests/test_experimental_discovery.py's job and
+    # test_a_preset_is_added_without_listing_models_when_discovery_is_off
+    # below.
+    minimal_config["settings"]["experimental_model_discovery"] = True
+    return minimal_config
 
 
 @pytest.fixture
@@ -67,6 +81,28 @@ def test_a_model_id_from_the_provider_cannot_inject_markup(client):
     body = client.get("/providers/cerebras/discover").text
     assert "<img src=x onerror=alert(1)>" not in body
     assert "&lt;img" in body
+
+
+@respx.mock
+def test_a_preset_is_added_without_listing_models_when_discovery_is_off(tmp_path, minimal_config):
+    """Adding a provider key via a preset must not auto-list its models
+    when experimental_model_discovery is off (the module fixture above turns
+    it on; this test explicitly turns it back off to check the default)."""
+    import yaml
+
+    minimal_config["settings"]["experimental_model_discovery"] = False
+    minimal_config["settings"]["state_dir"] = str(tmp_path / ".flexrouter")
+    p = tmp_path / "flexrouter.yaml"
+    p.write_text(yaml.dump(minimal_config))
+    os.environ["GROQ_API_KEY"] = "test-key"
+    with TestClient(create_app(str(p))) as c:
+        route = respx.get("https://api.cerebras.ai/v1/models").mock(
+            return_value=httpx.Response(200, json=MODELS_BODY))
+        r = c.post("/providers/add", data={"name": "cerebras", "secret": "sk-c"},
+                   follow_redirects=False)
+        assert not route.called
+        assert "/discover" not in r.headers["location"]
+        assert "/providers/cerebras" in r.headers["location"]
 
 
 def test_adding_an_unknown_preset_is_refused(client):

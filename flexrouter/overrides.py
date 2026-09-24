@@ -29,7 +29,7 @@ ALLOWED_FIELDS: dict[str, frozenset[str]] = {
         "decider_confidence_threshold", "decider_rule_prior_confidence",
         "decider_confidence_ceiling", "decider_contested_statuses",
         "quarantine_seconds", "probe_timeout_seconds", "error_max_length",
-        "unscored_fallback_score",
+        "unscored_fallback_score", "experimental_model_discovery",
     }),
     # Not `decider_api_key`: same rule as auth_token. The classifier's key
     # lives in keys.json through service_keys.py, masked like any other.

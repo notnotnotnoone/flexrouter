@@ -35,7 +35,9 @@ def items(router) -> list[dict]:
         {"kind": "action", "label": "Make a new app password", "href": "/settings#g-app-password"},
         {"kind": "action", "label": "Download a settings backup", "href": "/settings/backup",
          "download": True},
-        {"kind": "action", "label": "Check for new models", "href": "/settings#g-about"},
         {"kind": "action", "label": "Rank models with an AI", "href": "/models/rank"},
     ]
+    if router._cfg.experimental_model_discovery:
+        out.append({"kind": "action", "label": "Check for new models",
+                    "href": "/settings#g-about"})
     return out

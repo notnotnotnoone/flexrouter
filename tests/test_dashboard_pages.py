@@ -137,6 +137,10 @@ def test_models_shows_a_quarantined_model_as_gone_and_why(client):
 
 
 def test_pending_catalogue_says_nothing_pending_when_empty(client):
+    # Automatic discovery is experimental and off by default (see
+    # tests/test_experimental_discovery.py for the off-by-default coverage);
+    # the pending tray this asserts on only exists once it is turned on.
+    client.post("/settings/experimental_model_discovery", data={"value": "true"})
     router = app_module.get_router()
     from flexrouter.store import write_json
     write_json(router._cfg.state_dir + "/catalog_pending.json", {})
@@ -145,6 +149,7 @@ def test_pending_catalogue_says_nothing_pending_when_empty(client):
 
 
 def test_pending_catalogue_shows_what_a_refresh_found(client):
+    client.post("/settings/experimental_model_discovery", data={"value": "true"})
     router = app_module.get_router()
     from flexrouter.store import write_json
     write_json(router._cfg.state_dir + "/catalog_pending.json", {
@@ -573,6 +578,9 @@ def test_a_disabled_model_can_be_put_back(client):
 
 
 def test_accept_an_appeared_pending_model(client):
+    # The pending tray this checks is only rendered with discovery on (it is
+    # experimental and off by default) - see tests/test_experimental_discovery.py.
+    client.post("/settings/experimental_model_discovery", data={"value": "true"})
     router = app_module.get_router()
     from flexrouter.store import write_json
     write_json(router._cfg.state_dir + "/catalog_pending.json", {
@@ -588,6 +596,7 @@ def test_accept_an_appeared_pending_model(client):
 
 
 def test_reject_an_appeared_pending_model(client):
+    client.post("/settings/experimental_model_discovery", data={"value": "true"})
     router = app_module.get_router()
     from flexrouter.store import write_json
     write_json(router._cfg.state_dir + "/catalog_pending.json", {
@@ -601,6 +610,7 @@ def test_reject_an_appeared_pending_model(client):
 
 
 def test_accept_a_vanished_pending_model_disables_it(client):
+    client.post("/settings/experimental_model_discovery", data={"value": "true"})
     router = app_module.get_router()
     from flexrouter.store import write_json
     write_json(router._cfg.state_dir + "/catalog_pending.json", {
@@ -613,6 +623,7 @@ def test_accept_a_vanished_pending_model_disables_it(client):
 
 
 def test_accept_a_changed_pending_field(client):
+    client.post("/settings/experimental_model_discovery", data={"value": "true"})
     router = app_module.get_router()
     from flexrouter.store import write_json
     write_json(router._cfg.state_dir + "/catalog_pending.json", {
