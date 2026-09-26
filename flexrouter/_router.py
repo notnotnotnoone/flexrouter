@@ -19,6 +19,7 @@ from flexrouter.engine import RoutingEngine, RouteResult
 from flexrouter.error_brain import ErrorBrain
 from flexrouter.events import EventLogger
 from flexrouter.exceptions import RouterBusy, RouterError
+from flexrouter.failover import Verdict, decide_failover
 from flexrouter.health_history import HealthHistory
 from flexrouter.hooks import HookRunner, HookContext
 from flexrouter.key_state import KeyStateStore
@@ -36,6 +37,11 @@ from flexrouter.traces import TraceWriter, new_trace_id
 logger = logging.getLogger(__name__)
 
 KEY_BUSY_POLL_SECONDS = 0.05
+
+# §2's "stopping at about 30s total": a bucket call tries every model it can
+# reach, not a fixed count, but gives up rather than running forever against
+# a bucket that keeps rotating through models that all fail.
+FAILOVER_BUDGET_SECONDS = 30.0
 
 
 @dataclass
@@ -289,8 +295,10 @@ class LocalRouter:
         vision = ctx.vision
         estimated_tokens = ctx.estimated_tokens
 
-        retries = self._cfg.retry.retries
-        backoff = self._cfg.retry.backoff_seconds
+        # A name with a "/" means one specific model was named, not a bucket
+        # (see _engine_for). §1: naming a model means you want that model -
+        # busy or broken fails immediately, with no fallback to another one.
+        is_pinned = "/" in tier
 
         # A caller (app.py) that already needs this ID for a response header
         # before the call returns passes its own; otherwise one is minted
@@ -304,11 +312,14 @@ class LocalRouter:
             if not s["available"]
         ]
         attempts: list[dict] = []
-        # Time spent asleep (backoff, or waiting for a slot to free up) since
-        # the last attempt, attributed to whichever attempt comes next - so a
-        # caller reading error.flexrouter.attempts[].waited_ms can tell "the
-        # model answered slowly" apart from "the router made us wait first".
+        # Time spent waiting for a slot to free up since the last attempt,
+        # attributed to whichever attempt comes next - so a caller reading
+        # error.flexrouter.attempts[].waited_ms can tell "the model answered
+        # slowly" apart from "the router made us wait first". There is no
+        # more per-attempt backoff sleep to account for here (§2: no
+        # sleeping) - only the wait for bucket capacity below can add to it.
         pending_wait_ms = 0
+        attempt = 0
 
         trace_written = False
 
@@ -339,8 +350,22 @@ class LocalRouter:
         # problem they must fix, the other resolves itself in 30 seconds.
         last_auth_error: RouterError | None = None
 
+        # Total time spent waiting for bucket capacity to free up (the "route
+        # is None" branch below), as opposed to wall-clock time. Real per-call
+        # overhead (config loads, classification, disk writes) must not count
+        # against the ~30s budget - only deliberate waiting does, so a
+        # request that never has to wait can retry every model in the bucket
+        # without an unrelated timing fluke cutting it off early.
+        total_waited_seconds = 0.0
+
         try:
-            for attempt in range(retries + 1):
+            while True:
+                if not is_pinned and total_waited_seconds >= FAILOVER_BUDGET_SECONDS:
+                    _write_trace(ok=False)
+                    raise _tag_attempts(RouterBusy(
+                        f"Tried every model in bucket {tier!r} for "
+                        f"about {int(FAILOVER_BUDGET_SECONDS)}s without success"), attempts)
+
                 route, key_id = await self._route_with_key(tier, estimated_tokens, vision, session_id)
 
                 if route is None:
@@ -351,7 +376,7 @@ class LocalRouter:
                     if blocked:
                         _write_trace(ok=False)
                         raise _tag_attempts(RouterBusy(blocked), attempts)
-                    if not wait:
+                    if is_pinned or not wait:
                         _write_trace(ok=False)
                         raise _tag_attempts(
                             RouterBusy(f"All models in bucket {tier!r} are unavailable"), attempts)
@@ -359,6 +384,7 @@ class LocalRouter:
                     wait_for = max(secs, 1.0)
                     await asyncio.sleep(wait_for)
                     pending_wait_ms += int(wait_for * 1000)
+                    total_waited_seconds += wait_for
                     continue
 
                 waited_ms, pending_wait_ms = pending_wait_ms, 0
@@ -397,12 +423,12 @@ class LocalRouter:
                                      "provider_message": str(exc), "key_id": key_id,
                                      "verdict": verdict.verdict, "waited_ms": waited_ms,
                                      "ms": int((time.monotonic() - start) * 1000)})
-                    if attempt == retries:
+                    attempt += 1
+                    # §1: a pinned model that's busy fails now, with no
+                    # fallback - retrying it would just hit the same 429.
+                    if is_pinned:
                         _write_trace(ok=False)
-                        raise _tag_attempts(
-                            RouterBusy(f"All retries exhausted for bucket {tier!r}"), attempts)
-                    await asyncio.sleep(backoff)
-                    pending_wait_ms += int(backoff * 1000)
+                        raise _tag_attempts(exc, attempts)
                     continue
                 except RouterError as exc:
                     self._handle_auth_failure(route, exc, key_id)
@@ -425,13 +451,12 @@ class LocalRouter:
                                      "provider_message": str(exc), "key_id": key_id,
                                      "verdict": verdict.verdict, "waited_ms": waited_ms,
                                      "ms": int((time.monotonic() - start) * 1000)})
-                    # No backoff: a rejected key won't un-reject in two seconds.
-                    if attempt == retries:
+                    attempt += 1
+                    if is_pinned:
                         _write_trace(ok=False)
                         raise _tag_attempts(exc, attempts)
                     continue
                 except ProviderError as exc:
-                    self._handle_provider_error(route, exc)
                     self._audit.log(
                         tier=tier, provider=route.provider, model=route.model,
                         prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
@@ -450,12 +475,24 @@ class LocalRouter:
                                      "provider_message": str(exc), "key_id": key_id,
                                      "verdict": verdict.verdict, "waited_ms": waited_ms,
                                      "ms": int((time.monotonic() - start) * 1000)})
-                    if attempt == retries:
+                    attempt += 1
+                    if is_pinned:
+                        self._handle_provider_error(route, exc)
                         _write_trace(ok=False)
-                        raise _tag_attempts(
-                            RouterBusy(f"All retries exhausted for bucket {tier!r}"), attempts)
-                    await asyncio.sleep(backoff)
-                    pending_wait_ms += int(backoff * 1000)
+                        raise _tag_attempts(exc, attempts)
+                    action = decide_failover(
+                        exc.status_code,
+                        message_too_long=verdict.verdict == "message_too_long")
+                    if action is Verdict.RETURN:
+                        # A genuinely bad request is the caller's fault, not
+                        # this model's - no penalty, and no more models tried.
+                        _write_trace(ok=False)
+                        raise _tag_attempts(exc, attempts)
+                    self._handle_provider_error(route, exc)
+                    if action is Verdict.NEXT_BIGGER_CONTEXT:
+                        estimated_tokens = max(
+                            estimated_tokens,
+                            self._context_window_of(route.provider, route.model) + 1)
                     continue
                 finally:
                     if key_id is not None:
@@ -491,7 +528,7 @@ class LocalRouter:
                         extra={
                             "event": "router.chat.empty_completion",
                             "provider": route.provider, "model": route.model,
-                            "attempt": attempt + 1, "max_attempts": retries + 1,
+                            "attempt": attempt + 1,
                             "finish_reason": finish_reason,
                         },
                     )
@@ -517,12 +554,11 @@ class LocalRouter:
                                      "provider_message": empty_detail, "key_id": key_id,
                                      "verdict": verdict.verdict, "waited_ms": waited_ms,
                                      "ms": int((time.monotonic() - start) * 1000)})
-                    if attempt == retries:
+                    attempt += 1
+                    if is_pinned:
                         _write_trace(ok=False)
                         raise _tag_attempts(
-                            RouterBusy(f"All retries exhausted for bucket {tier!r}"), attempts)
-                    await asyncio.sleep(backoff)
-                    pending_wait_ms += int(backoff * 1000)
+                            RouterBusy(f"{route.provider}/{route.model}: {empty_detail}"), attempts)
                     continue
 
                 self._engine.record_request(route.provider, route.model, total_tokens)
@@ -551,11 +587,6 @@ class LocalRouter:
                     tokens={"in": prompt_tokens, "out": completion_tokens},
                 )
                 return result
-
-            _write_trace(ok=False)
-            raise _tag_attempts(
-                RouterBusy(f"All models in bucket {tier!r} are unavailable after {retries} retries"),
-                attempts)
         finally:
             # A caller that gives up (a deadline, a closed connection) cancels
             # this mid-wait; the request must still show up as failed.
@@ -579,9 +610,13 @@ class LocalRouter:
         vision = ctx.vision
         estimated_tokens = ctx.estimated_tokens
 
-        retries = self._cfg.retry.retries
-        backoff = self._cfg.retry.backoff_seconds
-        max_attempts = retries + 1
+        is_pinned = "/" in tier
+        # §2: no fixed retry count drives failover any more - a bucket call
+        # tries every model it can reach until it succeeds or the ~30s
+        # budget runs out. max_attempts is kept only as an informational
+        # figure on the events a stream consumer sees (e.g. "attempt 2/4"),
+        # not as a loop bound.
+        max_attempts = self._cfg.retry.retries + 1
 
         trace_id = trace_id or new_trace_id()
         request_started = time.monotonic()
@@ -592,6 +627,10 @@ class LocalRouter:
             if not s["available"]
         ]
         attempts: list[dict] = []
+        attempt = 0
+        # See agenerate()'s identical field: only deliberate waiting for
+        # bucket capacity counts against the ~30s failover budget.
+        total_waited_seconds = 0.0
 
         trace_written = False
 
@@ -619,7 +658,13 @@ class LocalRouter:
             })
 
         try:
-            for attempt in range(retries + 1):
+            while True:
+                if not is_pinned and total_waited_seconds >= FAILOVER_BUDGET_SECONDS:
+                    _write_trace(ok=False)
+                    raise _tag_attempts(RouterBusy(
+                        f"Tried every model in bucket {tier!r} for "
+                        f"about {int(FAILOVER_BUDGET_SECONDS)}s without success"), attempts)
+
                 route, key_id = await self._route_with_key(tier, estimated_tokens, vision, session_id)
 
                 if route is None:
@@ -631,8 +676,14 @@ class LocalRouter:
                     if blocked:
                         _write_trace(ok=False)
                         raise _tag_attempts(RouterBusy(blocked), attempts)
+                    if is_pinned:
+                        _write_trace(ok=False)
+                        raise _tag_attempts(
+                            RouterBusy(f"All models in bucket {tier!r} are unavailable"), attempts)
                     secs = self._engine_for(tier).seconds_until_available(tier)
-                    await asyncio.sleep(max(secs, 1.0))
+                    wait_for = max(secs, 1.0)
+                    await asyncio.sleep(wait_for)
+                    total_waited_seconds += wait_for
                     continue
 
                 yield AttemptEvent(
@@ -684,11 +735,12 @@ class LocalRouter:
                         provider=route.provider, model=route.model, reason="provider_error",
                         detail="empty stream response",
                     )
-                    if attempt == retries:
+                    attempt += 1
+                    if is_pinned:
                         _write_trace(ok=False)
                         raise _tag_attempts(
-                            RouterBusy(f"All retries exhausted for bucket {tier!r}"), attempts)
-                    await asyncio.sleep(backoff)
+                            RouterBusy(f"{route.provider}/{route.model}: empty stream response"),
+                            attempts)
                     continue
                 except RateLimitError as exc:
                     self._engine.penalize(route.provider, route.model)
@@ -724,11 +776,10 @@ class LocalRouter:
                         provider=route.provider, model=route.model, reason="rate_limited",
                         detail=str(exc),
                     )
-                    if attempt == retries:
+                    attempt += 1
+                    if is_pinned:
                         _write_trace(ok=False)
-                        raise _tag_attempts(
-                            RouterBusy(f"All retries exhausted for bucket {tier!r}"), attempts)
-                    await asyncio.sleep(backoff)
+                        raise _tag_attempts(exc, attempts)
                     continue
                 except RouterError as exc:
                     self._handle_auth_failure(route, exc, key_id)
@@ -755,12 +806,12 @@ class LocalRouter:
                         provider=route.provider, model=route.model,
                         reason="provider_error", detail=str(exc),
                     )
-                    if attempt == retries:
+                    attempt += 1
+                    if is_pinned:
                         _write_trace(ok=False)
                         raise _tag_attempts(exc, attempts)
                     continue
                 except ProviderError as exc:
-                    self._handle_provider_error(route, exc)
                     self._audit.log(
                         tier=tier, provider=route.provider, model=route.model,
                         prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
@@ -784,11 +835,22 @@ class LocalRouter:
                         provider=route.provider, model=route.model, reason="provider_error",
                         detail=str(exc),
                     )
-                    if attempt == retries:
+                    attempt += 1
+                    if is_pinned:
+                        self._handle_provider_error(route, exc)
                         _write_trace(ok=False)
-                        raise _tag_attempts(
-                            RouterBusy(f"All retries exhausted for bucket {tier!r}"), attempts)
-                    await asyncio.sleep(backoff)
+                        raise _tag_attempts(exc, attempts)
+                    action = decide_failover(
+                        exc.status_code,
+                        message_too_long=verdict.verdict == "message_too_long")
+                    if action is Verdict.RETURN:
+                        _write_trace(ok=False)
+                        raise _tag_attempts(exc, attempts)
+                    self._handle_provider_error(route, exc)
+                    if action is Verdict.NEXT_BIGGER_CONTEXT:
+                        estimated_tokens = max(
+                            estimated_tokens,
+                            self._context_window_of(route.provider, route.model) + 1)
                     continue
                 finally:
                     if key_id is not None:
@@ -1026,11 +1088,11 @@ class LocalRouter:
                         provider=route.provider, model=route.model, reason="provider_error",
                         detail=empty_detail,
                     )
-                    if attempt == retries:
+                    attempt += 1
+                    if is_pinned:
                         _write_trace(ok=False)
                         raise _tag_attempts(
-                            RouterBusy(f"All retries exhausted for bucket {tier!r}"), attempts)
-                    await asyncio.sleep(backoff)
+                            RouterBusy(f"{route.provider}/{route.model}: {empty_detail}"), attempts)
                     continue
 
                 # Assemble tool calls in first-seen order
@@ -1103,11 +1165,6 @@ class LocalRouter:
                 )
                 yield DoneEvent(result=result)
                 return
-
-            _write_trace(ok=False)
-            raise _tag_attempts(
-                RouterBusy(f"All models in bucket {tier!r} are unavailable after {retries} retries"),
-                attempts)
         finally:
             # A caller that gives up (a deadline, a closed connection) cancels
             # this mid-wait; the request must still show up as failed.
@@ -1315,6 +1372,13 @@ class LocalRouter:
                 self._known_mtimes[path] = mark
             fingerprint.append(mark)
         return tuple(fingerprint)
+
+    def _context_window_of(self, provider: str, model: str) -> int:
+        for models in self._cfg.tiers.values():
+            for m in models:
+                if m.provider == provider and m.model == model:
+                    return m.context_window
+        return 0
 
     def _price_of(self, provider: str, model: str):
         """The model's per-million-token prices, or `(None, None)`.

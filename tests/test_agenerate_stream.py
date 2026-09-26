@@ -32,7 +32,7 @@ def _select_sequence(routes):
     it = iter(routes)
 
     def _select(tier, estimated_tokens, vision, session_id=None):
-        return next(it)
+        return next(it, None)
 
     return _select
 

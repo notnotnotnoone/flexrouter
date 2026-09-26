@@ -116,7 +116,11 @@ def test_every_attempt_is_listed_in_the_error_body(tmp_path, monkeypatch):
     r = client.post("/v1/chat/completions", json={
         "model": "smart", "messages": [{"role": "user", "content": "hi"}]})
     attempts = r.json()["error"]["flexrouter"]["attempts"]
-    assert len(attempts) == 2  # retries=1 -> two tries, two different models
+    # Session 3 (grill-decisions.md §2): no fixed retry count any more - the
+    # router tries every model in the bucket until it gives up around the
+    # 30s budget, so both models show up at least once rather than exactly
+    # once each.
+    assert len(attempts) >= 2
     assert {a["model"] for a in attempts} == {"alpha/big", "alpha/small"}
     for attempt in attempts:
         assert attempt["status"] == 429
@@ -127,15 +131,19 @@ def test_every_attempt_is_listed_in_the_error_body(tmp_path, monkeypatch):
 
 
 @respx.mock
-def test_a_real_fake_upstream_404_then_503_keeps_the_real_text(tmp_path, monkeypatch):
+def test_a_real_fake_upstream_404_then_402_keeps_the_real_text(tmp_path, monkeypatch):
     """No monkeypatched exception this time: a real HTTP mock plays the two
     models' real responses, exercising the actual client.py status-code
-    branches, not a stand-in exception."""
+    branches, not a stand-in exception.
+
+    Both responses are permanent statuses (404, 402) so both models
+    quarantine outright and the bucket is exhausted deterministically - no
+    dependency on the ~30s failover budget or a wait-for-capacity retry."""
     monkeypatch.setattr("flexrouter._router.load_config",
                         lambda _p: _cfg_two_models(tmp_path))
     respx.post("https://alpha.test/v1/chat/completions").mock(side_effect=[
         httpx.Response(404, json={"error": {"message": "model not found: big"}}),
-        httpx.Response(503, json={"error": {"message": "currently overloaded"}}),
+        httpx.Response(402, json={"error": {"message": "insufficient balance"}}),
     ])
     from flexrouter import app as app_mod
     app_mod.state.router = None
@@ -149,7 +157,7 @@ def test_a_real_fake_upstream_404_then_503_keeps_the_real_text(tmp_path, monkeyp
     assert len(attempts) == 2
     by_status = {a["status"]: a["provider_message"] for a in attempts}
     assert "model not found: big" in by_status[404]
-    assert "currently overloaded" in by_status[503]
+    assert "insufficient balance" in by_status[402]
     assert r.headers["x-flexrouter-request-id"] == body["error"]["flexrouter"]["request_id"]
 
 

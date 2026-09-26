@@ -53,14 +53,22 @@ def classify_by_rule(text: str, status: Optional[int]) -> Optional[ErrorVerdict]
         verdict = _STATUS_RULES.get(status)
         if verdict:
             return ErrorVerdict(verdict=verdict, source="rule", confidence=1.0)
+
+    # Checked before the blanket 400 rule below: many providers answer
+    # "message too long" with a plain 400, and a 400 short-circuiting to
+    # bad_request before this text is ever read means the failover table's
+    # bigger-context path (grill-decisions.md §2) never fires - it would
+    # look exactly like a genuine bad request instead.
+    lowered = text.lower()
+    if any(s in lowered for s in _TOO_LONG_SUBSTRINGS):
+        return ErrorVerdict(verdict="message_too_long", source="rule", confidence=0.9)
+
+    if status is not None:
         if status == 400:
             return ErrorVerdict(verdict="bad_request", source="rule", confidence=1.0)
         if status >= 500:
             return ErrorVerdict(verdict="their_end_temporary", source="rule", confidence=1.0)
 
-    lowered = text.lower()
-    if any(s in lowered for s in _TOO_LONG_SUBSTRINGS):
-        return ErrorVerdict(verdict="message_too_long", source="rule", confidence=0.9)
     if "finish_reason='content_filter'" in lowered:
         # The provider generated nothing on purpose - moderation blocked the
         # request or the reply, not a transport failure or a flaky model.
