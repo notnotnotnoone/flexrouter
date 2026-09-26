@@ -141,6 +141,9 @@ class FakeRouter:
     def _maybe_hot_reload(self):
         pass
 
+    def reload(self):
+        pass
+
 
 @pytest.fixture
 def fake():
@@ -468,6 +471,27 @@ def test_status_clear_handles_slashes_in_model_name(client, fake):
     fake._status.set_needs_you("groq", "meta-llama/llama-4", "x", kind="gone", action="remove")
     client.delete("/api/statuses/groq/meta-llama/llama-4")
     assert client.get("/api/statuses").json()["statuses"] == []
+
+
+def test_use_it_without_a_did_you_mean_suggestion_is_a_400(client, fake):
+    r = client.post("/api/statuses/groq/llama-3.1-8b-instant/use")
+    assert r.status_code == 400
+
+
+def test_use_it_files_the_suggested_model_and_turns_the_old_one_off(client, fake, monkeypatch, tmp_path):
+    monkeypatch.setenv("FLEXROUTER_HOME", str(tmp_path))
+    fake._status.set_needs_you(
+        "groq", "llama-3.1-8b-instant", "Did you mean llama-3.1-8b-instant-v2?",
+        kind="did_you_mean", action="use:llama-3.1-8b-instant-v2")
+
+    r = client.post("/api/statuses/groq/llama-3.1-8b-instant/use")
+
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "used": "llama-3.1-8b-instant-v2"}
+    from flexrouter.overrides import load_overrides
+    ov = load_overrides()
+    assert ov["new_models"]["low"][0]["model"] == "llama-3.1-8b-instant-v2"
+    assert ov["models"]["groq/llama-3.1-8b-instant"]["enabled"] is False
 
 
 # --- everything on one port --------------------------------------------------

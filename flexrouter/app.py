@@ -646,6 +646,32 @@ def api_clear_model_status(provider: str, model: str):
     return {"ok": True}
 
 
+@api.post("/statuses/{provider}/{model:path}/use")
+def api_use_suggested_model(provider: str, model: str):
+    """[Use it] on a did-you-mean row (grill-decisions.md §3/§4): file the
+    catalogue's suggested id as a new model and turn this one off.
+
+    The suggestion itself is never taken from the request body - only from
+    this model's own live status, so a client can't point [Use it] at an
+    id the catalogue never actually offered.
+    """
+    from flexrouter.dashboard import settings_write
+
+    router = get_router()
+    status = router._status.get(provider, model)
+    if not (status.action or "").startswith("use:"):
+        return JSONResponse(
+            {"error": f"{provider}/{model} has no did-you-mean suggestion right now"},
+            status_code=400)
+    suggested = status.action.removeprefix("use:")
+    try:
+        settings_write.use_suggested_model(router._cfg, provider, model, suggested)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    router.reload()
+    return {"ok": True, "used": suggested}
+
+
 # --------------------------------------------------------------------------
 # Provider keys. The point of these is that a key gets checked against the
 # real provider before anyone trusts it - the old flow was "paste it into the

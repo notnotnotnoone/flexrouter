@@ -15,8 +15,9 @@ def decide_failover(
     *,
     message_too_long: bool = False,
     empty_reply: bool = False,
+    verdict: str | None = None,
 ) -> Verdict:
-    """grill-decisions.md §2, as one pure, table-driven function.
+    """grill-decisions.md §2 and §4, as one pure, table-driven function.
 
     | The model says           | Router does                            |
     |---------------------------|-----------------------------------------|
@@ -29,9 +30,14 @@ def decide_failover(
     `message_too_long` wins over the status code: a provider can say
     "message too long" with a 400, and that specific reason takes the
     bigger-context path rather than the flat "return" a plain 400 gets.
-    Anything not named in the table (an unlisted 5xx, or a status-less
-    failure like a dropped connection) is treated as the model's problem,
-    not the caller's, so it falls to NEXT.
+
+    A bare 400 has no status-code answer of its own (unlike 404/402/403,
+    which are unambiguous) - §4 overturns ADR 0013's "bare 400 =
+    bad_request at 1.0" and hands it to the error brain's verdict instead.
+    Only a confident `bad_request` is genuinely the caller's fault; every
+    other verdict (including `unknown`, when JEV is unsure or down) is
+    treated as the model's problem and fails over. An unlisted 4xx (422,
+    413, ...) keeps the old flat "return" - out of this session's scope.
     """
     if message_too_long:
         return Verdict.NEXT_BIGGER_CONTEXT
@@ -39,6 +45,11 @@ def decide_failover(
         return Verdict.NEXT
     if status_code in (429, 503, 404, 402, 403):
         return Verdict.NEXT
+    if status_code == 400:
+        # No verdict at all (a caller that never asked) keeps the old flat
+        # "return", same as an explicit bad_request - only a verdict that
+        # actually names something else sends it to the next model.
+        return Verdict.RETURN if verdict in (None, "bad_request") else Verdict.NEXT
     if status_code is not None and 400 <= status_code < 500:
         return Verdict.RETURN
     return Verdict.NEXT

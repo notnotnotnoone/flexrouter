@@ -156,14 +156,50 @@ class Failure:
     action: Optional[str] = None
 
 
-def classify_failure(status_code: Optional[int], provider: str, body="") -> Failure:
-    """What a provider failure makes the model, by status code alone.
+def _gone_failure(provider: str, model: str, name: str, state_dir: Optional[str]) -> Failure:
+    """§3/§4's did-you-mean: a close match on the live catalogue offers
+    [Use it] instead of the flat [Remove]. `action` carries "use:<id>" -
+    status.py's own placeholder for this, left by Session 6 - which the
+    dashboard resolves against `/statuses/.../use` (Session 7)."""
+    if state_dir:
+        from flexrouter import catalogue
+        matches = catalogue.did_you_mean(provider, model, state_dir)
+        if matches:
+            best = matches[0]
+            return Failure(NEEDS_YOU, "did_you_mean",
+                           f"{name} doesn't know this name. Did you mean {best}?",
+                           f"use:{best}")
+    return Failure(NEEDS_YOU, "gone", f"{name} doesn't know this name.", REMOVE)
+
+
+def _verdict_failure(verdict: Optional[str], provider: str, model: str, name: str,
+                     state_dir: Optional[str]) -> Failure:
+    """§4: the error brain's verdict decides a bare 400 (or anything else
+    a status code alone can't). `bad_request` never reaches here - the
+    failover policy already returns it to the caller before any status
+    changes. `their_end_temporary` / `unknown` (JEV unsure or down) are
+    both the model's own problem for now, same as an unlisted 5xx."""
+    if verdict == "too_fast":
+        return Failure(BUSY, "rate_limited", "Too many requests")
+    if verdict == "needs_payment":
+        return Failure(NEEDS_YOU, "balance_empty", f"Your {name} balance is empty.", RETRY)
+    if verdict == "bad_key":
+        return Failure(NEEDS_YOU, "bad_key", f"{name} rejected the key.", REPLACE_KEY)
+    if verdict == "model_gone":
+        return _gone_failure(provider, model, name, state_dir)
+    return Failure(BUSY, "overloaded", f"{name} overloaded")
+
+
+def classify_failure(status_code: Optional[int], provider: str, body="", *,
+                     model: str = "", verdict: Optional[str] = None,
+                     state_dir: Optional[str] = None) -> Failure:
+    """What a provider failure makes the model.
 
     §2/§3: busy things (429, 5xx, no answer at all) are Busy and clear on
     their own; broken things (402/403/404/410, a 429 with a zero quota) are
-    Needs you, straight away and with no timer. 400s are not decided here:
-    the failover policy returns them to the caller, and Session 7's error
-    brain decides the ones it can.
+    Needs you, straight away and with no timer. A bare 400 has no answer of
+    its own here - §4 hands it to the error brain's verdict instead
+    (overturns ADR 0013's "bare 400 = bad_request at 1.0").
     """
     name = provider_label(provider)
     if status_code == 429:
@@ -176,7 +212,9 @@ def classify_failure(status_code: Optional[int], provider: str, body="") -> Fail
     if status_code == 403:
         return Failure(NEEDS_YOU, "not_on_plan", f"Not on your {name} plan.", RETRY)
     if status_code in (404, 410):
-        return Failure(NEEDS_YOU, "gone", f"{name} doesn't know this name.", REMOVE)
+        return _gone_failure(provider, model, name, state_dir)
+    if status_code == 400:
+        return _verdict_failure(verdict, provider, model, name, state_dir)
     if status_code is None:
         return Failure(BUSY, "unreachable", f"Couldn't reach {name}")
     return Failure(BUSY, "overloaded", f"{name} overloaded")
@@ -377,9 +415,10 @@ class StatusStore:
 
     def record_failure(self, provider: str, model: str, status_code: Optional[int],
                        body="", *, retry_after: Optional[float] = None,
-                       detail: str = "") -> Failure:
+                       detail: str = "", verdict: Optional[str] = None) -> Failure:
         """Apply classify_failure() and return what it decided."""
-        f = classify_failure(status_code, provider, body)
+        f = classify_failure(status_code, provider, body, model=model, verdict=verdict,
+                             state_dir=str(self._dir) if self._dir else None)
         if f.value == NEEDS_YOU:
             self.set_needs_you(provider, model, f.reason, kind=f.kind, action=f.action,
                                status_code=status_code, detail=detail)

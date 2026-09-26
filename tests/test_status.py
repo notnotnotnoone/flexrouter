@@ -2,6 +2,7 @@
 status store can make, plus the migration of the old quarantine/penalty
 files it replaces."""
 import json
+from pathlib import Path
 
 import pytest
 
@@ -119,6 +120,55 @@ def test_429_with_limit_zero_is_not_on_your_plan():
 def test_503_is_only_ever_busy():
     f = classify_failure(503, "googleai", "The model is overloaded.")
     assert f.value == st.BUSY
+
+
+# ── §4: a bare 400 is decided by the error brain's verdict ─────────────────
+
+def test_a_bare_400_with_no_verdict_is_the_models_problem():
+    f = classify_failure(400, "googleai", "unrecognized")
+    assert f.value == st.BUSY
+    assert f.kind == "overloaded"
+
+
+@pytest.mark.parametrize("verdict,kind,value,action", [
+    ("too_fast", "rate_limited", st.BUSY, None),
+    ("their_end_temporary", "overloaded", st.BUSY, None),
+    ("unknown", "overloaded", st.BUSY, None),
+    ("needs_payment", "balance_empty", st.NEEDS_YOU, "retry"),
+    ("bad_key", "bad_key", st.NEEDS_YOU, "replace_key"),
+])
+def test_a_bare_400s_verdict_decides_its_status(verdict, kind, value, action):
+    f = classify_failure(400, "googleai", "unrecognized", verdict=verdict)
+    assert (f.kind, f.value, f.action) == (kind, value, action)
+
+
+def test_a_model_gone_verdict_on_a_400_is_needs_you_gone_with_no_catalogue():
+    f = classify_failure(400, "googleai", "invalid model", verdict="model_gone")
+    assert (f.kind, f.value, f.action) == ("gone", st.NEEDS_YOU, "remove")
+
+
+def _seed_known_ids(state_dir, provider, ids):
+    from flexrouter.catalogue import KNOWN_MODEL_IDS_FILENAME
+    from flexrouter.store import write_json
+    write_json(Path(state_dir) / KNOWN_MODEL_IDS_FILENAME,
+              {provider: {"checked_at": "now", "ids": ids}})
+
+
+def test_a_close_match_on_the_catalogue_offers_use_it(tmp_path):
+    _seed_known_ids(tmp_path, "googleai", ["gemini-3-flash-preview"])
+    f = classify_failure(404, "googleai", "not found", model="gemini-3-flash",
+                         state_dir=str(tmp_path))
+    assert f.value == st.NEEDS_YOU
+    assert f.kind == "did_you_mean"
+    assert f.action == "use:gemini-3-flash-preview"
+    assert "gemini-3-flash-preview" in f.reason
+
+
+def test_no_match_on_the_catalogue_falls_back_to_plain_gone(tmp_path):
+    _seed_known_ids(tmp_path, "googleai", ["totally-unrelated-model"])
+    f = classify_failure(404, "googleai", "not found", model="gemini-3-flash",
+                         state_dir=str(tmp_path))
+    assert (f.kind, f.value, f.action) == ("gone", st.NEEDS_YOU, "remove")
 
 
 @pytest.mark.parametrize("body,headers,expected", [

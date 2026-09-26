@@ -13,7 +13,7 @@ from flexrouter.audit import AuditLogger
 from flexrouter.client import AsyncClient, RateLimitError, ProviderError
 from flexrouter.config import FlexConfig, load_config
 from flexrouter import errors, redact
-from flexrouter.decider import NullDecider, build_decider
+from flexrouter.decider import ErrorVerdict, NullDecider, build_decider
 from flexrouter.engine import RoutingEngine, RouteResult
 from flexrouter.error_brain import ErrorBrain
 from flexrouter.events import EventLogger
@@ -43,6 +43,12 @@ KEY_BUSY_POLL_SECONDS = 0.05
 # reach, not a fixed count, but gives up rather than running forever against
 # a bucket that keeps rotating through models that all fail.
 FAILOVER_BUDGET_SECONDS = 30.0
+
+# §4: "the first sighting waits about 0.5s for JEV, then answers from
+# memory." A slow or down classifier must never hold up the request it was
+# asked about - the classify() call already in flight keeps running in its
+# own thread and still saves what it learns, just too late for this attempt.
+JEV_TIMEOUT_SECONDS = 0.5
 
 
 @dataclass
@@ -131,11 +137,10 @@ class LocalRouter:
         self._traces = TraceWriter(self._cfg.state_dir)
         self._key_states = KeyStateStore(self._cfg.state_dir)
         self._round_robin = RoundRobinCounters()
-        self._error_brain = ErrorBrain(
-            self._cfg.state_dir, self._build_decider(),
-            confidence_threshold=self._cfg.decider.confidence_threshold,
-            contested_statuses=self._cfg.decider.contested_statuses,
-            rule_prior_confidence=self._cfg.decider.rule_prior_confidence)
+        # §4 (Session 7): the decider's confidence knobs are internal
+        # constants now, not settings - ErrorBrain's own defaults, not
+        # sourced from config. Session 10 removes the dead settings fields.
+        self._error_brain = ErrorBrain(self._cfg.state_dir, self._build_decider())
         self._model_facts = ModelFactsStore(self._cfg.state_dir)
         self._run_startup_catalogue_refresh()
         self._sampler = PassiveSampler(
@@ -205,10 +210,19 @@ class LocalRouter:
 
     async def _classify(self, text: str, status: Optional[int], route, trace_id: str,
                         exc: Optional[BaseException] = None):
-        return await asyncio.to_thread(
-            self._error_brain.classify, text, status,
-            provider=route.provider, model=route.model, trace_id=trace_id,
-            body=getattr(exc, "body", None))
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._error_brain.classify, text, status,
+                    provider=route.provider, model=route.model, trace_id=trace_id,
+                    body=getattr(exc, "body", None)),
+                timeout=JEV_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            # §4: "JEV unsure or down -> assume it's the model's problem
+            # and fail over." The classify() call itself is not cancelled -
+            # it finishes in its own thread and still learns from it, this
+            # attempt just doesn't wait around for the answer.
+            return ErrorVerdict(verdict="unknown", source="timeout", confidence=0.0)
 
     def _handle_auth_failure(self, route, exc, key_id: Optional[str]) -> None:
         """A rejected key is Needs you on that key only, not the whole provider.
@@ -244,21 +258,32 @@ class LocalRouter:
                 route.provider, route.model, "server_error",
                 detail=f"key needs you (rejected): {detail}")
 
-    def _handle_provider_error(self, route, exc) -> None:
+    def _handle_provider_error(self, route, exc, key_id: Optional[str] = None,
+                               verdict: Optional[str] = None) -> None:
         """Set the model's status after a provider error, and record why.
 
         §3: busy things (429, 5xx, no answer) are Busy for as long as the
         provider asked, else 60s, never doubling. Broken things (402, 403,
-        404/410, a 429 whose quota is 0) are Needs you at once, no timer.
+        404/410, a 429 whose quota is 0) are Needs you at once, no timer. A
+        bare 400 has no status-code answer, so `verdict` (§4, the error
+        brain's decision) picks its status instead.
+
+        §4: "bad key -> Needs you on the key only" - a `bad_key` verdict on
+        a 400 is the same fact `_handle_auth_failure` already handles for a
+        401/403, so it goes there instead of being recorded against the
+        model's own status.
 
         Scrubbed at the write site for the same reason as
         _handle_auth_failure: the provider's text is persisted and served.
         """
+        if verdict == "bad_key":
+            self._handle_auth_failure(route, exc, key_id)
+            return
         detail = scrub(str(exc))
         status_code = 429 if isinstance(exc, RateLimitError) else getattr(exc, "status_code", None)
         failure = self._status.record_failure(
             route.provider, route.model, status_code, getattr(exc, "body", "") or str(exc),
-            retry_after=getattr(exc, "retry_after", None), detail=detail)
+            retry_after=getattr(exc, "retry_after", None), detail=detail, verdict=verdict)
         status = self._status.get(route.provider, route.model)
         self._events.record(
             route.provider, route.model,
@@ -269,7 +294,7 @@ class LocalRouter:
     def _handle_rate_limit(self, route, exc, key_id: Optional[str]) -> None:
         """A 429. The model is Busy (or Needs you, when its quota is 0), and
         the key that hit it is Busy for the same length of time."""
-        self._handle_provider_error(route, exc)
+        self._handle_provider_error(route, exc, key_id)
         status = self._status.get(route.provider, route.model)
         if key_id is not None and status.value == st.BUSY:
             self._key_states.mark_busy(
@@ -492,18 +517,19 @@ class LocalRouter:
                                      "ms": int((time.monotonic() - start) * 1000)})
                     attempt += 1
                     if is_pinned:
-                        self._handle_provider_error(route, exc)
+                        self._handle_provider_error(route, exc, key_id, verdict.verdict)
                         _write_trace(ok=False)
                         raise _tag_attempts(exc, attempts)
                     action = decide_failover(
                         exc.status_code,
-                        message_too_long=verdict.verdict == "message_too_long")
+                        message_too_long=verdict.verdict == "message_too_long",
+                        verdict=verdict.verdict)
                     if action is Verdict.RETURN:
                         # A genuinely bad request is the caller's fault, not
                         # this model's - no status change, no more models tried.
                         _write_trace(ok=False)
                         raise _tag_attempts(exc, attempts)
-                    self._handle_provider_error(route, exc)
+                    self._handle_provider_error(route, exc, key_id, verdict.verdict)
                     if action is Verdict.NEXT_BIGGER_CONTEXT:
                         estimated_tokens = max(
                             estimated_tokens,
@@ -845,16 +871,17 @@ class LocalRouter:
                     )
                     attempt += 1
                     if is_pinned:
-                        self._handle_provider_error(route, exc)
+                        self._handle_provider_error(route, exc, key_id, verdict.verdict)
                         _write_trace(ok=False)
                         raise _tag_attempts(exc, attempts)
                     action = decide_failover(
                         exc.status_code,
-                        message_too_long=verdict.verdict == "message_too_long")
+                        message_too_long=verdict.verdict == "message_too_long",
+                        verdict=verdict.verdict)
                     if action is Verdict.RETURN:
                         _write_trace(ok=False)
                         raise _tag_attempts(exc, attempts)
-                    self._handle_provider_error(route, exc)
+                    self._handle_provider_error(route, exc, key_id, verdict.verdict)
                     if action is Verdict.NEXT_BIGGER_CONTEXT:
                         estimated_tokens = max(
                             estimated_tokens,
@@ -1329,11 +1356,7 @@ class LocalRouter:
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
         self._traces = TraceWriter(self._cfg.state_dir)
         self._key_states = KeyStateStore(self._cfg.state_dir)
-        self._error_brain = ErrorBrain(
-            self._cfg.state_dir, self._build_decider(),
-            confidence_threshold=self._cfg.decider.confidence_threshold,
-            contested_statuses=self._cfg.decider.contested_statuses,
-            rule_prior_confidence=self._cfg.decider.rule_prior_confidence)
+        self._error_brain = ErrorBrain(self._cfg.state_dir, self._build_decider())
         self._model_facts = ModelFactsStore(self._cfg.state_dir)
 
     def _build_decider(self):
