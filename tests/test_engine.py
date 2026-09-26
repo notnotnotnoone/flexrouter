@@ -1,7 +1,7 @@
 import time
 import warnings
 import pytest
-from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig, RetryConfig
+from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig
 from flexrouter.window import SlidingWindow
 from flexrouter.budget import DailyBudget
 from flexrouter.engine import RoutingEngine, RouteResult
@@ -19,8 +19,6 @@ def make_engine(models=None, bucket_strategy=None):
         providers={"groq": ProviderConfig("http://groq", ["key"])},
         bucket_strategy=bucket_strategy or {},
         window_seconds=60,
-        penalty_base_seconds=30,
-        penalty_max_seconds=1800,
         session_ttl_minutes=30,
     )
     return RoutingEngine(cfg)
@@ -134,7 +132,6 @@ def test_make_result_empty_api_keys_uses_empty_string():
     cfg = FlexConfig(
         tiers={"default": [ModelConfig(provider="ollama", model="llama3", score=50, rpm=600, tpm=10_000_000)]},
         providers={"ollama": ProviderConfig(base_url="http://localhost:11434/v1", api_keys=[])},
-        retry=RetryConfig(),
     )
     engine = RoutingEngine(cfg)
     result = engine._make_result(cfg.tiers["default"][0], "default")
@@ -150,7 +147,6 @@ def test_score_candidates_uses_learned_rpm(tmp_path):
     cfg = FlexConfig(
         tiers={"default": [ModelConfig(provider="groq", model="llama-8b", score=80, rpm=30, tpm=6000)]},
         providers={"groq": ProviderConfig(base_url="https://api.groq.com/openai/v1", api_keys=["key"])},
-        retry=RetryConfig(),
     )
     engine = RoutingEngine(cfg, rate_limit_store=store)
 

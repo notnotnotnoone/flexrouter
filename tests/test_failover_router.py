@@ -5,7 +5,7 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
-from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig, RetryConfig
+from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig
 
 
 def _cfg_three_models(tmp_path):
@@ -18,7 +18,6 @@ def _cfg_three_models(tmp_path):
         providers={"alpha": ProviderConfig(base_url="https://alpha.test/v1",
                                            api_keys=["k"])},
         state_dir=str(tmp_path / "state"),
-        retry=RetryConfig(retries=2, backoff_seconds=5),
     )
 
 
@@ -60,7 +59,6 @@ def _cfg_one_model(tmp_path):
         providers={"alpha": ProviderConfig(base_url="https://alpha.test/v1",
                                            api_keys=["k"])},
         state_dir=str(tmp_path / "state"),
-        retry=RetryConfig(retries=2, backoff_seconds=5),
     )
 
 

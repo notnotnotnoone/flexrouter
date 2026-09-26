@@ -134,6 +134,26 @@ def test_doctor_reports_disabled_keys_honestly(_home):
     assert "1" in result.output
 
 
+def test_doctor_notices_retired_settings_once(_home):
+    settings = {
+        "settings": {**SETTINGS["settings"], "retries": 7, "quarantine_seconds": 60},
+        "providers": SETTINGS["providers"],
+        "buckets": SETTINGS["buckets"],
+    }
+    home.config_path().write_text(yaml.dump(settings), encoding="utf-8")
+
+    result = CliRunner().invoke(cli.cli, ["doctor"])
+    assert result.exit_code == 0
+    assert "no longer uses" in result.output
+    assert "retries" in result.output
+    assert "quarantine_seconds" in result.output
+
+
+def test_doctor_says_nothing_retired_when_settings_are_current(_home):
+    result = CliRunner().invoke(cli.cli, ["doctor"])
+    assert "no longer uses" not in result.output
+
+
 def test_doctor_distinguishes_missing_field_from_unreadable(_home):
     bad = {
         "settings": SETTINGS["settings"],

@@ -22,17 +22,16 @@ SECTIONS = ("settings", "providers", "models")
 ALLOWED_FIELDS: dict[str, frozenset[str]] = {
     "settings": frozenset({
         "port", "dashboard_port", "state_dir", "window_seconds",
-        "penalty_base_seconds", "penalty_max_seconds", "session_ttl_minutes",
+        "session_ttl_minutes", "failover_budget_seconds",
         "sample_interval_seconds", "health_history_days", "key_concurrency_cap",
-        "retry_policy", "retries", "backoff_seconds", "provider_budget", "hooks",
+        "provider_budget", "hooks",
         "decider_base_url", "decider_model", "decider_timeout_seconds",
-        "decider_confidence_threshold", "decider_rule_prior_confidence",
-        "decider_confidence_ceiling", "decider_contested_statuses",
-        "quarantine_seconds", "probe_timeout_seconds", "error_max_length",
+        "probe_timeout_seconds", "error_max_length",
         "unscored_fallback_score", "auto_add_models",
         # Old name for auto_add_models, kept writable so a link or script
         # from before the Session 5 rename still works.
         "experimental_model_discovery", "redact_errors",
+        "save_conversations", "save_conversations_days", "show_quickstart",
     }),
     # Not `decider_api_key`: same rule as auth_token. The classifier's key
     # lives in keys.json through service_keys.py, masked like any other.

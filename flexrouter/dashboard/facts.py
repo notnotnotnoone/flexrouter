@@ -659,21 +659,22 @@ def allowance_stack(router, now: Optional[float] = None) -> dict:
 _SETTINGS_ATTR = {
     "port": "port", "dashboard_port": "port", "state_dir": "state_dir",
     "window_seconds": "window_seconds",
-    "penalty_base_seconds": "penalty_base_seconds",
-    "penalty_max_seconds": "penalty_max_seconds",
     "session_ttl_minutes": "session_ttl_minutes",
+    "failover_budget_seconds": "failover_budget_seconds",
     "sample_interval_seconds": "sample_interval_seconds",
     "health_history_days": "health_history_days",
     "key_concurrency_cap": "key_concurrency_cap",
     "provider_budget": "provider_budget",
     "hooks": "hooks",
-    "quarantine_seconds": "quarantine_seconds",
     "probe_timeout_seconds": "probe_timeout_seconds",
     "error_max_length": "error_max_length",
     "unscored_fallback_score": "unscored_fallback_score",
     "auto_add_models": "auto_add_models",
     "experimental_model_discovery": "experimental_model_discovery",
     "redact_errors": "redact_errors",
+    "save_conversations": "save_conversations",
+    "save_conversations_days": "save_conversations_days",
+    "show_quickstart": "show_quickstart",
 }
 
 # Nested under cfg.decider rather than sitting flat on FlexConfig, so these
@@ -682,10 +683,6 @@ _DECIDER_ATTR = {
     "decider_base_url": "base_url",
     "decider_model": "model",
     "decider_timeout_seconds": "timeout_seconds",
-    "decider_confidence_threshold": "confidence_threshold",
-    "decider_rule_prior_confidence": "rule_prior_confidence",
-    "decider_confidence_ceiling": "confidence_ceiling",
-    "decider_contested_statuses": "contested_statuses",
 }
 
 
@@ -699,20 +696,12 @@ class SettingsField:
 def settings_fields(router) -> list[SettingsField]:
     """Every setting the Settings page may change, with its live value and
     whether that value came from an override or from the owner's own
-    settings file. `retries`/`backoff_seconds` read through `router._cfg.retry`
-    (flexrouter/config.py folds a `retry_policy` preset into those two
-    numbers at load time - there is no separate live value for the preset
-    name itself, only whatever override was last set for it, if any).
-    """
+    settings file."""
     overridden = load_overrides().get("settings", {})
     out = []
     for name in sorted(ALLOWED_FIELDS["settings"]):
         if name in overridden:
             value = overridden[name]
-        elif name == "retries":
-            value = router._cfg.retry.retries
-        elif name == "backoff_seconds":
-            value = router._cfg.retry.backoff_seconds
         elif name in _DECIDER_ATTR:
             value = getattr(router._cfg.decider, _DECIDER_ATTR[name])
         elif name in _SETTINGS_ATTR:

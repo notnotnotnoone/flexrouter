@@ -11,52 +11,36 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import yaml
+
 from flexrouter import app_password, home
-from flexrouter.config import redact_settings_text
+from flexrouter.config import redact_settings_text, retired_settings_notice
 from flexrouter.dashboard import facts, prefs, ui
 from flexrouter.dashboard.render import attrs, esc, tag
+from flexrouter.overrides import load_overrides
 
-GROUPS = ("Server", "Retries", "Sidelining bad providers", "Error brain", "History", "Advanced")
+GROUPS = ("Server", "Failover", "Error brain", "History", "Conversations", "Advanced")
 
 # name -> (group, plain label, unit, one line of help, needs a restart)
 META: dict[str, tuple[str, str, str, str, bool]] = {
     "port": ("Server", "Port", "", "Where apps and this dashboard reach flexrouter.", True),
     "state_dir": ("Server", "Data folder", "", "Where logs, traces and learned state are kept.", True),
-    "retries": ("Retries", "Tries per request", "times",
-                "How many times a request is tried before giving up.", False),
-    "backoff_seconds": ("Retries", "Wait between tries", "seconds",
-                        "Pause after a rate limit before trying again.", False),
-    "retry_policy": ("Retries", "Retry style", "",
-                     "A named preset that sets the two values above (e.g. balanced).", False),
-    "provider_budget": ("Retries", "Per-provider budget", "JSON",
+    "provider_budget": ("Failover", "Per-provider budget", "JSON",
                         "Caps on how much each provider may be used.", False),
-    "window_seconds": ("Retries", "Rate window", "seconds",
+    "window_seconds": ("Failover", "Rate window", "seconds",
                        "The window per-minute limits are counted over.", False),
-    "penalty_base_seconds": ("Sidelining bad providers", "Sideline a failing provider for", "seconds",
-                             "How long a provider is skipped after it errors. Doubles each time it "
-                             "fails again.", False),
-    "penalty_max_seconds": ("Sidelining bad providers", "Longest sideline", "seconds",
-                            "The doubling above stops here.", False),
-    "quarantine_seconds": ("Sidelining bad providers", "Quarantine a broken provider for", "seconds",
-                           "How long a provider whose key was rejected is set aside.", False),
-    "probe_timeout_seconds": ("Sidelining bad providers", "Health check timeout", "seconds",
+    "failover_budget_seconds": ("Failover", "Give up after", "seconds",
+                                "How long a request keeps trying other models in its bucket "
+                                "before it gives up.", False),
+    "probe_timeout_seconds": ("Failover", "Health check timeout", "seconds",
                               "How long a check on whether a provider is back may take.", False),
-    "key_concurrency_cap": ("Sidelining bad providers", "Requests at once per key", "",
+    "key_concurrency_cap": ("Failover", "Requests at once per key", "",
                             "More than this at the same time and the next key is used.", False),
     "decider_base_url": ("Error brain", "Classifier address", "",
                          "OpenAI-compatible endpoint of the AI that reads unfamiliar errors.", False),
     "decider_model": ("Error brain", "Classifier model", "", "Which model reads them.", False),
     "decider_timeout_seconds": ("Error brain", "Classifier timeout", "seconds",
                                 "Give up on the classifier after this long.", False),
-    "decider_confidence_threshold": ("Error brain", "Review below", "0-1",
-                                     "Guesses less sure than this are flagged for you.", False),
-    "decider_rule_prior_confidence": ("Error brain", "Trust in built-in rules", "0-1",
-                                      "How sure a built-in rule is for codes providers overload.",
-                                      False),
-    "decider_confidence_ceiling": ("Error brain", "Most the AI may claim", "0-1",
-                                   "The AI's confidence is capped here.", False),
-    "decider_contested_statuses": ("Error brain", "Codes the AI may overrule", "list",
-                                   "Status codes where a rule is only a first guess.", False),
     "error_max_length": ("Error brain", "Longest error kept", "characters",
                          "Provider messages are cut to this length.", False),
     "redact_errors": ("Error brain", "Redact error text", "",
@@ -70,6 +54,11 @@ META: dict[str, tuple[str, str, str, str, bool]] = {
     "sample_interval_seconds": ("History", "Health sample every", "seconds", "", False),
     "session_ttl_minutes": ("History", "Session lasts", "minutes",
                             "How long a conversation sticks to the model it started on.", False),
+    "save_conversations": ("Conversations", "Save conversations", "",
+                           "Keeps the prompt, reply and reasoning of every request so you can "
+                           "look back at them.", False),
+    "save_conversations_days": ("Conversations", "Keep conversations for", "days",
+                                "How long a saved conversation is kept before it's deleted.", False),
     "hooks": ("Advanced", "Hooks", "JSON", "Code run on every request.", False),
     "unscored_fallback_score": ("Advanced", "Score for unscored models", "",
                                 "Used to rank a model nobody has scored yet.", False),
@@ -79,6 +68,8 @@ META: dict[str, tuple[str, str, str, str, bool]] = {
         "Advanced", "Add new models automatically", "",
         "Reading each provider's model list is always on; this controls "
         "whether new models get staged for you to accept.", False),
+    "show_quickstart": ("Advanced", "Show quickstart", "",
+                        "Shows the getting-started checklist until you hide it.", False),
 }
 
 
@@ -127,6 +118,17 @@ def _row(f) -> str:
                    cls="set-text")
                + tag("div", form + tag("div", where + reset, cls="set-meta"), cls="set-control"),
                cls="set-row", **{"data-search": search, "id": f"set-{f.name}"})
+
+
+def _retired_notice() -> str:
+    try:
+        raw_settings = (yaml.safe_load(home.config_path().read_text(encoding="utf-8")) or {}).get(
+            "settings") or {}
+    except (OSError, yaml.YAMLError):
+        raw_settings = {}
+    override_settings = load_overrides().get("settings") or {}
+    notice = retired_settings_notice(raw_settings, override_settings)
+    return tag("p", esc(notice), cls="page-status set-retired") if notice else ""
 
 
 def _slug(group: str) -> str:
@@ -283,7 +285,7 @@ def body(router, banner: str, service_keys_html: str, shown_password: str = "") 
                      + '<input type="search" placeholder="Find a setting" aria-label="Find a setting" '
                        'data-page-search data-filter=".set-row">', cls="page-actions set-search"),
                cls="page-head")
-    return (head + banner
+    return (head + _retired_notice() + banner
             + tag("div",
                   tag("nav", nav, cls="toc", **{"aria-label": "Settings sections"})
                   + tag("div",

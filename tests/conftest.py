@@ -159,11 +159,8 @@ MINIMAL_CONFIG = {
     "settings": {
         "state_dir": "",  # overridden per test
         "window_seconds": 60,
-        "penalty_base_seconds": 30,
-        "penalty_max_seconds": 1800,
         "session_ttl_minutes": 30,
         "dashboard_port": 7352,
-        "retry_policy": "balanced",
     },
 }
 

@@ -1,6 +1,6 @@
 import os, yaml, pytest
 from pathlib import Path
-from flexrouter.config import FlexConfig, load_config, RETRY_PRESETS
+from flexrouter.config import FlexConfig, load_config, retired_settings_notice
 
 def test_load_minimal_config(config_file):
     cfg = load_config(config_file)
@@ -28,22 +28,44 @@ def test_missing_env_var_loads_with_no_keys(tmp_path, monkeypatch):
     cfg = load_config(p)
     assert cfg.providers["x"].api_keys == []
 
-def test_retry_preset_balanced(config_file):
+def test_failover_budget_defaults_to_30_seconds(config_file):
     cfg = load_config(config_file)
-    assert cfg.retry.retries == RETRY_PRESETS["balanced"]["retries"]
-    assert cfg.retry.backoff_seconds == RETRY_PRESETS["balanced"]["backoff_seconds"]
+    assert cfg.failover_budget_seconds == 30.0
 
-def test_manual_retry_override(tmp_path):
+def test_failover_budget_is_settable(tmp_path):
     os.environ["GROQ_API_KEY"] = "k"
     p = tmp_path / "flexrouter.yaml"
     p.write_text(yaml.dump({
         "tiers": {"low": [{"provider": "groq", "model": "m", "score": 50, "rpm": 10, "tpm": 1000, "context_window": 4096}]},
         "providers": {"groq": {"base_url": "http://groq", "api_keys": [{"env": "GROQ_API_KEY"}]}},
-        "settings": {"state_dir": str(tmp_path), "retries": 7, "backoff_seconds": 3.5},
+        "settings": {"state_dir": str(tmp_path), "failover_budget_seconds": 45},
     }))
     cfg = load_config(p)
-    assert cfg.retry.retries == 7
-    assert cfg.retry.backoff_seconds == 3.5
+    assert cfg.failover_budget_seconds == 45
+
+def test_a_retired_setting_in_config_yaml_does_not_crash(tmp_path):
+    """PLAN-V2.3.md Session 10: retry.*/penalty_*/quarantine_seconds/decider
+    confidence knobs are gone, but config.yaml is never rewritten (ADR 0002),
+    so an old settings file naming one of them must still load cleanly."""
+    os.environ["GROQ_API_KEY"] = "k"
+    p = tmp_path / "flexrouter.yaml"
+    p.write_text(yaml.dump({
+        "tiers": {"low": [{"provider": "groq", "model": "m", "score": 50, "rpm": 10, "tpm": 1000, "context_window": 4096}]},
+        "providers": {"groq": {"base_url": "http://groq", "api_keys": [{"env": "GROQ_API_KEY"}]}},
+        "settings": {"state_dir": str(tmp_path), "retries": 7, "quarantine_seconds": 60},
+    }))
+    cfg = load_config(p)
+    assert cfg.failover_budget_seconds == 30.0
+
+def test_retired_settings_notice_names_every_retired_name_present():
+    notice = retired_settings_notice({"retries": 7, "backoff_seconds": 1.0, "port": 9})
+    assert notice is not None
+    assert "retries" in notice
+    assert "backoff_seconds" in notice
+    assert "port" not in notice
+
+def test_retired_settings_notice_is_none_when_nothing_retired_is_set():
+    assert retired_settings_notice({"port": 9}) is None
 
 def test_config_defaults(config_file):
     cfg = load_config(config_file)

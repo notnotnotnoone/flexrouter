@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from flexrouter import redact
 from flexrouter.app import create_app
 from flexrouter.client import ProviderError, RateLimitError
-from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig, RetryConfig
+from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig
 from flexrouter.exceptions import RouterError
 
 
@@ -34,9 +34,6 @@ def _cfg(tmp_path):
         # router builds (LocalRouter._register_known_identifiers reads
         # cfg.redact_errors), so it has to be set here too.
         redact_errors=True,
-        # Every test in this file simulates every attempt failing the same
-        # way; a real retry count/backoff would only make the suite slow.
-        retry=RetryConfig(retries=1, backoff_seconds=0),
     )
 
 
@@ -52,7 +49,6 @@ def _cfg_two_models(tmp_path):
                                            api_keys=["k"])},
         state_dir=str(tmp_path / "state"),
         redact_errors=True,
-        retry=RetryConfig(retries=1, backoff_seconds=0),
     )
 
 

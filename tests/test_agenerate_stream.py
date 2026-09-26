@@ -21,9 +21,7 @@ MESSAGES = [{"role": "user", "content": "hi"}]
 
 
 def _router(config_file):
-    router = LocalRouter(str(config_file))
-    router._cfg.retry.backoff_seconds = 0  # keep failed-attempt tests fast
-    return router
+    return LocalRouter(str(config_file))
 
 
 def _select_sequence(routes):
@@ -85,7 +83,7 @@ async def test_clean_single_attempt_success(config_file, monkeypatch):
 
     assert len(events) == 4
     assert isinstance(events[0], AttemptEvent)
-    assert events[0].attempt == 1 and events[0].max_attempts == 4
+    assert events[0].attempt == 1 and events[0].max_attempts == 1
     assert events[0].provider == "groq" and events[0].model == "llama-3.1-8b-instant"
     assert isinstance(events[1], DeltaEvent) and events[1].text == "Hel"
     assert isinstance(events[2], DeltaEvent) and events[2].text == "lo"
@@ -133,7 +131,7 @@ async def test_failed_attempts_then_success_interleaves_events(config_file, monk
 @pytest.mark.asyncio
 async def test_total_exhaustion_raises_router_busy(config_file, monkeypatch):
     router = _router(config_file)
-    max_attempts = router._cfg.retry.retries + 1
+    max_attempts = 4  # enough failures to line up before the budget gives up
     monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE] * max_attempts))
     # See the comment in test_failed_attempts_then_success_interleaves_events:
     # bypass real per-key state so repeated RateLimitErrors on config_file's

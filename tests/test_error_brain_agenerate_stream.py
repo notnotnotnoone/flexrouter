@@ -17,9 +17,7 @@ def _cfg(tmp_path):
 
 def _router(tmp_path, monkeypatch):
     monkeypatch.setattr("flexrouter._router.load_config", lambda _p: _cfg(tmp_path))
-    router = LocalRouter(str(tmp_path / "config.yaml"))
-    router._cfg.retry.backoff_seconds = 0  # keep failed-attempt tests fast
-    return router
+    return LocalRouter(str(tmp_path / "config.yaml"))
 
 
 def _traces(tmp_path):

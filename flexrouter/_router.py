@@ -39,11 +39,6 @@ logger = logging.getLogger(__name__)
 
 KEY_BUSY_POLL_SECONDS = 0.05
 
-# §2's "stopping at about 30s total": a bucket call tries every model it can
-# reach, not a fixed count, but gives up rather than running forever against
-# a bucket that keeps rotating through models that all fail.
-FAILOVER_BUDGET_SECONDS = 30.0
-
 # §4: "the first sighting waits about 0.5s for JEV, then answers from
 # memory." A slow or down classifier must never hold up the request it was
 # asked about - the classify() call already in flight keeps running in its
@@ -408,11 +403,11 @@ class LocalRouter:
 
         try:
             while True:
-                if not is_pinned and total_waited_seconds >= FAILOVER_BUDGET_SECONDS:
+                if not is_pinned and total_waited_seconds >= self._cfg.failover_budget_seconds:
                     _write_trace(ok=False)
                     raise _tag_attempts(RouterBusy(
                         f"Tried every model in bucket {tier!r} for "
-                        f"about {int(FAILOVER_BUDGET_SECONDS)}s without success"), attempts)
+                        f"about {int(self._cfg.failover_budget_seconds)}s without success"), attempts)
 
                 route, key_id = await self._route_with_key(
                     tier, estimated_tokens, vision, session_id, frozenset(tried_no_status))
@@ -657,11 +652,11 @@ class LocalRouter:
 
         is_pinned = "/" in tier
         # §2: no fixed retry count drives failover any more - a bucket call
-        # tries every model it can reach until it succeeds or the ~30s
+        # tries every model it can reach until it succeeds or the failover
         # budget runs out. max_attempts is kept only as an informational
         # figure on the events a stream consumer sees (e.g. "attempt 2/4"),
-        # not as a loop bound.
-        max_attempts = self._cfg.retry.retries + 1
+        # not as a loop bound - it is just how many models are in the tier.
+        max_attempts = 1 if is_pinned else max(1, len(self._cfg.tiers.get(tier, [])))
 
         trace_id = trace_id or new_trace_id()
         request_started = time.monotonic()
@@ -705,11 +700,11 @@ class LocalRouter:
 
         try:
             while True:
-                if not is_pinned and total_waited_seconds >= FAILOVER_BUDGET_SECONDS:
+                if not is_pinned and total_waited_seconds >= self._cfg.failover_budget_seconds:
                     _write_trace(ok=False)
                     raise _tag_attempts(RouterBusy(
                         f"Tried every model in bucket {tier!r} for "
-                        f"about {int(FAILOVER_BUDGET_SECONDS)}s without success"), attempts)
+                        f"about {int(self._cfg.failover_budget_seconds)}s without success"), attempts)
 
                 route, key_id = await self._route_with_key(
                     tier, estimated_tokens, vision, session_id, frozenset(tried_no_status))

@@ -17,14 +17,38 @@ def client(config_file):
 
 def test_settings_have_plain_names_and_keep_the_raw_one(client):
     body = client.get("/settings").text
-    assert "Sideline a failing provider for" in body
-    assert "penalty_base_seconds" in body
+    assert "Give up after" in body
+    assert "failover_budget_seconds" in body
 
 
 def test_settings_are_grouped(client):
     body = client.get("/settings").text
-    for group in ("Server", "Retries", "Sidelining bad providers", "Error brain", "History"):
+    for group in ("Server", "Failover", "Error brain", "History", "Conversations"):
         assert group in body
+
+
+def test_settings_page_says_nothing_retired_by_default(client):
+    body = client.get("/settings").text
+    assert "no longer uses" not in body
+
+
+def test_settings_page_notices_a_retired_name_in_the_settings_file(minimal_config, tmp_path):
+    # The Settings page reads the settings file at the flexrouter home
+    # (like _backup()'s "your settings file" view), so this writes there
+    # rather than to an arbitrary config path.
+    import yaml
+    from fastapi.testclient import TestClient
+    from flexrouter import home
+    from flexrouter.app import create_app
+
+    minimal_config["settings"]["state_dir"] = str(tmp_path / ".flexrouter")
+    minimal_config["settings"]["retries"] = 7
+    home.ensure_home()
+    home.config_path().write_text(yaml.dump(minimal_config), encoding="utf-8")
+    with TestClient(create_app(str(home.config_path()))) as c:
+        body = c.get("/settings").text
+    assert "no longer uses" in body
+    assert "retries" in body
 
 
 def test_the_port_says_it_needs_a_restart(client):
@@ -39,6 +63,22 @@ def test_every_row_is_searchable(client):
 
 def body_count(body, needle):
     return body.count(needle)
+
+
+def test_session_10_settings_are_wired_end_to_end(client):
+    client.post("/settings/failover_budget_seconds", data={"value": "45"})
+    client.post("/settings/save_conversations_days", data={"value": "14"})
+    client.post("/settings/show_quickstart", data={"value": "false"})
+    ov = client.get("/settings/backup").json()["overrides"]["settings"]
+    assert ov["failover_budget_seconds"] == 45.0
+    assert ov["save_conversations_days"] == 14
+    assert ov["show_quickstart"] is False
+
+
+def test_retired_setting_names_are_refused_by_the_settings_route(client):
+    r = client.post("/settings/quarantine_seconds", data={"value": "60"},
+                    follow_redirects=False)
+    assert "ok=0" in r.headers["location"]
 
 
 def test_dashboard_preferences_save(client):

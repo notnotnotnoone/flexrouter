@@ -14,11 +14,33 @@ from flexrouter.exceptions import ConfigError, ConfigFieldError
 from flexrouter.keys import KeyRecord, load_keys
 from flexrouter.overrides import apply_overrides, load_overrides
 
-RETRY_PRESETS = {
-    "conservative": {"retries": 2, "backoff_seconds": 5.0},
-    "balanced":     {"retries": 3, "backoff_seconds": 2.0},
-    "aggressive":   {"retries": 5, "backoff_seconds": 1.0},
-}
+# Settings names PLAN-V2.3.md Session 10 removed: retries/no-sleep make
+# retry.* pointless, the status system (Session 6) replaced penalty/
+# quarantine timers, and the decider's confidence knobs are now internal
+# constants (ErrorBrain's own defaults). An old config.yaml or overrides.json
+# still naming one of these is never an error (ADR 0002: config.yaml is never
+# rewritten) - it is just ignored, with one notice (see `retired_settings_notice`).
+RETIRED_SETTINGS = frozenset({
+    "retries", "backoff_seconds", "retry_policy",
+    "penalty_base_seconds", "penalty_max_seconds", "quarantine_seconds",
+    "decider_confidence_threshold", "decider_rule_prior_confidence",
+    "decider_confidence_ceiling", "decider_contested_statuses",
+})
+
+
+def retired_settings_notice(*settings_dicts: dict) -> Optional[str]:
+    """One sentence naming every retired setting still present in any of
+    `settings_dicts` (typically config.yaml's `settings:` block and
+    overrides.json's), or `None` if there is nothing to say."""
+    found = sorted({
+        name for d in settings_dicts for name in (d or {}) if name in RETIRED_SETTINGS
+    })
+    if not found:
+        return None
+    plural = "setting" if len(found) == 1 else "settings"
+    return (f"Your config.yaml has {len(found)} {plural} v2.3 no longer uses: "
+            f"{', '.join(found)}. They do nothing now, and you can delete them.")
+
 
 @dataclass
 class ModelConfig:
@@ -49,11 +71,6 @@ class ProviderConfig:
     header_parser: str = "openai_compatible"
     keys: list[KeyRecord] = field(default_factory=list)
     key_strategy: str = "most_headroom"
-
-@dataclass
-class RetryConfig:
-    retries: int = 3
-    backoff_seconds: float = 2.0
 
 def _nonneg_float(raw) -> Optional[float]:
     """An optional non-negative float, or `None` for "not known".
@@ -94,24 +111,6 @@ def _bool(settings: dict, name: str, default: bool) -> bool:
     return bool(value)
 
 
-def _statuses(raw, default: tuple[int, ...]) -> tuple[int, ...]:
-    """Accept either a YAML list or a comma-separated string.
-
-    Hand-written settings files use both shapes, and the dashboard's settings
-    form can only ever produce a string.
-    """
-    if raw is None or raw == "":
-        return default
-    items = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
-    out = []
-    for item in items:
-        try:
-            out.append(int(str(item).strip()))
-        except (TypeError, ValueError):
-            continue
-    return tuple(out) or default
-
-
 @dataclass
 class DeciderConfig:
     """Where the small-decisions classifier lives (spec 4).
@@ -125,14 +124,6 @@ class DeciderConfig:
     base_url: str | None = None
     model: str | None = None
     timeout_seconds: float = 3.0
-
-    # Behaviour, as opposed to plumbing. These were hardcoded constants: the
-    # threshold in particular is read at nine places in _router to decide
-    # whether a verdict is acted on at all, while nothing ever set it.
-    confidence_threshold: float = 0.80
-    rule_prior_confidence: float = 0.6
-    confidence_ceiling: float = 0.95
-    contested_statuses: tuple[int, ...] = (400, 403, 429)
 
     @property
     def enabled(self) -> bool:
@@ -149,15 +140,16 @@ class FlexConfig:
     bucket_strategy: dict[str, str] = field(default_factory=dict)
     state_dir: str = ".flexrouter"
     window_seconds: int = 60
-    penalty_base_seconds: int = 30
-    penalty_max_seconds: int = 1800
     session_ttl_minutes: int = 30
+    # §2's "stopping at about 30s total": a bucket call tries every model it
+    # can reach, not a fixed count, but gives up rather than running forever
+    # against a bucket that keeps rotating through models that all fail.
+    failover_budget_seconds: float = 30.0
     port: int | None = None          # None means "left at the default"
     dashboard_port: int | None = None  # deprecated alias for `port`
     sample_interval_seconds: int = 60
     health_history_days: int = 30
     key_concurrency_cap: int = 4
-    quarantine_seconds: int = 86400
     probe_timeout_seconds: float = 15.0
     error_max_length: int = 300
     unscored_fallback_score: int = 50
@@ -180,7 +172,14 @@ class FlexConfig:
     along with it - the illegible "...lash" this setting exists to let the
     owner turn off. A key flexrouter itself holds is masked either way
     (redact.set_known_secrets, an exact match, never a heuristic)."""
-    retry: RetryConfig = field(default_factory=RetryConfig)
+    save_conversations: bool = True
+    """Placeholder (PLAN-V2.3.md Session 10); real behaviour lands in Session
+    11 (grill-decisions.md §21). Prompt, reply and reasoning are saved as
+    sent for `save_conversations_days`, off switch included because anything
+    a caller pastes into a prompt would otherwise sit in state/ untouched."""
+    save_conversations_days: int = 7
+    show_quickstart: bool = True
+    """On until the owner dismisses the quickstart checklist (Session 18)."""
     decider: DeciderConfig = field(default_factory=DeciderConfig)
     provider_budget: dict[str, float] = field(default_factory=dict)
     hooks: list[str] = field(default_factory=list)
@@ -476,14 +475,6 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
     raw = apply_overrides(raw, load_overrides())
     settings = raw.get("settings") or {}
 
-    preset_name = settings.get("retry_policy", "balanced")
-    preset = RETRY_PRESETS.get(preset_name, RETRY_PRESETS["balanced"])
-    retry = RetryConfig(
-        retries=_number(settings, "retries", preset["retries"], int),
-        backoff_seconds=_number(settings, "backoff_seconds",
-                                preset["backoff_seconds"], float),
-    )
-
     from flexrouter import presets as presets_mod
 
     shipped = presets_mod.shipped()
@@ -573,10 +564,6 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
         base_url=settings.get("decider_base_url") or None,
         model=settings.get("decider_model") or None,
         timeout_seconds=_number(settings, "decider_timeout_seconds", 3.0, float),
-        confidence_threshold=_number(settings, "decider_confidence_threshold", 0.80, float),
-        rule_prior_confidence=_number(settings, "decider_rule_prior_confidence", 0.6, float),
-        confidence_ceiling=_number(settings, "decider_confidence_ceiling", 0.95, float),
-        contested_statuses=_statuses(settings.get("decider_contested_statuses"), (400, 403, 429)),
     )
     bucket_strategy = {
         str(name): str(strategy)
@@ -589,22 +576,22 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
         bucket_strategy=bucket_strategy,
         state_dir=settings.get("state_dir", str(home.state_dir())),
         window_seconds=_number(settings, "window_seconds", 60, int),
-        penalty_base_seconds=_number(settings, "penalty_base_seconds", 30, int),
-        penalty_max_seconds=_number(settings, "penalty_max_seconds", 1800, int),
         session_ttl_minutes=_number(settings, "session_ttl_minutes", 30, int),
+        failover_budget_seconds=_number(settings, "failover_budget_seconds", 30.0, float),
         port=port,
         dashboard_port=port,
         sample_interval_seconds=_number(settings, "sample_interval_seconds", 60, int),
         health_history_days=_number(settings, "health_history_days", 30, int),
         key_concurrency_cap=_number(settings, "key_concurrency_cap", 4, int),
-        quarantine_seconds=_number(settings, "quarantine_seconds", 86400, int),
         probe_timeout_seconds=_number(settings, "probe_timeout_seconds", 15.0, float),
         error_max_length=_number(settings, "error_max_length", 300, int),
         unscored_fallback_score=_number(settings, "unscored_fallback_score", 50, int),
         auto_add_models=_bool(settings, "auto_add_models",
                               _bool(settings, "experimental_model_discovery", False)),
         redact_errors=_bool(settings, "redact_errors", False),
-        retry=retry,
+        save_conversations=_bool(settings, "save_conversations", True),
+        save_conversations_days=_number(settings, "save_conversations_days", 7, int),
+        show_quickstart=_bool(settings, "show_quickstart", True),
         decider=decider,
         provider_budget=settings.get("provider_budget", {}),
         hooks=settings.get("hooks", []),

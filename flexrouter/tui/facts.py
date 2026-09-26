@@ -22,8 +22,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 from flexrouter import home
-from flexrouter.config import load_config
+from flexrouter.config import load_config, retired_settings_notice
 from flexrouter.exceptions import ConfigError, ConfigFieldError
 from flexrouter.keys import KeyRecord, load_keys, mask
 from flexrouter.overrides import SECTIONS, load_overrides
@@ -374,6 +376,16 @@ def doctor_report(config_path=None) -> DoctorReport:
         report.model_count = sum(len(m) for m in cfg.tiers.values())
         report.provider_count = len(cfg.providers)
         report.port = cfg.port
+
+        source = Path(config_path) if config_path else home.config_path()
+        try:
+            raw_settings = (yaml.safe_load(source.read_text(encoding="utf-8")) or {}).get("settings") or {}
+        except Exception:
+            raw_settings = {}
+        override_settings = load_overrides().get("settings") or {}
+        notice = retired_settings_notice(raw_settings, override_settings)
+        if notice:
+            report.warnings.append(notice)
 
         vault = load_keys()
         for name, provider in sorted(cfg.providers.items()):

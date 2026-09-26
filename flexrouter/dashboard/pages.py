@@ -1134,13 +1134,16 @@ def _add_bucket_form() -> str:
 
 
 _INT_SETTINGS = frozenset({
-    "port", "dashboard_port", "window_seconds", "penalty_base_seconds",
-    "penalty_max_seconds", "session_ttl_minutes", "sample_interval_seconds",
-    "health_history_days", "key_concurrency_cap", "retries",
+    "port", "dashboard_port", "window_seconds", "session_ttl_minutes",
+    "sample_interval_seconds", "health_history_days", "key_concurrency_cap",
+    "save_conversations_days",
 })
-_FLOAT_SETTINGS = frozenset({"backoff_seconds"})
+_FLOAT_SETTINGS = frozenset({"failover_budget_seconds"})
 _JSON_SETTINGS = frozenset({"provider_budget", "hooks"})
-_BOOL_SETTINGS = frozenset({"auto_add_models", "experimental_model_discovery", "redact_errors"})
+_BOOL_SETTINGS = frozenset({
+    "auto_add_models", "experimental_model_discovery", "redact_errors",
+    "save_conversations", "show_quickstart",
+})
 
 
 def _cast_setting(field: str, raw_value: str):
