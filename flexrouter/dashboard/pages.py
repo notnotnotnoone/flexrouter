@@ -1273,6 +1273,7 @@ async def playground_chat(request: Request):
     from fastapi.responses import StreamingResponse
 
     from flexrouter.app import _best_bucket, _stream_chat
+    from flexrouter.traces import new_trace_id
     from flexrouter.wire import parse_model, resolve
 
     body = await request.json()
@@ -1327,7 +1328,7 @@ async def playground_chat(request: Request):
         return {"target": pin, "ok": False, "outcome": "failed", "answered_by": None}
 
     async def stream_single():
-        async for piece in _stream_chat(router, messages, tier, target, kwargs):
+        async for piece in _stream_chat(router, messages, tier, target, kwargs, new_trace_id()):
             yield piece
         last = facts.recent_requests(router, limit=1)
         if last:
@@ -1343,7 +1344,7 @@ async def playground_chat(request: Request):
         queue: asyncio.Queue = asyncio.Queue()
 
         async def run_one(pin: str) -> None:
-            async for piece in _stream_chat(router, messages, pin, pin, kwargs):
+            async for piece in _stream_chat(router, messages, pin, pin, kwargs, new_trace_id()):
                 await queue.put(piece)
             info = await one_target_trace(pin)
             await queue.put(f"event: flexrouter\ndata: {json.dumps(info)}\n\n")
