@@ -127,7 +127,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 **Starter prompt:**
 > Do Session 3 of PLAN-V2.3.md. Read that block and grill-decisions.md §2. TDD the failover policy first.
 
-### ☐ Session 4 — Test budget + reasoning split 🔗 (after 3)
+### ☑ Session 4 — Test budget + reasoning split 🔗 (after 3)
 **Model:** Sonnet
 **Decisions:** §13, §7. **US:** 13–14, 69. **P:** 34.
 - Every test call (key Test in `dashboard/keytest.py`, the rate-limit probe in `dashboard/pages.py` `probe_one`) sends "hi" with **~512 max tokens**, not 1.
@@ -135,9 +135,9 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 - **Reasoning splitter:** move `<thought>…</thought>` / `<think>…</think>` out of `content` into `reasoning_content`. It must be streaming-safe, since tags can split across chunks.
 
 **Done when:**
-- [ ] The Gemma-style inline thought is split in both stream and non-stream.
-- [ ] The splitter's chunk-boundary tests pass.
-- [ ] A `max_tokens:1` probe no longer counts as a model failure.
+- [x] The Gemma-style inline thought is split in both stream and non-stream.
+- [x] The splitter's chunk-boundary tests pass.
+- [x] A `max_tokens:1` probe no longer counts as a model failure.
 
 **Starter prompt:**
 > Do Session 4 of PLAN-V2.3.md. Read that block and grill-decisions.md §7 and §13.

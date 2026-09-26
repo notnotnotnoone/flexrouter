@@ -2584,8 +2584,10 @@ async def settings_test_rate_limits() -> RedirectResponse:
     async def probe_one(pin: str) -> str:
         provider, _, model = pin.partition("/")
         try:
+            # 512, not 1: see keytest.py - a reasoning model needs room to
+            # finish thinking before it can answer at all (§13).
             await router.agenerate([{"role": "user", "content": "hi"}], pin,
-                                   wait=False, max_tokens=1)
+                                   wait=False, max_tokens=512)
         except (RouterBusy, RouterError):
             return "failed"
         return "learned" if store.has_limits(provider, model) else "silent"

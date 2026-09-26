@@ -33,6 +33,24 @@ async def test_successful_call_returns_dict():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_inline_think_tag_is_split_into_reasoning_content():
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={
+            "choices": [{"message": {
+                "role": "assistant",
+                "content": "<think>let me consider this</think>the answer is 4",
+            }}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+        })
+    )
+    async with AsyncClient() as client:
+        result = await client.chat(ROUTE, MESSAGES)
+    message = result["choices"][0]["message"]
+    assert message["content"] == "the answer is 4"
+    assert message["reasoning_content"] == "let me consider this"
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_returns_tokens_used():
     respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
         return_value=httpx.Response(200, json=OK_RESPONSE)

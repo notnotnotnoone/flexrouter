@@ -42,3 +42,15 @@ def decide_failover(
     if status_code is not None and 400 <= status_code < 500:
         return Verdict.RETURN
     return Verdict.NEXT
+
+
+def caller_budget_detail(
+    finish_reason: str | None, caller_max_tokens: int | None,
+) -> str | None:
+    """grill-decisions.md §13: an empty reply with `finish_reason=length`
+    and a caller-set `max_tokens` is the caller's budget too small for the
+    model to finish reasoning, not a model failure - no penalty, and it
+    still fails over to the next model in a bucket."""
+    if finish_reason != "length" or caller_max_tokens is None:
+        return None
+    return f"the model used all {caller_max_tokens} tokens thinking, raise max_tokens"

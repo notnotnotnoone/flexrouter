@@ -48,7 +48,11 @@ async def test_key(router, provider: str, key_id: str) -> KeyTestResult:
     )
     client = AsyncClient()
     try:
-        await client.chat(route, [{"role": "user", "content": "ping"}], max_tokens=1)
+        # 512, not 1: a reasoning model (gpt-oss, Gemma, Gemini thinking)
+        # spends the whole budget thinking and never reaches an answer at
+        # max_tokens=1, which used to look like a dead model instead of a
+        # test that didn't give it enough room (grill-decisions.md §13).
+        await client.chat(route, [{"role": "user", "content": "hi"}], max_tokens=512)
     except RateLimitError:
         return KeyTestResult(ok=False, message="rate limited right now - the key itself may still be fine")
     except RouterError as exc:

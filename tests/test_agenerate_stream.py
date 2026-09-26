@@ -199,6 +199,27 @@ async def test_reasoning_delta_is_yielded_as_separate_event(config_file, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_inline_think_tag_split_across_chunks_becomes_reasoning_events(config_file, monkeypatch):
+    router = _router(config_file)
+    monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE]))
+
+    async def _stream(route, messages, **kwargs):
+        yield StreamChunk(content="<thi")
+        yield StreamChunk(content="nk>step by step</thi")
+        yield StreamChunk(content="nk>the answer is 4")
+
+    monkeypatch.setattr(
+        router._client, "stream_chat", _stream_chat_sequence([_stream])
+    )
+
+    events = [e async for e in router.agenerate_stream(MESSAGES, tier="low")]
+    reasoning_text = "".join(e.text for e in events if isinstance(e, ReasoningDeltaEvent))
+    content_text = "".join(e.text for e in events if isinstance(e, DeltaEvent))
+    assert reasoning_text == "step by step"
+    assert content_text == "the answer is 4"
+
+
+@pytest.mark.asyncio
 async def test_tool_call_delta_is_yielded_and_not_accumulated_into_content(config_file, monkeypatch):
     router = _router(config_file)
     monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE]))

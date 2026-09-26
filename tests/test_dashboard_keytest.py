@@ -41,6 +41,23 @@ async def test_a_working_key_reports_ok(router, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_gives_a_reasoning_model_enough_room_to_answer(router, monkeypatch):
+    """§13: max_tokens=1 makes a reasoning model spend its whole budget
+    thinking and never answer at all, which looked like a dead key."""
+    seen = {}
+
+    async def fake_chat(self, route, messages, **kwargs):
+        seen["max_tokens"] = kwargs.get("max_tokens")
+        return {"choices": [{"message": {"content": "pong"}}]}
+
+    monkeypatch.setattr("flexrouter.client.AsyncClient.chat", fake_chat)
+    key_id = router._cfg.providers["groq"].keys[0].id
+
+    await keytest.test_key(router, "groq", key_id)
+    assert seen["max_tokens"] == 512
+
+
+@pytest.mark.asyncio
 async def test_a_rejected_key_reports_the_failure_not_an_exception(router, monkeypatch):
     async def fake_chat(self, route, messages, **kwargs):
         raise RouterError("Auth failure for provider 'groq': 401")

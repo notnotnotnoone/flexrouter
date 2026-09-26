@@ -8,6 +8,7 @@ from flexrouter.engine import RouteResult
 from flexrouter.errors import describe_http_error
 from flexrouter.exceptions import RouterError
 from flexrouter.headers import parse_headers
+from flexrouter.reasoning import split_reasoning
 
 logger = logging.getLogger(__name__)
 
@@ -142,11 +143,22 @@ class AsyncClient:
             raise ProviderError(f"Invalid JSON from {route.provider}/{route.model}: {exc}") from exc
 
         try:
-            _ = data["choices"][0]["message"]["content"]
+            message = data["choices"][0]["message"]
+            content = message["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise ProviderError(
                 f"{route.provider}/{route.model}: malformed response, missing choices[0].message.content ({exc})"
             ) from exc
+
+        # Some providers (Gemma-style) put reasoning inline in `content`
+        # rather than a separate field - move it to `reasoning_content` on
+        # the wire either way (grill-decisions.md §7).
+        if content and ("<think>" in content or "<thought>" in content):
+            new_content, reasoning = split_reasoning(content)
+            message["content"] = new_content
+            if reasoning:
+                message["reasoning_content"] = reasoning
+
         return data
 
     async def stream_chat(

@@ -19,7 +19,7 @@ from flexrouter.engine import RoutingEngine, RouteResult
 from flexrouter.error_brain import ErrorBrain
 from flexrouter.events import EventLogger
 from flexrouter.exceptions import RouterBusy, RouterError
-from flexrouter.failover import Verdict, decide_failover
+from flexrouter.failover import Verdict, caller_budget_detail, decide_failover
 from flexrouter.health_history import HealthHistory
 from flexrouter.hooks import HookRunner, HookContext
 from flexrouter.key_state import KeyStateStore
@@ -27,6 +27,7 @@ from flexrouter.keys import allows
 from flexrouter.model_facts import ModelFactsStore
 from flexrouter.quota import QuotaTracker
 from flexrouter.rate_limits import RateLimitStore
+from flexrouter.reasoning import ReasoningStreamSplitter
 from flexrouter.recovery import PenaltyBox
 from flexrouter.redact import scrub
 from flexrouter.refresh import refresh_config
@@ -519,24 +520,28 @@ class LocalRouter:
                 tool_calls = message.get("tool_calls") or []
                 finish_reason = (result.get("choices") or [{}])[0].get("finish_reason")
                 if not content.strip() and not tool_calls:
-                    empty_detail = (
-                        f"empty response (no content, no tool calls); "
-                        f"finish_reason={finish_reason!r}, usage={usage!r}"
-                    )
-                    logger.warning(
-                        "empty completion, retrying next provider",
-                        extra={
-                            "event": "router.chat.empty_completion",
-                            "provider": route.provider, "model": route.model,
-                            "attempt": attempt + 1,
-                            "finish_reason": finish_reason,
-                        },
-                    )
-                    self._engine.penalize(route.provider, route.model)
-                    self._events.record(
-                        route.provider, route.model, "server_error",
-                        detail=empty_detail,
-                        penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                    budget_detail = caller_budget_detail(finish_reason, kwargs.get("max_tokens"))
+                    if budget_detail is not None:
+                        empty_detail = budget_detail
+                    else:
+                        empty_detail = (
+                            f"empty response (no content, no tool calls); "
+                            f"finish_reason={finish_reason!r}, usage={usage!r}"
+                        )
+                        logger.warning(
+                            "empty completion, retrying next provider",
+                            extra={
+                                "event": "router.chat.empty_completion",
+                                "provider": route.provider, "model": route.model,
+                                "attempt": attempt + 1,
+                                "finish_reason": finish_reason,
+                            },
+                        )
+                        self._engine.penalize(route.provider, route.model)
+                        self._events.record(
+                            route.provider, route.model, "server_error",
+                            detail=empty_detail,
+                            penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
                     self._audit.log(
                         tier=tier, provider=route.provider, model=route.model,
                         prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, cost_usd=0.0,
@@ -878,6 +883,11 @@ class LocalRouter:
                 last_key_by_index: dict[int, str] = {}
                 first_token_at: Optional[float] = None
                 finish_reason: Optional[str] = None
+                # Some providers (Gemma-style) put reasoning inline in
+                # `content` as `<think>`/`<thought>` tags instead of a
+                # separate field - a tag boundary has no relation to a chunk
+                # boundary, so this buffers across chunks for this attempt.
+                inline_reasoning = ReasoningStreamSplitter()
 
                 def _events_for(sc) -> list:
                     nonlocal has_tool_calls, first_token_at, finish_reason
@@ -887,8 +897,12 @@ class LocalRouter:
                     if first_token_at is None and (sc.content or sc.reasoning or sc.tool_call_delta):
                         first_token_at = time.monotonic()
                     if sc.content:
-                        accumulated.append(sc.content)
-                        events.append(DeltaEvent(text=sc.content))
+                        content_part, reasoning_part = inline_reasoning.feed(sc.content)
+                        if content_part:
+                            accumulated.append(content_part)
+                            events.append(DeltaEvent(text=content_part))
+                        if reasoning_part:
+                            events.append(ReasoningDeltaEvent(text=reasoning_part))
                     if sc.reasoning:
                         events.append(ReasoningDeltaEvent(text=sc.reasoning))
                     if sc.tool_call_delta:
@@ -946,6 +960,18 @@ class LocalRouter:
                         for ev in _events_for(sc):
                             any_yielded = True
                             yield ev
+
+                    # A response cut off by max_tokens mid-thought never
+                    # gets its closing tag - whatever's still buffered is
+                    # the tail of the reasoning or content, not garbage.
+                    flush_content, flush_reasoning = inline_reasoning.flush()
+                    if flush_content:
+                        accumulated.append(flush_content)
+                        any_yielded = True
+                        yield DeltaEvent(text=flush_content)
+                    if flush_reasoning:
+                        any_yielded = True
+                        yield ReasoningDeltaEvent(text=flush_reasoning)
                 except BaseException as exc:
                     verdict = await self._classify(str(exc), getattr(exc, "status_code", None), route, trace_id, exc)
                     if vision and verdict.verdict in ("bad_request", "model_gone") and \
@@ -1052,19 +1078,23 @@ class LocalRouter:
                             f"{route.provider}/{route.model}: empty completion after partial "
                             f"output - {empty_detail}"), attempts)
 
-                    logger.warning(
-                        "empty completion, retrying next provider",
-                        extra={
-                            "event": "router.stream.empty_completion",
-                            "provider": route.provider, "model": route.model,
-                            "attempt": attempt + 1, "max_attempts": max_attempts,
-                        },
-                    )
-                    self._engine.penalize(route.provider, route.model)
-                    self._events.record(
-                        route.provider, route.model, "server_error",
-                        detail=empty_detail,
-                        penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                    budget_detail = caller_budget_detail(finish_reason, kwargs.get("max_tokens"))
+                    if budget_detail is not None:
+                        empty_detail = budget_detail
+                    else:
+                        logger.warning(
+                            "empty completion, retrying next provider",
+                            extra={
+                                "event": "router.stream.empty_completion",
+                                "provider": route.provider, "model": route.model,
+                                "attempt": attempt + 1, "max_attempts": max_attempts,
+                            },
+                        )
+                        self._engine.penalize(route.provider, route.model)
+                        self._events.record(
+                            route.provider, route.model, "server_error",
+                            detail=empty_detail,
+                            penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
                     self._audit.log(
                         tier=tier, provider=route.provider, model=route.model,
                         prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
