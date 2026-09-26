@@ -197,7 +197,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 **Starter prompt:**
 > Do Session 6 of PLAN-V2.3.md. Read that block, grill-decisions.md §3, and the mapping table at the bottom of grill-log.md.
 
-### ☐ Session 7 — Did-you-mean + the error brain decides 🔗 (after 6)
+### ☑ Session 7 — Did-you-mean + the error brain decides 🔗 (after 6)
 **Model:** **Opus** (timeouts, fake JEV, overturns 2 ADRs)
 **Decisions:** §3 (did-you-mean), §4. **US:** 21–23, 30–35.
 - A 404 → the model-list checker (Session 5):
@@ -212,9 +212,19 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 - The decider's confidence knobs become internal constants.
 
 **Done when:**
-- [ ] The four real 400s in §4 each land on the right status, tested with a fake JEV.
-- [ ] A slow or down JEV never blocks for more than 0.5s.
-- [ ] [Use it] produces the right overrides.
+- [x] The four real 400s in §4 each land on the right status, tested with a fake JEV.
+- [x] A slow or down JEV never blocks for more than 0.5s.
+- [x] [Use it] produces the right overrides.
+
+**Done 26 Sep 2026.** Choices left open by the plan:
+- Session 5's `catalogue.is_real`/`did_you_mean` and status.py's `"use:<id>"` action placeholder were already built - this session only had to wire them together: `classify_failure()`'s 404/410 branch and a `model_gone` verdict on *any* status both go through the same `_gone_failure()`, so a did-you-mean from an unrecognized 400 works exactly like a literal 404.
+- `decide_failover(400, verdict=...)`: `None` or `"bad_request"` still returns to the caller (the no-classifier-configured default is unchanged); every other named verdict fails over. An unlisted 4xx (422, 413, ...) keeps the old flat "return" - out of scope.
+- `_handle_provider_error()` gained `key_id`/`verdict` params; a `bad_key` verdict on *any* status now delegates to `_handle_auth_failure()` (the same key-scoped path a real 401/403 already used) instead of writing a model-level status.
+- The 0.5s cap wraps the existing `asyncio.to_thread(...)` call in `asyncio.wait_for()` (`JEV_TIMEOUT_SECONDS`, `_router.py`); a timeout returns a synthetic `unknown`/0.0-confidence verdict for *this* attempt only - the real classify() call is not cancelled and still saves what it learns for the next sighting of that fingerprint.
+- `fingerprint()` now takes `provider`/`model` and strips them (and `"provider/model"`) before normalizing, so the same shape of error across different models is one fingerprint.
+- `[Use it]`: `POST /statuses/{provider}/{model}/use` (new; no request body - the suggested id comes only from that model's own live status, never the client) → `settings_write.use_suggested_model()`, which copies the old model's score/rpm/tpm/context_window/vision/quotas/prices/tokens_per_second onto the new id via `overrides.add_model()` in every bucket it was in, then disables the old one.
+- "Not sure" (JEV unsure/down) has no new mechanism: `ErrorBrainEntry.flagged_for_review` already exists for this from Session 4-era work. Session 8 groups the status page by it.
+- The three decider confidence knobs stop being read from `self._cfg.decider.*` in both `LocalRouter.__init__` and `reload()`; `ErrorBrain`'s own constructor defaults apply. The config/settings fields themselves are untouched here (Session 10's job).
 
 **Starter prompt:**
 > Do Session 7 of PLAN-V2.3.md. Read that block and grill-decisions.md §3 and §4.
