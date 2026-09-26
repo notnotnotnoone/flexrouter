@@ -90,6 +90,14 @@ class DoneEvent:
 StreamEvent = AttemptEvent | AttemptFailedEvent | DeltaEvent | ReasoningDeltaEvent | ToolCallDeltaEvent | DoneEvent
 
 
+def _tag_attempts(exc: BaseException, attempts: list[dict]) -> BaseException:
+    """Carry the per-attempt record on the exception app.py raises to the
+    caller, so error.flexrouter.attempts[] can be built from the real thing
+    instead of a copy that could drift from it."""
+    exc.attempts = list(attempts)  # type: ignore[attr-defined]
+    return exc
+
+
 class LocalRouter:
     def __init__(self, config_path: Optional[str] = None) -> None:
         from flexrouter import home
@@ -165,7 +173,7 @@ class LocalRouter:
         if len(lines) > len(shown):
             shown.append(f"...and {len(lines) - len(shown)} more")
         joined = ("\n  ").join(shown)
-        return (f"Every model in tier {tier!r} is quarantined - this will "
+        return (f"Every model in bucket {tier!r} is quarantined - this will "
                 f"not clear on its own:\n  {joined}")
 
     def _register_known_identifiers(self) -> None:
@@ -270,6 +278,7 @@ class LocalRouter:
         wait: bool = True,
         vision: bool = False,
         session_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
         **kwargs,
     ) -> dict:
         self._maybe_hot_reload()
@@ -283,7 +292,10 @@ class LocalRouter:
         retries = self._cfg.retry.retries
         backoff = self._cfg.retry.backoff_seconds
 
-        trace_id = new_trace_id()
+        # A caller (app.py) that already needs this ID for a response header
+        # before the call returns passes its own; otherwise one is minted
+        # here, same as always.
+        trace_id = trace_id or new_trace_id()
         request_started = time.monotonic()
         skipped = [
             {"provider": s["provider"], "model": s["model"],
@@ -292,6 +304,11 @@ class LocalRouter:
             if not s["available"]
         ]
         attempts: list[dict] = []
+        # Time spent asleep (backoff, or waiting for a slot to free up) since
+        # the last attempt, attributed to whichever attempt comes next - so a
+        # caller reading error.flexrouter.attempts[].waited_ms can tell "the
+        # model answered slowly" apart from "the router made us wait first".
+        pending_wait_ms = 0
 
         trace_written = False
 
@@ -329,17 +346,22 @@ class LocalRouter:
                 if route is None:
                     if last_auth_error is not None:
                         _write_trace(ok=False)
-                        raise last_auth_error
+                        raise _tag_attempts(last_auth_error, attempts)
                     blocked = self._quarantine_block_reason(tier)
                     if blocked:
                         _write_trace(ok=False)
-                        raise RouterBusy(blocked)
+                        raise _tag_attempts(RouterBusy(blocked), attempts)
                     if not wait:
                         _write_trace(ok=False)
-                        raise RouterBusy(f"All models in tier {tier!r} are unavailable")
+                        raise _tag_attempts(
+                            RouterBusy(f"All models in bucket {tier!r} are unavailable"), attempts)
                     secs = self._engine_for(tier).seconds_until_available(tier)
-                    await asyncio.sleep(max(secs, 1.0))
+                    wait_for = max(secs, 1.0)
+                    await asyncio.sleep(wait_for)
+                    pending_wait_ms += int(wait_for * 1000)
                     continue
+
+                waited_ms, pending_wait_ms = pending_wait_ms, 0
 
                 start = time.monotonic()
                 if key_id is not None:
@@ -373,12 +395,14 @@ class LocalRouter:
                     attempts.append({"n": attempt + 1, "provider": route.provider,
                                      "model": route.model, "status": 429,
                                      "provider_message": str(exc), "key_id": key_id,
-                                     "verdict": verdict.verdict,
+                                     "verdict": verdict.verdict, "waited_ms": waited_ms,
                                      "ms": int((time.monotonic() - start) * 1000)})
                     if attempt == retries:
                         _write_trace(ok=False)
-                        raise RouterBusy(f"All retries exhausted for tier {tier!r}")
+                        raise _tag_attempts(
+                            RouterBusy(f"All retries exhausted for bucket {tier!r}"), attempts)
                     await asyncio.sleep(backoff)
+                    pending_wait_ms += int(backoff * 1000)
                     continue
                 except RouterError as exc:
                     self._handle_auth_failure(route, exc, key_id)
@@ -399,12 +423,12 @@ class LocalRouter:
                     attempts.append({"n": attempt + 1, "provider": route.provider,
                                      "model": route.model, "status": None,
                                      "provider_message": str(exc), "key_id": key_id,
-                                     "verdict": verdict.verdict,
+                                     "verdict": verdict.verdict, "waited_ms": waited_ms,
                                      "ms": int((time.monotonic() - start) * 1000)})
                     # No backoff: a rejected key won't un-reject in two seconds.
                     if attempt == retries:
                         _write_trace(ok=False)
-                        raise
+                        raise _tag_attempts(exc, attempts)
                     continue
                 except ProviderError as exc:
                     self._handle_provider_error(route, exc)
@@ -424,12 +448,14 @@ class LocalRouter:
                     attempts.append({"n": attempt + 1, "provider": route.provider,
                                      "model": route.model, "status": exc.status_code,
                                      "provider_message": str(exc), "key_id": key_id,
-                                     "verdict": verdict.verdict,
+                                     "verdict": verdict.verdict, "waited_ms": waited_ms,
                                      "ms": int((time.monotonic() - start) * 1000)})
                     if attempt == retries:
                         _write_trace(ok=False)
-                        raise RouterBusy(f"All retries exhausted for tier {tier!r}")
+                        raise _tag_attempts(
+                            RouterBusy(f"All retries exhausted for bucket {tier!r}"), attempts)
                     await asyncio.sleep(backoff)
+                    pending_wait_ms += int(backoff * 1000)
                     continue
                 finally:
                     if key_id is not None:
@@ -489,12 +515,14 @@ class LocalRouter:
                     attempts.append({"n": attempt + 1, "provider": route.provider,
                                      "model": route.model, "status": None,
                                      "provider_message": empty_detail, "key_id": key_id,
-                                     "verdict": verdict.verdict,
+                                     "verdict": verdict.verdict, "waited_ms": waited_ms,
                                      "ms": int((time.monotonic() - start) * 1000)})
                     if attempt == retries:
                         _write_trace(ok=False)
-                        raise RouterBusy(f"All retries exhausted for tier {tier!r}")
+                        raise _tag_attempts(
+                            RouterBusy(f"All retries exhausted for bucket {tier!r}"), attempts)
                     await asyncio.sleep(backoff)
+                    pending_wait_ms += int(backoff * 1000)
                     continue
 
                 self._engine.record_request(route.provider, route.model, total_tokens)
@@ -525,7 +553,9 @@ class LocalRouter:
                 return result
 
             _write_trace(ok=False)
-            raise RouterBusy(f"All models in tier {tier!r} are unavailable after {retries} retries")
+            raise _tag_attempts(
+                RouterBusy(f"All models in bucket {tier!r} are unavailable after {retries} retries"),
+                attempts)
         finally:
             # A caller that gives up (a deadline, a closed connection) cancels
             # this mid-wait; the request must still show up as failed.
@@ -538,6 +568,7 @@ class LocalRouter:
         tier: str,
         vision: bool = False,
         session_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
         **kwargs,
     ) -> AsyncIterator[StreamEvent]:
         self._maybe_hot_reload()
@@ -552,7 +583,7 @@ class LocalRouter:
         backoff = self._cfg.retry.backoff_seconds
         max_attempts = retries + 1
 
-        trace_id = new_trace_id()
+        trace_id = trace_id or new_trace_id()
         request_started = time.monotonic()
         skipped = [
             {"provider": s["provider"], "model": s["model"],
@@ -593,13 +624,13 @@ class LocalRouter:
 
                 if route is None:
                     # Unlike the sync path this loop has no wait=False escape, so
-                    # without the quarantine check it sleeps forever on a tier
+                    # without the quarantine check it sleeps forever on a bucket
                     # that can never come back — the reported hang, via the
                     # streaming route a chat client actually uses.
                     blocked = self._quarantine_block_reason(tier)
                     if blocked:
                         _write_trace(ok=False)
-                        raise RouterBusy(blocked)
+                        raise _tag_attempts(RouterBusy(blocked), attempts)
                     secs = self._engine_for(tier).seconds_until_available(tier)
                     await asyncio.sleep(max(secs, 1.0))
                     continue
@@ -655,7 +686,8 @@ class LocalRouter:
                     )
                     if attempt == retries:
                         _write_trace(ok=False)
-                        raise RouterBusy(f"All retries exhausted for tier {tier!r}")
+                        raise _tag_attempts(
+                            RouterBusy(f"All retries exhausted for bucket {tier!r}"), attempts)
                     await asyncio.sleep(backoff)
                     continue
                 except RateLimitError as exc:
@@ -694,7 +726,8 @@ class LocalRouter:
                     )
                     if attempt == retries:
                         _write_trace(ok=False)
-                        raise RouterBusy(f"All retries exhausted for tier {tier!r}")
+                        raise _tag_attempts(
+                            RouterBusy(f"All retries exhausted for bucket {tier!r}"), attempts)
                     await asyncio.sleep(backoff)
                     continue
                 except RouterError as exc:
@@ -724,7 +757,7 @@ class LocalRouter:
                     )
                     if attempt == retries:
                         _write_trace(ok=False)
-                        raise
+                        raise _tag_attempts(exc, attempts)
                     continue
                 except ProviderError as exc:
                     self._handle_provider_error(route, exc)
@@ -753,7 +786,8 @@ class LocalRouter:
                     )
                     if attempt == retries:
                         _write_trace(ok=False)
-                        raise RouterBusy(f"All retries exhausted for tier {tier!r}")
+                        raise _tag_attempts(
+                            RouterBusy(f"All retries exhausted for bucket {tier!r}"), attempts)
                     await asyncio.sleep(backoff)
                     continue
                 finally:
@@ -867,7 +901,7 @@ class LocalRouter:
                         ms_to_first_token=(
                             int((first_token_at - start) * 1000) if first_token_at else None),
                     )
-                    raise
+                    raise _tag_attempts(exc, attempts)
 
                 latency_ms = int((time.monotonic() - start) * 1000)
                 full_text = "".join(accumulated)
@@ -952,9 +986,9 @@ class LocalRouter:
                             ms_to_first_token=(
                                 int((first_token_at - start) * 1000) if first_token_at else None),
                         )
-                        raise RouterError(
+                        raise _tag_attempts(RouterError(
                             f"{route.provider}/{route.model}: empty completion after partial "
-                            f"output - {empty_detail}")
+                            f"output - {empty_detail}"), attempts)
 
                     logger.warning(
                         "empty completion, retrying next provider",
@@ -994,7 +1028,8 @@ class LocalRouter:
                     )
                     if attempt == retries:
                         _write_trace(ok=False)
-                        raise RouterBusy(f"All retries exhausted for tier {tier!r}")
+                        raise _tag_attempts(
+                            RouterBusy(f"All retries exhausted for bucket {tier!r}"), attempts)
                     await asyncio.sleep(backoff)
                     continue
 
@@ -1070,7 +1105,9 @@ class LocalRouter:
                 return
 
             _write_trace(ok=False)
-            raise RouterBusy(f"All models in tier {tier!r} are unavailable after {retries} retries")
+            raise _tag_attempts(
+                RouterBusy(f"All models in bucket {tier!r} are unavailable after {retries} retries"),
+                attempts)
         finally:
             # A caller that gives up (a deadline, a closed connection) cancels
             # this mid-wait; the request must still show up as failed.

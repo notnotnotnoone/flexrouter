@@ -41,6 +41,7 @@ from flexrouter.dashboard.pages import pages as dashboard_pages
 from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.probe import probe_key, stale_models
 from flexrouter.redact import scrub
+from flexrouter.traces import new_trace_id
 from flexrouter.wire import bucket_id, model_id, parse_model, resolve
 
 # The library blocks indefinitely when a tier is saturated, which is the right
@@ -50,7 +51,7 @@ from flexrouter.wire import bucket_id, model_id, parse_model, resolve
 ROUTE_TIMEOUT_SECONDS = float(os.environ.get("FLEXROUTER_ROUTE_TIMEOUT", "90"))
 
 _TIMEOUT_HINT = (
-    "No model in tier {tier!r} became available within {secs:g}s - every model "
+    "No model in bucket {tier!r} became available within {secs:g}s - every model "
     "is rate-limited, over budget, or quarantined. Check the dashboard for why, "
     "or run `flexrouter refresh` if the model list is stale."
 )
@@ -86,9 +87,26 @@ def _state_dir() -> str:
     return get_router()._cfg.state_dir
 
 
+REQUEST_ID_HEADER = "x-flexrouter-request-id"
+
+
+def _attempt_envelope(attempts: list[dict]) -> list[dict]:
+    """The attempts list built for internal use (traces, the error brain)
+    trimmed and scrubbed for something handed back to a caller."""
+    return [{
+        "model": f"{a['provider']}/{a['model']}",
+        "status": a.get("status"),
+        "provider_message": scrub(a.get("provider_message", "")),
+        "ms": a.get("ms"),
+        "waited_ms": a.get("waited_ms", 0),
+        "verdict": a.get("verdict"),
+    } for a in attempts]
+
+
 def openai_error(message: str, error_type: str = "server_error",
                  code: str | None = None, status: int = 500, *,
-                 scrub_message: bool = True) -> JSONResponse:
+                 scrub_message: bool = True, request_id: str | None = None,
+                 attempts: list[dict] | None = None) -> JSONResponse:
     """`scrub_message=False` is only for a fixed string this codebase wrote
     itself - never for anything derived from a provider response, an
     exception, a config file, or a request. The default is True so a new
@@ -100,7 +118,11 @@ def openai_error(message: str, error_type: str = "server_error",
     err: dict = {"message": text, "type": error_type}
     if code is not None:
         err["code"] = code
-    return JSONResponse({"error": err}, status_code=status)
+    if request_id is not None:
+        err["flexrouter"] = {"request_id": request_id,
+                             "attempts": _attempt_envelope(attempts or [])}
+    headers = {REQUEST_ID_HEADER: request_id} if request_id is not None else None
+    return JSONResponse({"error": err}, status_code=status, headers=headers)
 
 
 _UNAUTHORIZED = ("This flexrouter needs a key. Send it as an Authorization "
@@ -276,53 +298,62 @@ async def chat_completions(request: Request):
 
     model = body.get("model", "auto")
     router = get_router()
+    # Minted here, not inside the router, so it's known for the response
+    # header even when routing never gets far enough to produce one itself
+    # (a bad model name, a timeout) - every response, success or failure,
+    # carries the same ID.
+    trace_id = new_trace_id()
     try:
         tier = resolve(parse_model(model), list(router._cfg.tiers.keys()),
                        _best_bucket(router))
     except KeyError as exc:
         return openai_error(str(exc.args[0]), "invalid_request_error",
-                            "model_not_found", 404)
+                            "model_not_found", 404, request_id=trace_id)
     kwargs = _kwargs_from(body)
 
     if body.get("stream"):
         return StreamingResponse(
-            _stream_chat(router, messages, tier, model, kwargs),
+            _stream_chat(router, messages, tier, model, kwargs, trace_id),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                     REQUEST_ID_HEADER: trace_id},
         )
 
     try:
         result = await asyncio.wait_for(
-            router.agenerate(messages, tier, **kwargs),
+            router.agenerate(messages, tier, trace_id=trace_id, **kwargs),
             timeout=ROUTE_TIMEOUT_SECONDS,
         )
     except (asyncio.TimeoutError, TimeoutError):
         return openai_error(
             _TIMEOUT_HINT.format(tier=tier, secs=ROUTE_TIMEOUT_SECONDS),
-            "server_error", "provider_unavailable", 504)
+            "server_error", "provider_unavailable", 504, request_id=trace_id)
     except RouterBusy as exc:
-        return openai_error(str(exc), "server_error", "provider_unavailable", 503)
+        return openai_error(str(exc), "server_error", "provider_unavailable", 503,
+                            request_id=trace_id, attempts=getattr(exc, "attempts", None))
     except RouterError as exc:
         # A provider-side failure, not the caller's mistake. Since Task 7
         # RouterError also means "every provider failed" and "the model
         # produced nothing after partial output"; calling that
         # invalid_request_error sent callers to debug their own payload.
-        return openai_error(str(exc), "server_error", status=502)
+        return openai_error(str(exc), "server_error", status=502,
+                            request_id=trace_id, attempts=getattr(exc, "attempts", None))
     except KeyError:
         # The pin engine raises KeyError for a model that is not in the
         # settings at all. The client asked for something specific by name;
         # say so rather than returning a bare 500.
         return openai_error(
             f"There is no bucket or model named {model!r}.",
-            "invalid_request_error", "model_not_found", 404)
+            "invalid_request_error", "model_not_found", 404, request_id=trace_id)
     except Exception as exc:  # noqa: BLE001
-        return openai_error(str(exc))
+        return openai_error(str(exc), request_id=trace_id,
+                            attempts=getattr(exc, "attempts", None))
 
     result.setdefault("id", f"chatcmpl-{uuid.uuid4().hex[:29]}")
     result.setdefault("object", "chat.completion")
     result.setdefault("created", int(time.time()))
     result.setdefault("model", model)
-    return result
+    return JSONResponse(result, headers={REQUEST_ID_HEADER: trace_id})
 
 
 def _sse(payload: dict) -> str:
@@ -330,10 +361,14 @@ def _sse(payload: dict) -> str:
 
 
 def _sse_error(message: str, error_type: str = "server_error",
-               code: str | None = None) -> str:
+               code: str | None = None, *, request_id: str | None = None,
+               attempts: list[dict] | None = None) -> str:
     err: dict = {"message": scrub(message), "type": error_type}
     if code is not None:
         err["code"] = code
+    if request_id is not None:
+        err["flexrouter"] = {"request_id": request_id,
+                             "attempts": _attempt_envelope(attempts or [])}
     return _sse({"error": err})
 
 
@@ -351,7 +386,7 @@ def _tool_call_delta(event) -> dict:
 
 
 async def _stream_chat(router, messages: list[dict], tier: str, model: str,
-                       kwargs: dict) -> AsyncIterator[str]:
+                       kwargs: dict, trace_id: str) -> AsyncIterator[str]:
     from flexrouter._router import (
         AttemptEvent, AttemptFailedEvent, DeltaEvent, DoneEvent,
         ReasoningDeltaEvent, ToolCallDeltaEvent,
@@ -367,7 +402,8 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
         return _sse(payload)
 
     def error_chunk(message: str, error_type: str = "server_error",
-                    code: str | None = None) -> str:
+                    code: str | None = None, *,
+                    attempts: list[dict] | None = None) -> str:
         """One chunk a client can actually parse, carrying the failure.
 
         A bare {"error": ...} object is what this used to send; a client that
@@ -377,14 +413,17 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
         that ignores unknown keys renders the partial answer and stops
         cleanly.
         """
-        err: dict = {"message": scrub(message), "type": error_type}
+        err: dict = {"message": scrub(message), "type": error_type,
+                    "flexrouter": {"request_id": trace_id,
+                                  "attempts": _attempt_envelope(attempts or [])}}
         if code is not None:
             err["code"] = code
         return chunk([{"index": 0, "delta": {}, "finish_reason": "error"}],
                      error=err)
 
     try:
-        events = router.agenerate_stream(messages, tier, **kwargs).__aiter__()
+        events = router.agenerate_stream(
+            messages, tier, trace_id=trace_id, **kwargs).__aiter__()
         first = True
         emitted = False       # at least one content chunk has gone out
         # One absolute deadline for the whole call, fixed before the first
@@ -474,18 +513,21 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
         yield "data: [DONE]\n\n"
 
     except RouterBusy as exc:
+        attempts = getattr(exc, "attempts", None)
         if emitted:
-            yield error_chunk(str(exc), "server_error", "provider_unavailable")
+            yield error_chunk(str(exc), "server_error", "provider_unavailable", attempts=attempts)
         else:
-            yield _sse_error(str(exc), "server_error", "provider_unavailable")
+            yield _sse_error(str(exc), "server_error", "provider_unavailable",
+                             request_id=trace_id, attempts=attempts)
         yield "data: [DONE]\n\n"
     except RouterError as exc:
         # Same relabel as the non-streaming path: a RouterError here is the
         # providers failing, not the request being malformed.
+        attempts = getattr(exc, "attempts", None)
         if emitted:
-            yield error_chunk(str(exc), "server_error")
+            yield error_chunk(str(exc), "server_error", attempts=attempts)
         else:
-            yield _sse_error(str(exc), "server_error")
+            yield _sse_error(str(exc), "server_error", request_id=trace_id, attempts=attempts)
         yield "data: [DONE]\n\n"
     except KeyError:
         message = f"There is no bucket or model named {model!r}."
@@ -767,6 +809,17 @@ def create_app(config_path: str | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
     )
+
+    @app.get("/models")
+    async def list_models_bare():
+        """Same listing as /v1/models, at the bare path some clients expect
+        (e.g. GPT4All's own default port for this, 4891). Outside /v1, so
+        it is not behind the auth_token guard - same precedent as the
+        dashboard's /api routes (ADR 0009): the service binds to
+        127.0.0.1 only. The dashboard's own Models page lives at
+        /models_catalog, not here - see render.py's _page_href.
+        """
+        return {"object": "list", "data": _model_entries(get_router())}
 
     app.include_router(v1)
     app.include_router(api)

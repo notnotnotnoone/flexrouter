@@ -116,7 +116,8 @@ class AsyncClient:
             raise ProviderError(f"{route.provider}/{route.model}: {exc}") from exc
 
         if resp.status_code == 429:
-            raise _with_body(RateLimitError(f"429 from {route.provider}/{route.model}"), resp.text)
+            raise _with_body(RateLimitError(
+                describe_http_error(429, route.provider, route.model, resp.text)), resp.text)
         if resp.status_code == 401:
             raise _with_body(RouterError(
                 f"Auth failure for provider {route.provider!r}: {resp.status_code}"), resp.text)
@@ -192,7 +193,8 @@ class AsyncClient:
                 # model is failing, and it used to be discarded.
                 body = await resp.aread()
                 if resp.status_code == 429:
-                    raise _with_body(RateLimitError(f"429 from {route.provider}/{route.model}"), body)
+                    raise _with_body(RateLimitError(
+                        describe_http_error(429, route.provider, route.model, body)), body)
                 if resp.status_code == 401:
                     raise _with_body(RouterError(
                         f"Auth failure for provider {route.provider!r}: {resp.status_code}"), body)

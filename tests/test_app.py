@@ -408,6 +408,13 @@ def test_stream_reports_finish_reason_and_usage(client):
     assert any("usage" in p for p in payloads)
 
 
+def test_stream_response_carries_the_request_id_header(client):
+    r = client.post("/v1/chat/completions", json={
+        "model": "auto-low", "stream": True,
+        "messages": [{"role": "user", "content": "hi"}]})
+    assert r.headers["x-flexrouter-request-id"].startswith("req_")
+
+
 def test_stream_surfaces_busy_as_sse_error():
     with _client_for(FakeRouter(raises=RouterBusy("no capacity"))) as c:
         r = c.post("/v1/chat/completions", json={
@@ -445,6 +452,14 @@ def test_models_flags_quarantined_routes(client, fake):
     entry = next(m for m in data if m["id"] == "groq/llama-3.1-8b-instant")
     assert entry["flexrouter"]["quarantined"] is True
     assert "404" in entry["flexrouter"]["quarantine_reason"]
+
+
+def test_bare_models_matches_v1_models(client):
+    """Some clients query the bare /models path (no /v1 prefix) instead of
+    the OpenAI-compatible one; it must list the same buckets and models.
+    The dashboard's own Models management page lives at /models_catalog so
+    it doesn't collide with this JSON endpoint."""
+    assert client.get("/models").json() == client.get("/v1/models").json()
 
 
 # --- quarantine endpoints ----------------------------------------------------

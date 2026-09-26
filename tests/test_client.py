@@ -54,6 +54,20 @@ async def test_429_raises_rate_limit_error():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_429_message_keeps_the_providers_quota_text():
+    quota_text = "Quota exceeded for quota metric 'Generate Content API requests per day'"
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(429, json={"error": {"message": quota_text}})
+    )
+    from flexrouter.client import RateLimitError
+    async with AsyncClient() as client:
+        with pytest.raises(RateLimitError) as excinfo:
+            await client.chat(ROUTE, MESSAGES)
+    assert quota_text in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_401_raises_router_error():
     respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
         return_value=httpx.Response(401, json={"error": {"message": "unauthorized"}})
@@ -246,6 +260,21 @@ async def test_stream_chat_429_raises_rate_limit_error_before_any_content():
             async for delta in client.stream_chat(ROUTE, MESSAGES):
                 collected.append(delta)
     assert collected == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_stream_chat_429_message_keeps_the_providers_quota_text():
+    quota_text = "Quota exceeded for quota metric 'Generate Content API requests per day'"
+    respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(429, json={"error": {"message": quota_text}})
+    )
+    from flexrouter.client import RateLimitError
+    async with AsyncClient() as client:
+        with pytest.raises(RateLimitError) as excinfo:
+            async for _ in client.stream_chat(ROUTE, MESSAGES):
+                pass
+    assert quota_text in str(excinfo.value)
 
 
 @pytest.mark.asyncio
