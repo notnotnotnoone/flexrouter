@@ -10,6 +10,7 @@ from flexrouter.exceptions import ContextWindowWarning
 from flexrouter.status import READY, StatusStore
 from flexrouter.window import SlidingWindow
 from flexrouter.budget import DailyBudget
+from flexrouter.speed import SpeedTracker
 
 
 @dataclass
@@ -24,11 +25,12 @@ class RouteResult:
 
 class RoutingEngine:
     def __init__(self, cfg: FlexConfig, rate_limit_store=None, status: Optional[StatusStore] = None,
-                 quota_tracker=None) -> None:
+                 quota_tracker=None, speed: Optional[SpeedTracker] = None) -> None:
         self._cfg = cfg
         self._rate_limit_store = rate_limit_store
         self._quota_tracker = quota_tracker
         self._status = status if status is not None else StatusStore()
+        self._speed = speed if speed is not None else SpeedTracker()
         self._budget = DailyBudget(cfg.provider_budget)
         self._windows: dict[str, SlidingWindow] = {}
         self._key_counters: dict[str, int] = {}
@@ -93,6 +95,9 @@ class RoutingEngine:
 
     def record_cost(self, provider: str, cost_usd: float) -> None:
         self._budget.record(provider, cost_usd)
+
+    def record_speed(self, provider: str, model: str, ms_to_first_word: float) -> None:
+        self._speed.record(provider, model, ms_to_first_word)
 
     def seconds_until_available(self, tier: str) -> float:
         models = self._cfg.tiers.get(tier, [])
@@ -247,9 +252,18 @@ class RoutingEngine:
     def _rank_value(self, m: ModelConfig, strategy: str,
                     unmeasured: float = 0.0) -> float:
         if strategy == "fastest":
-            # An unmeasured model ranks with the fastest, so it gets tried
-            # (and measured) instead of being skipped forever.
-            return m.tokens_per_second if m.tokens_per_second is not None else unmeasured
+            # grill-decisions.md §14: rank by measured time to first word
+            # (lower ms is better, so invert it) once a model has real
+            # samples. The typed tokens_per_second is only a starting guess
+            # for a model with no measurements yet, and a model with
+            # neither ranks with the fastest known, so it gets tried (and
+            # measured) instead of being skipped forever.
+            median_ms = self._speed.median_ms(m.provider, m.model)
+            if median_ms is not None:
+                return 1000.0 / median_ms
+            if m.tokens_per_second is not None:
+                return m.tokens_per_second
+            return unmeasured
         return m.score
 
     def _score_candidates(
@@ -258,8 +272,7 @@ class RoutingEngine:
     ) -> list[tuple[float, ModelConfig]]:
         ctx_skipped = False
         scored = []
-        measured = [m.tokens_per_second for m in models if m.tokens_per_second]
-        unmeasured = max(measured) if measured else 1.0
+        unmeasured = self._fastest_unmeasured(models) if strategy == "fastest" else 0.0
         for m in models:
             skip = self._skip_reason(m, estimated_tokens, vision, strategy)
             if skip is not None:
@@ -277,6 +290,17 @@ class RoutingEngine:
 
         return scored
 
+    def _fastest_unmeasured(self, models: list[ModelConfig]) -> float:
+        """The tie-break value an unmeasured, unguessed model ranks at in
+        the "fastest" strategy: the fastest known value, so it still gets
+        tried (and measured) instead of being skipped forever."""
+        known = [
+            self._rank_value(m, "fastest") for m in models
+            if self._speed.median_ms(m.provider, m.model) is not None
+            or m.tokens_per_second is not None
+        ]
+        return max(known) if known else 1.0
+
     def explain_unavailable(
         self, tier: str, estimated_tokens: int = 0, vision: bool = False
     ) -> list[dict]:
@@ -287,14 +311,19 @@ class RoutingEngine:
         or when the dashboard asks.
         """
         strategy = self._strategy(tier)
+        models = self._cfg.tiers.get(tier, [])
+        unmeasured = self._fastest_unmeasured(models)
         out = []
-        for m in self._cfg.tiers.get(tier, []):
+        for m in models:
             skip = self._skip_reason(m, estimated_tokens, vision, strategy)
             out.append({
                 "provider": m.provider,
                 "model": m.model,
                 "score": m.score,
                 "tokens_per_second": m.tokens_per_second,
+                "fastest_rank": self._rank_value(m, "fastest", unmeasured),
+                "ttft_ms": self._speed.median_ms(m.provider, m.model),
+                "ttft_samples": self._speed.sample_count(m.provider, m.model),
                 "available": skip is None,
                 "reason": skip[0] if skip else None,
                 "detail": skip[1] if skip else "",

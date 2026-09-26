@@ -578,6 +578,9 @@ class LocalRouter:
                     continue
 
                 self._engine.record_request(route.provider, route.model, total_tokens)
+                # No separate first-token moment on the non-stream path
+                # (grill-decisions.md §14): total latency stands in for it.
+                self._engine.record_speed(route.provider, route.model, latency_ms)
                 self._quota_tracker.record(route.provider, route.model, total_tokens)
                 if key_id is not None:
                     self._key_states.mark_success(route.provider, key_id, total_tokens, latency_ms)
@@ -1161,6 +1164,9 @@ class LocalRouter:
                 total_tokens = usage.get("total_tokens", 0)
 
                 self._engine.record_request(route.provider, route.model, total_tokens)
+                if first_token_at is not None:
+                    self._engine.record_speed(
+                        route.provider, route.model, (first_token_at - start) * 1000)
                 self._quota_tracker.record(route.provider, route.model, total_tokens)
                 if key_id is not None:
                     self._key_states.mark_success(route.provider, key_id, total_tokens, latency_ms)

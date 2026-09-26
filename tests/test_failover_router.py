@@ -105,6 +105,29 @@ def _cfg_small_then_big_context(tmp_path):
 
 
 @respx.mock
+def test_a_successful_reply_is_recorded_in_the_speed_tracker(tmp_path, monkeypatch):
+    """Session 9 (grill-decisions.md §14): every successful reply feeds the
+    engine's speed tracker, so the 'fastest' bucket can rank on real data."""
+    monkeypatch.setattr("flexrouter._router.load_config",
+                        lambda _p: _cfg_one_model(tmp_path))
+    respx.post("https://alpha.test/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={
+            "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }))
+    from flexrouter import app as app_mod
+    app_mod.state.router = None
+    client = TestClient(app_mod.create_app(str(tmp_path / "config.yaml")))
+
+    r = client.post("/v1/chat/completions", json={
+        "model": "alpha/big", "messages": [{"role": "user", "content": "hi"}]})
+
+    assert r.status_code == 200
+    router = app_mod.state.router
+    assert router._engine._speed.sample_count("alpha", "big") == 1
+
+
+@respx.mock
 def test_message_too_long_fails_over_to_a_bigger_context_model(tmp_path, monkeypatch):
     """Uses the virtual clock (no @real_clock): this test is about routing
     to a bigger-context model, not about timing, and any incidental wait

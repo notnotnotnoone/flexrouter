@@ -302,6 +302,9 @@ class BucketModelRow:
     model: str
     score: int
     tokens_per_second: Optional[float]
+    ttft_ms: Optional[float]  # median time to first word, last ~20 successes
+    ttft_samples: int
+    fastest_rank: float  # engine's own ranking value for the "fastest" strategy
     available: bool
     in_the_running: bool
     reason: Optional[str]
@@ -335,7 +338,7 @@ def buckets(router) -> list[Bucket]:
         rows = router._engine.explain_unavailable(name)
 
         def _value(r: dict) -> Optional[float]:
-            return r["tokens_per_second"] if strategy == "fastest" else r["score"]
+            return r["fastest_rank"] if strategy == "fastest" else r["score"]
 
         available_values = [v for r in rows if r["available"] and (v := _value(r)) is not None]
         threshold = max(available_values) * 0.8 if available_values else None
@@ -344,6 +347,8 @@ def buckets(router) -> list[Bucket]:
             BucketModelRow(
                 provider=r["provider"], model=r["model"], score=r["score"],
                 tokens_per_second=r["tokens_per_second"],
+                ttft_ms=r["ttft_ms"], ttft_samples=r["ttft_samples"],
+                fastest_rank=r["fastest_rank"],
                 available=r["available"],
                 in_the_running=bool(
                     r["available"] and threshold is not None
@@ -359,7 +364,7 @@ def buckets(router) -> list[Bucket]:
 
 
 def _value_or_low(row: "BucketModelRow", strategy: str) -> float:
-    value = row.tokens_per_second if strategy == "fastest" else row.score
+    value = row.fastest_rank if strategy == "fastest" else row.score
     return value if value is not None else float("-inf")
 
 

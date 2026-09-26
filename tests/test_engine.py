@@ -252,6 +252,49 @@ def test_explain_unavailable_has_no_speed_data_reason_any_more():
     assert out[0]["available"] is True
 
 
+def test_fastest_strategy_prefers_a_models_own_measurement_over_its_typed_guess():
+    """grill-decisions.md §14: tokens_per_second is only a starting guess -
+    once a model has real measurements, those rank it instead."""
+    m = ModelConfig("groq", "m", score=50, rpm=60, tpm=60000, tokens_per_second=5)
+    engine = make_engine([m], bucket_strategy={"low": "fastest"})
+    guessed = engine._rank_value(m, "fastest")
+    assert guessed == 5  # the typed guess, unmeasured
+    engine.record_speed("groq", "m", 50.0)
+    measured = engine._rank_value(m, "fastest")
+    assert measured == 1000.0 / 50.0
+    assert measured != guessed
+
+
+def test_fastest_strategy_ranks_by_measured_median_between_two_models():
+    models = [
+        ModelConfig("groq", "slower", score=50, rpm=60, tpm=60000),
+        ModelConfig("groq", "quicker", score=50, rpm=60, tpm=60000),
+    ]
+    engine = make_engine(models, bucket_strategy={"low": "fastest"})
+    engine.record_speed("groq", "slower", 900.0)
+    engine.record_speed("groq", "quicker", 100.0)
+    seen = {engine.select("low", estimated_tokens=0, vision=False).model for _ in range(50)}
+    assert seen == {"quicker"}
+
+
+def test_explain_unavailable_reports_measured_speed():
+    models = [ModelConfig("groq", "m", score=50, rpm=60, tpm=60000)]
+    engine = make_engine(models, bucket_strategy={"low": "fastest"})
+    engine.record_speed("groq", "m", 200.0)
+    engine.record_speed("groq", "m", 300.0)
+    out = engine.explain_unavailable("low")
+    assert out[0]["ttft_ms"] == 250.0
+    assert out[0]["ttft_samples"] == 2
+
+
+def test_explain_unavailable_reports_no_samples_when_unmeasured():
+    models = [ModelConfig("groq", "m", score=50, rpm=60, tpm=60000)]
+    engine = make_engine(models, bucket_strategy={"low": "fastest"})
+    out = engine.explain_unavailable("low")
+    assert out[0]["ttft_ms"] is None
+    assert out[0]["ttft_samples"] == 0
+
+
 def test_a_model_whose_provider_is_not_set_up_needs_you():
     models = [ModelConfig("zhipu", "glm-5-2", score=90, rpm=60, tpm=60000)]
     engine = make_engine(models)

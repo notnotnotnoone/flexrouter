@@ -29,9 +29,17 @@ _REASON = {  # engine._skip_reason names, in plain words
 }
 
 
+def _speed_shown(row) -> str:
+    if row.ttft_ms is not None:
+        return f"{row.ttft_ms / 1000:.2f}s ({row.ttft_samples} sample{'s' if row.ttft_samples != 1 else ''})"
+    if row.tokens_per_second is not None:
+        return f"~{esc(row.tokens_per_second)} tok/s (guess)"
+    return "not measured yet, will try"
+
+
 def _row(rank: int, row, top: float, cut: float | None, strategy: str) -> str:
-    value = row.tokens_per_second if strategy == "fastest" else row.score
-    shown = "-" if value is None else esc(value)
+    value = row.fastest_rank if strategy == "fastest" else row.score
+    shown = _speed_shown(row) if strategy == "fastest" else esc(value)
     width = (value / top * 100) if top and value is not None else 0
     if row.in_the_running:
         state, word = "ok", "would answer"
@@ -58,7 +66,7 @@ def _row(rank: int, row, top: float, cut: float | None, strategy: str) -> str:
 def _strategy_form(bucket: str, strategy: str) -> str:
     opts = "".join(
         tag("option", label, value=value, **({"selected": True} if value == strategy else {}))
-        for value, label in (("smartest", "Smartest (by score)"), ("fastest", "Fastest (by tokens/s)"))
+        for value, label in (("smartest", "Smartest (by score)"), ("fastest", "Fastest (by first word)"))
     )
     select = f"<select{attrs({'name': 'strategy'})}>{opts}</select>"
     return tag(
@@ -69,10 +77,10 @@ def _strategy_form(bucket: str, strategy: str) -> str:
 
 
 def _bucket(b, add_model_form: str) -> str:
-    values = [r.tokens_per_second if b.strategy == "fastest" else r.score for r in b.models]
+    values = [r.fastest_rank if b.strategy == "fastest" else r.score for r in b.models]
     values = [v for v in values if v is not None]
     top = max(values) if values else 0
-    live = [r.tokens_per_second if b.strategy == "fastest" else r.score
+    live = [r.fastest_rank if b.strategy == "fastest" else r.score
            for r in b.models if r.available]
     live = [v for v in live if v is not None]
     cut = max(live) * 0.8 if live else None
@@ -81,7 +89,10 @@ def _bucket(b, add_model_form: str) -> str:
         "No models in this bucket yet.")
     try_it = ui.button("Try it", icon_name="arrow-right", kind="primary",
                        **{"data-try": b.name, "title": "Send one real one-token request"})
+    ranked_by = (tag("p", "ranked by: first word, your last 20 requests", cls="page-status")
+                 if b.strategy == "fastest" else "")
     body = (_strategy_form(b.name, b.strategy)
+            + ranked_by
             + tag("div", rows, cls="ladder")
             + tag("div", "", cls="try-result", id=f"try-{b.name}", **{"aria-live": "polite"})
             + tag("details", tag("summary", "Add a model to this bucket") + add_model_form,
@@ -132,7 +143,8 @@ def body(router, banner: str, add_model_form, add_bucket_form: str) -> str:
     head = tag("div", tag("div", tag("h1", "Buckets", cls="page-title")
                           + tag("p", "A request to a bucket goes to a random model among those "
                                      "within 20% of its best available score, or its fastest "
-                                     "tokens/s, depending on the bucket's strategy.",
+                                     "measured time to first word, depending on the bucket's "
+                                     "strategy.",
                                 cls="page-status"), cls="page-head-text"),
                cls="page-head")
     palette = _model_palette(router)
