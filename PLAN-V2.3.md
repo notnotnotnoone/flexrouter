@@ -269,7 +269,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 **Starter prompt:**
 > Do Session 9 of PLAN-V2.3.md. Read that block and grill-decisions.md §14.
 
-### ☐ Session 10 — Settings cleanup 🔗 (after 3, 6)
+### ☑ Session 10 — Settings cleanup 🔗 (after 3, 6)
 **Model:** Sonnet
 **Decisions:** §15. **US:** 78–81. **P:** 35.
 - Remove from code and Settings:
@@ -279,6 +279,13 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
   - the decider confidence knobs
 - Add: "Give up after" (30s), "Save conversations" (on, 7 days; wired in Session 11), "Add new models automatically", "Show quickstart".
 - Retired names still in `config.yaml` / `overrides.json` → ignored, with **one** notice in `flexrouter doctor` and on Settings ("…3 settings v2.3 no longer uses… you can delete them"). `config.yaml` is never rewritten (ADR 0002).
+
+**Done 26 Sep 2026.** Choices left open by the plan:
+- `RetryConfig`/`RETRY_PRESETS`/`retry_policy` are gone entirely, not just unread - a fixed retry count was already dead weight since Session 3 removed the loop bound they used to set. `_router.py`'s `max_attempts` (an informational figure only, never a loop bound) is now the actual number of models in the tier instead of a leftover retry-preset number.
+- `penalty_base_seconds`/`penalty_max_seconds`/`quarantine_seconds` and the four decider confidence knobs (`confidence_threshold`, `rule_prior_confidence`, `confidence_ceiling`, `contested_statuses`) are deleted from `FlexConfig`/`DeciderConfig` outright, not just hidden from Settings - `decider.py`'s `build_decider()` already read them with a safe `getattr(..., default)` fallback, so nothing broke.
+- New `FlexConfig.failover_budget_seconds` (default 30.0) replaces the old module-level `FAILOVER_BUDGET_SECONDS` constant in `_router.py` - "Give up after" is a real setting now, not a hardcoded number.
+- `save_conversations`/`save_conversations_days`/`show_quickstart` are new `FlexConfig` fields and Settings rows with no behaviour behind them yet - Session 11 and Session 18 wire them up. "Add new models automatically" already existed as `auto_add_models` (Session 5's rename of `experimental_model_discovery`) and needed no new work.
+- `config.retired_settings_notice(*settings_dicts)`: one sentence naming every `RETIRED_SETTINGS` name found in any of config.yaml's `settings:` block or overrides.json's, or `None` if there's nothing to say. Wired into both `flexrouter doctor` (`tui/facts.doctor_report`) and the Settings page header (`settings_page._retired_notice`) - config.yaml is still never rewritten (ADR 0002), so an old file with a retired name just gets the one notice, forever, until the owner edits it themselves.
 
 **Starter prompt:**
 > Do Session 10 of PLAN-V2.3.md. Read that block and grill-decisions.md §15.
