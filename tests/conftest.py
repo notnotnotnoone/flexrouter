@@ -23,7 +23,7 @@ def pytest_configure(config):
 # available again. They all `import time` and call time.time()/monotonic(),
 # so swapping their `time` name is enough to move them together.
 _CLOCKED_MODULES = (
-    "flexrouter._router", "flexrouter.engine", "flexrouter.recovery",
+    "flexrouter._router", "flexrouter.engine", "flexrouter.status",
     "flexrouter.window", "flexrouter.rate_limits", "flexrouter.quota",
     "flexrouter.key_state",
     # The dashboard's Allowance reads quota timestamps and asks when a cap
@@ -115,6 +115,12 @@ def _no_startup_catalogue_refresh(request, monkeypatch):
                              changed=[], provider_errors=[], pending_path=None)
 
     monkeypatch.setattr("flexrouter._router.refresh_config", _stub_refresh_config)
+    # The always-on model-list read (grill-decisions.md §12) calls every
+    # provider's real /models too. Unstubbed, every router a test builds
+    # went to the network - a real call per provider, or a timeout - which
+    # turned an ~11 min suite into 40+ min runs that sometimes hung.
+    monkeypatch.setattr("flexrouter._router.refresh_known_model_ids",
+                        lambda config_path, state_dir: None)
 
 
 @pytest.fixture(autouse=True)

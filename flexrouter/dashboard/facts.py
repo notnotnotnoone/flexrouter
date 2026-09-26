@@ -17,18 +17,25 @@ from typing import Optional
 from flexrouter.keys import mask
 from flexrouter.model_facts import CapabilityFact
 from flexrouter.overrides import ALLOWED_FIELDS, load_overrides
+from flexrouter import status as st
 from flexrouter.store import read_json
 
 
 @dataclass
 class BrokenItem:
     pile: str  # "you" | "service"
+    # model_needs_you | provider_needs_you | key_needs_you | model_busy |
+    # model_struggling | key_busy | unclear_error
     kind: str
     provider: str
     detail: str
     reason: str
     since: Optional[str] = None
     until: Optional[float] = None
+    status: str = ""       # ready | busy | struggling | needs_you | off
+    action: Optional[str] = None
+    model: str = ""
+    provider_text: str = ""  # the provider's own words, for the click-through
 
 
 @dataclass
@@ -36,12 +43,13 @@ class ProviderSummary:
     name: str
     base_url: str
     key_count: int
-    keys_live: int
-    keys_cooling: int
-    keys_parked: int
+    keys_ready: int
+    keys_busy: int
+    keys_need_you: int
+    keys_off: int
     models_total: int
-    quarantined: bool
-    quarantine_reason: Optional[str]
+    status: str  # the provider-wide status: ready | needs_you
+    status_reason: str
     state: str  # "ok" | "warn" | "bad"
 
 
@@ -74,11 +82,11 @@ class ProviderDetail:
     header_parser: str
     key_strategy: str
     state: str
-    quarantined: bool
-    quarantine_reason: Optional[str]
+    status: str  # the provider-wide status: ready | needs_you
+    status_reason: str
     configured_models: list
-    models_alive: list
-    models_gone: list
+    models_alive: list  # Ready right now
+    models_gone: list   # Needs you
     keys: list  # list[KeyDetail]
 
 
@@ -92,46 +100,40 @@ def _models_of(router, provider: str) -> list:
     return seen
 
 
+def key_status(state, record, now: float) -> str:
+    """A key's one status (§3's words), read without writing.
+
+    Not is_available(): that method persists a busy key whose time is up
+    (it flips the stored status to "ready"). Rendering a page must never
+    write to disk, so the same expiry check is done here without saving.
+    """
+    if not record.enabled:
+        return st.OFF
+    if state.status == st.BUSY and state.until is not None and now >= state.until:
+        return st.READY
+    return state.status
+
+
 def provider_summaries(router, now: Optional[float] = None) -> list[ProviderSummary]:
-    penalties = router._engine._penalties
     states = router._key_states
     resolved_now = now if now is not None else time.time()
     out = []
     for name, pcfg in router._cfg.providers.items():
         records = list(pcfg.keys or [])
-        live = cooling = parked = 0
+        counts = {st.READY: 0, st.BUSY: 0, st.NEEDS_YOU: 0, st.OFF: 0}
         for record in records:
-            if not record.enabled:
-                parked += 1
-                continue
-            # A read, not a call to is_available(): that method mutates and
-            # persists a cooling key whose cooldown has elapsed (it flips the
-            # stored status to "live"). Rendering a page must never write to
-            # disk, so the same expiry check is done here without saving it.
-            state = states.get(name, record.id, now)
-            expired_cooldown = (
-                state.status == "cooling"
-                and state.until is not None
-                and resolved_now >= state.until
-            )
-            if state.status == "live" or expired_cooldown:
-                live += 1
-            elif state.status == "cooling":
-                cooling += 1
-            else:
-                parked += 1
+            value = key_status(states.get(name, record.id, now), record, resolved_now)
+            counts[value if value in counts else st.NEEDS_YOU] += 1
         key_count = len(records)
+        ready, busy = counts[st.READY], counts[st.BUSY]
 
-        quarantined = penalties.is_quarantined(name, "*")
-        reason = penalties.quarantine_reason(name, "*")
-        if quarantined:
+        wide = router._status.provider_status(name, resolved_now)
+        if wide.value == st.NEEDS_YOU or key_count == 0:
             state = "bad"
-        elif key_count == 0:
-            state = "bad"
-        elif live == 0 and cooling == 0:
+        elif ready == 0 and busy == 0:
             # Nothing usable and nothing due to recover on its own.
             state = "bad"
-        elif live == 0 or cooling or parked:
+        elif ready == 0 or busy or counts[st.NEEDS_YOU] or counts[st.OFF]:
             state = "warn"
         else:
             state = "ok"
@@ -140,12 +142,13 @@ def provider_summaries(router, now: Optional[float] = None) -> list[ProviderSumm
             name=name,
             base_url=pcfg.base_url,
             key_count=key_count,
-            keys_live=live,
-            keys_cooling=cooling,
-            keys_parked=parked,
+            keys_ready=ready,
+            keys_busy=busy,
+            keys_need_you=counts[st.NEEDS_YOU],
+            keys_off=counts[st.OFF],
             models_total=len(_models_of(router, name)),
-            quarantined=quarantined,
-            quarantine_reason=reason,
+            status=wide.value,
+            status_reason=wide.reason,
             state=state,
         ))
     return out
@@ -161,20 +164,20 @@ def provider_detail(router, provider: str, now: Optional[float] = None) -> Optio
     if pcfg is None:
         return None
 
-    penalties = router._engine._penalties
     states = router._key_states
     resolved_now = now if now is not None else time.time()
 
     summary = next((s for s in provider_summaries(router, now) if s.name == provider), None)
 
     configured = _models_of(router, provider)
-    provider_down = penalties.is_quarantined(provider, "*")
+    wide = router._status.provider_status(provider, resolved_now)
     alive, gone = [], []
     for model in configured:
-        if provider_down or penalties.is_quarantined(provider, model):
-            gone.append(model)
-        else:
+        value = router._status.get(provider, model, resolved_now).value
+        if value == st.READY:
             alive.append(model)
+        elif value == st.NEEDS_YOU:
+            gone.append(model)
 
     keys = []
     for record in (pcfg.keys or []):
@@ -188,7 +191,7 @@ def provider_detail(router, provider: str, now: Optional[float] = None) -> Optio
             weight=record.weight,
             allow_models=list(record.allow_models),
             quotas=dict(record.quotas or {}),
-            status=state.status,
+            status=key_status(state, record, resolved_now),
             reason=state.reason,
             until=state.until,
             consecutive_failures=state.consecutive_failures,
@@ -206,8 +209,8 @@ def provider_detail(router, provider: str, now: Optional[float] = None) -> Optio
         header_parser=pcfg.header_parser,
         key_strategy=pcfg.key_strategy,
         state=summary.state if summary is not None else "bad",
-        quarantined=provider_down,
-        quarantine_reason=penalties.quarantine_reason(provider, "*"),
+        status=wide.value,
+        status_reason=wide.reason,
         configured_models=configured,
         models_alive=alive,
         models_gone=gone,
@@ -234,10 +237,20 @@ class ModelRow:
     price_out: Optional[float]  # USD per million output tokens; None = not priced
     tokens_per_second: Optional[float]  # generation speed; None = not recorded
     quotas: dict  # rps/rph/rpd/tps/tph/tpd caps beyond rpm/tpm; {} = none set
-    state: str  # "available" | "gone"
-    why: str
+    state: str  # the one status: ready | busy | struggling | needs_you | off
+    why: str    # its one plain sentence
     requests: int  # lifetime requests logged for this model in audit.csv
     response_rate: Optional[float]  # answered / requests; None = no requests yet
+
+
+def model_status(router, provider: str, model: str,
+                 now: Optional[float] = None) -> "st.Status":
+    """A configured model's one status, including the one worked out from
+    config: a model whose provider isn't set up needs you (§10)."""
+    if provider not in router._cfg.providers:
+        return st.Status(st.NEEDS_YOU, f"No {provider} provider set up.", None,
+                         st.REMOVE, "no_provider")
+    return router._status.get(provider, model, now)
 
 
 def models(router) -> list[ModelRow]:
@@ -245,7 +258,6 @@ def models(router) -> list[ModelRow]:
     learned about it from real traffic layered on top of what the owner
     declared in settings.
     """
-    penalties = router._engine._penalties
     facts_store = router._model_facts
     by_key: dict[tuple[str, str], ModelRow] = {}
 
@@ -261,16 +273,7 @@ def models(router) -> list[ModelRow]:
                 by_key[key].buckets.append(tier_name)
                 continue
             mf = facts_store.get(mc.provider, mc.model)
-            available = not (
-                penalties.is_quarantined(mc.provider, mc.model)
-                or penalties.is_quarantined(mc.provider, "*")
-                or penalties.is_penalized(mc.provider, mc.model)
-            )
-            reason = "" if available else (
-                penalties.quarantine_reason(mc.provider, mc.model)
-                or penalties.quarantine_reason(mc.provider, "*")
-                or "temporarily set aside after a recent failure"
-            )
+            status = model_status(router, mc.provider, mc.model)
             entry = per_model_stats.get(f"{mc.provider}/{mc.model}")
             requests = entry["requests"] if entry else 0
             response_rate = (1.0 - entry["rate"]) if entry else None
@@ -285,8 +288,8 @@ def models(router) -> list[ModelRow]:
                 price_in=mc.price_in, price_out=mc.price_out,
                 tokens_per_second=mc.tokens_per_second,
                 quotas=dict(mc.quotas or {}),
-                state="available" if available else "gone",
-                why=reason,
+                state=status.value,
+                why=status.reason,
                 requests=requests,
                 response_rate=response_rate,
             )
@@ -765,53 +768,65 @@ def model_editable_fields(router, provider: str, model: str) -> Optional[dict]:
 
 
 def broken(router, now: Optional[float] = None) -> dict:
-    """The two piles: what only the owner can fix, and what the service is
-    already handling on its own.
+    """The two piles: what only the owner can fix (Needs you), and what the
+    service is handling on its own (Busy, Struggling).
 
-    Every entry here is a read of state some other part of the router
-    already maintains - a provider-wide quarantine, a benched or cooling
-    key, an error the classifier wasn't confident about. Nothing here is a
-    new source of truth, and nothing here writes.
+    Every entry is a read of the one status each model and key has
+    (flexrouter/status.py, key_state.py). A model that needs you is in the
+    first pile - never shown as fine next to a count of things that need
+    you. Nothing here writes.
     """
     resolved_now = now if now is not None else time.time()
-    penalties = router._engine._penalties
     states = router._key_states
 
     needs_you: list[BrokenItem] = []
     handling_itself: list[BrokenItem] = []
 
-    for name, pcfg in router._cfg.providers.items():
-        provider_down = penalties.is_quarantined(name, "*")
-        if provider_down:
+    def _since(ts: Optional[float]) -> Optional[str]:
+        if ts is None:
+            return None
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")
+
+    providers = list(router._cfg.providers)
+    for name in _all_providers(router):
+        wide = router._status.provider_status(name, resolved_now) \
+            if name in router._cfg.providers else None
+        if wide is not None and wide.value == st.NEEDS_YOU:
             needs_you.append(BrokenItem(
-                pile="you", kind="provider_down", provider=name, detail="",
-                reason=penalties.quarantine_reason(name, "*") or "",
-            ))
+                pile="you", kind="provider_needs_you", provider=name, detail="",
+                reason=wide.reason, since=_since(wide.since), status=wide.value,
+                action=wide.action, provider_text=wide.detail))
+            continue
 
         for model in _models_of(router, name):
-            if penalties.is_quarantined(name, model) and not provider_down:
-                handling_itself.append(BrokenItem(
-                    pile="service", kind="model_set_aside", provider=name,
-                    detail=model, reason=penalties.quarantine_reason(name, model) or "",
-                ))
+            s = model_status(router, name, model, resolved_now)
+            if s.value == st.READY:
+                continue
+            item = BrokenItem(
+                pile="you" if s.value == st.NEEDS_YOU else "service",
+                kind=f"model_{s.value}", provider=name, detail=model, model=model,
+                reason=s.reason, since=_since(s.since), until=s.until,
+                status=s.value, action=s.action, provider_text=s.detail)
+            (needs_you if s.value == st.NEEDS_YOU else handling_itself).append(item)
 
-        for record in (pcfg.keys or []):
+        if name not in providers:
+            continue
+        for record in (router._cfg.providers[name].keys or []):
             if not record.enabled:
                 continue
             state = states.get(name, record.id, resolved_now)
+            value = key_status(state, record, resolved_now)
             label = record.label or record.id
-            if state.status == "benched":
+            if value == st.NEEDS_YOU:
                 needs_you.append(BrokenItem(
-                    pile="you", kind="key_benched", provider=name,
-                    detail=label, reason=state.reason,
-                ))
-            elif state.status == "cooling":
-                still_cooling = state.until is not None and resolved_now < state.until
-                if still_cooling:
-                    handling_itself.append(BrokenItem(
-                        pile="service", kind="key_cooling", provider=name,
-                        detail=label, reason=state.reason, until=state.until,
-                    ))
+                    pile="you", kind="key_needs_you", provider=name,
+                    detail=label, reason=state.reason, status=value,
+                    action=st.REPLACE_KEY))
+            elif value == st.BUSY:
+                handling_itself.append(BrokenItem(
+                    pile="service", kind="key_busy", provider=name,
+                    detail=label, reason=state.reason, until=state.until, status=value))
 
     for entry in router._error_brain._entries.values():
         if entry.flagged_for_review:
@@ -822,6 +837,43 @@ def broken(router, now: Optional[float] = None) -> dict:
             ))
 
     return {"needs_you": needs_you, "handling_itself": handling_itself}
+
+
+def _all_providers(router) -> list[str]:
+    """Configured providers, then any a bucket names that isn't set up."""
+    names = list(router._cfg.providers)
+    for model_configs in router._cfg.tiers.values():
+        for mc in model_configs:
+            if mc.provider not in names:
+                names.append(mc.provider)
+    return names
+
+
+def status_counts(router, now: Optional[float] = None) -> dict:
+    """How many models are in each status, once each - the summary strip.
+
+    Off models are the ones an `enabled: false` override took out of the
+    live config; they are counted from overrides.json.
+    """
+    resolved_now = now if now is not None else time.time()
+    counts = {v: 0 for v in st.STATUSES}
+    seen: set = set()
+    for model_configs in router._cfg.tiers.values():
+        for mc in model_configs:
+            if (mc.provider, mc.model) in seen:
+                continue
+            seen.add((mc.provider, mc.model))
+            counts[model_status(router, mc.provider, mc.model, resolved_now).value] += 1
+    try:
+        overridden = load_overrides().get("models", {}) or {}
+    except Exception:  # noqa: BLE001 - a count is never worth a crash
+        overridden = {}
+    from flexrouter.overrides import _is_off
+    counts[st.OFF] = sum(
+        1 for ident, fields in overridden.items()
+        if isinstance(fields, dict) and _is_off(fields.get("enabled", True))
+        and tuple(ident.split("/", 1)) not in seen)
+    return counts
 
 
 def overview(router, now: Optional[float] = None,
@@ -838,17 +890,10 @@ def overview(router, now: Optional[float] = None,
     """
     if summaries is None:
         summaries = provider_summaries(router, now)
-    penalties = router._engine._penalties
 
-    models_total = 0
-    models_available = 0
-    for name in router._cfg.providers:
-        for model in _models_of(router, name):
-            models_total += 1
-            if not (penalties.is_quarantined(name, model)
-                    or penalties.is_quarantined(name, "*")
-                    or penalties.is_penalized(name, model)):
-                models_available += 1
+    counts = status_counts(router, now)
+    models_total = sum(v for k, v in counts.items() if k != st.OFF)
+    models_available = counts[st.READY]
 
     entries = router._error_brain._entries
     awaiting = sum(1 for e in entries.values() if e.flagged_for_review)
@@ -867,11 +912,13 @@ def overview(router, now: Optional[float] = None,
         },
         "keys": {
             "total": sum(s.key_count for s in summaries),
-            "live": sum(s.keys_live for s in summaries),
-            "cooling": sum(s.keys_cooling for s in summaries),
-            "parked": sum(s.keys_parked for s in summaries),
+            "ready": sum(s.keys_ready for s in summaries),
+            "busy": sum(s.keys_busy for s in summaries),
+            "needs_you": sum(s.keys_need_you for s in summaries),
+            "off": sum(s.keys_off for s in summaries),
         },
-        "models": {"total": models_total, "available": models_available},
+        "models": {"total": models_total, "available": models_available,
+                   "statuses": counts},
         "learned": {
             "error_kinds": len(entries),
             "awaiting_you": awaiting,

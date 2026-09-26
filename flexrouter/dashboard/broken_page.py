@@ -12,10 +12,10 @@ from flexrouter.dashboard.render import esc, tag
 
 # kind -> (button label, where it goes). The provider is filled in per card.
 _FIX = {
-    "provider_down": ("Open provider", "/providers/{p}"),
-    "key_benched": ("Replace key", "/providers/{p}"),
+    "provider_needs_you": ("Open provider", "/providers/{p}"),
+    "key_needs_you": ("Replace key", "/providers/{p}"),
     "unclear_error": ("Review in Error brain", "/brain"),
-    "model_set_aside": ("See models", "/models_catalog"),
+    "model_needs_you": ("See models", "/models_catalog"),
 }
 
 

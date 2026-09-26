@@ -112,22 +112,6 @@ def _router(tmp_path, minimal_config, settings):
     return LocalRouter(str(p))
 
 
-def test_quarantine_seconds_changes_how_long_a_route_is_sidelined(tmp_path, minimal_config):
-    import time
-    r = _router(tmp_path, minimal_config, {"quarantine_seconds": 30})
-    r._penalties.quarantine("groq", "some-model", "gone")
-    entry = r._penalties._quarantine[r._penalties._key("groq", "some-model")]
-    assert 25 < entry["until"] - time.time() <= 30
-
-
-def test_an_explicit_quarantine_length_still_wins(tmp_path, minimal_config):
-    import time
-    r = _router(tmp_path, minimal_config, {"quarantine_seconds": 30})
-    r._penalties.quarantine("groq", "some-model", "gone", seconds=300)
-    entry = r._penalties._quarantine[r._penalties._key("groq", "some-model")]
-    assert entry["until"] - time.time() > 200
-
-
 def test_error_max_length_changes_where_provider_text_is_clipped(tmp_path, minimal_config):
     from flexrouter import errors
     before = errors.MAX_LENGTH

@@ -13,15 +13,15 @@ def test_snapshot_lists_all_models():
     eng = RoutingEngine(_cfg())
     snap = eng.health_snapshot()
     assert "groq/llama" in snap["models"]
-    assert snap["models"]["groq/llama"]["status"] == "up"
+    assert snap["models"]["groq/llama"]["status"] == "ready"
     assert snap["providers"]["groq"]["models_total"] == 1
 
-def test_snapshot_marks_penalized():
+def test_snapshot_marks_busy():
     eng = RoutingEngine(_cfg())
-    eng.penalize("groq", "llama")
+    eng._status.set_busy("groq", "llama", 60, "Too many requests")
     snap = eng.health_snapshot()
-    assert snap["models"]["groq/llama"]["penalized"] is True
-    assert snap["models"]["groq/llama"]["status"] == "penalized"
+    assert snap["models"]["groq/llama"]["status"] == "busy"
+    assert snap["models"]["groq/llama"]["until"] is not None
     assert snap["providers"]["groq"]["models_up"] == 0
 
 
@@ -65,6 +65,6 @@ def test_remaining_capacity_unknown_tier_raises_key_error():
 
 def test_remaining_capacity_returns_empty_dict_when_everyone_unavailable():
     eng = RoutingEngine(_cfg())
-    eng.penalize("groq", "llama")
+    eng._status.set_busy("groq", "llama", 60, "Too many requests")
     cap = eng.remaining_capacity("default")
     assert cap == {}

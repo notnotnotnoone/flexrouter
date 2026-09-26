@@ -58,7 +58,7 @@ async def test_a_burst_beyond_the_key_cap_queues_instead_of_failing_in_streaming
     traces = _traces(tmp_path)
     assert [t["ok"] for t in traces] == [True] * 5
     assert all(len(t["attempts"]) == 0 for t in traces)  # attempts list holds failures only
-    assert not router._penalties.is_penalized("alpha", "big")
+    assert router._status.get("alpha", "big").value == "ready"
 
 
 @pytest.mark.asyncio
@@ -75,7 +75,7 @@ async def test_a_burst_beyond_the_key_cap_queues_instead_of_failing(tmp_path, mo
         timeout=10)
 
     assert len(results) == 5
-    assert not router._penalties.is_penalized("alpha", "big")
+    assert router._status.get("alpha", "big").value == "ready"
 
 
 def test_in_flight_counts_do_not_survive_a_restart(tmp_path):

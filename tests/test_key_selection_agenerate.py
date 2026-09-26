@@ -58,13 +58,13 @@ def test_an_auth_failure_benches_only_the_used_key(tmp_path, monkeypatch):
     monkeypatch.setattr("flexrouter.client.AsyncClient.chat", fake_chat)
     router.generate([{"role": "user", "content": "hi"}], "smart")
 
-    assert router._key_states.get("alpha", "k1").status == "benched"
-    assert router._key_states.get("alpha", "k2").status == "live"
-    # The provider itself must NOT be quarantined — k2 still works.
-    assert not router._penalties.is_quarantined("alpha", "big")
+    assert router._key_states.get("alpha", "k1").status == "needs_you"
+    assert router._key_states.get("alpha", "k2").status == "ready"
+    # The provider itself must NOT need you — k2 still works.
+    assert router._status.get("alpha", "big").value == "ready"
 
 
-def test_when_every_key_is_benched_the_provider_is_quarantined(tmp_path, monkeypatch):
+def test_when_every_key_needs_you_the_provider_needs_you(tmp_path, monkeypatch):
     router = _router(tmp_path, monkeypatch, "round_robin")
 
     async def always_bad_key(self, route, messages, **kwargs):
@@ -80,14 +80,14 @@ def test_when_every_key_is_benched_the_provider_is_quarantined(tmp_path, monkeyp
     except Exception:
         pass
 
-    assert router._key_states.get("alpha", "k1").status == "benched"
-    assert router._key_states.get("alpha", "k2").status == "benched"
-    assert router._penalties.is_quarantined("alpha", "big")
+    assert router._key_states.get("alpha", "k1").status == "needs_you"
+    assert router._key_states.get("alpha", "k2").status == "needs_you"
+    assert router._status.get("alpha", "big").value == "needs_you"
 
 
-def test_a_cooling_key_is_skipped_but_the_other_key_still_works(tmp_path, monkeypatch):
+def test_a_busy_key_is_skipped_but_the_other_key_still_works(tmp_path, monkeypatch):
     router = _router(tmp_path, monkeypatch, "round_robin")
-    router._key_states.mark_cooling("alpha", "k1", 9999, "too_fast")
+    router._key_states.mark_busy("alpha", "k1", 9999, "too_fast")
     used_keys = []
 
     async def fake_chat(self, route, messages, **kwargs):

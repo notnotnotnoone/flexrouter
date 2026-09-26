@@ -33,7 +33,7 @@ def home(tmp_path):
         "settings": {"decider_model": "m"},
     })
     for name in ("score_facts", "rate_limit_facts", "model_facts", "rate_limits",
-                 "quarantine", "penalties", "parked_models"):
+                 "status", "parked_models"):
         _write(state / f"{name}.json", {"groq/a": {"x": 1}, "groq/c/d": {"x": 1},
                                         "mistral/b": {"x": 2}})
     _write(state / "catalog_pending.json", {"groq": {"appeared": []}, "mistral": {"appeared": []}})
@@ -49,7 +49,7 @@ def test_resetting_one_provider_removes_only_its_models_and_facts(home):
     assert o["new_models"] == {"smart": [{"provider": "mistral", "model": "b"}], "fast": []}
     assert o["models"] == {"mistral/b": {"score": 60}}
     for name in ("score_facts", "rate_limit_facts", "model_facts", "rate_limits",
-                 "quarantine", "penalties", "parked_models"):
+                 "status", "parked_models"):
         assert _read(state / f"{name}.json") == {"mistral/b": {"x": 2}}, name
     assert _read(state / "catalog_pending.json") == {"mistral": {"appeared": []}}
     assert result.counts["models"] == 2
@@ -119,7 +119,7 @@ def _add_groq_model(client):
     ov.add_model("low", {"provider": "groq", "model": "extra", "score": 50,
                          "rpm": 60, "tpm": 60000})
     router = app_module.get_router()
-    router._penalties.quarantine("groq", "extra", "gone")
+    router._status.set_needs_you("groq", "extra", "gone", kind="gone", action="remove")
 
 
 def test_provider_page_has_a_danger_zone(client):
@@ -139,15 +139,15 @@ def test_a_wrong_confirmation_resets_nothing(client):
     r = client.post("/providers/groq/reset", data={"confirm": "grok"}, follow_redirects=False)
     assert "ok=0" in r.headers["location"]
     router = app_module.get_router()
-    assert router._penalties.is_quarantined("groq", "extra")
+    assert router._status.get("groq", "extra").value == "needs_you"
 
 
-def test_resetting_a_provider_clears_its_models_and_live_quarantine(client):
+def test_resetting_a_provider_clears_its_models_and_live_status(client):
     _add_groq_model(client)
     r = client.post("/providers/groq/reset", data={"confirm": "groq"}, follow_redirects=False)
     assert "ok=1" in r.headers["location"]
     router = app_module.get_router()
-    assert not router._penalties.is_quarantined("groq", "extra")
+    assert router._status.get("groq", "extra").value == "ready"
     from flexrouter import overrides as ov
     assert not any(m.get("provider") == "groq"
                    for ms in ov.load_overrides().get("new_models", {}).values() for m in ms)
@@ -159,4 +159,4 @@ def test_reset_all_needs_the_exact_phrase(client):
     assert "ok=0" in r.headers["location"]
     r = client.post("/providers/reset-all", data={"confirm": "reset all"}, follow_redirects=False)
     assert "ok=1" in r.headers["location"]
-    assert not app_module.get_router()._penalties.is_quarantined("groq", "extra")
+    assert app_module.get_router()._status.get("groq", "extra").value == "ready"

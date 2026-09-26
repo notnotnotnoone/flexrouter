@@ -32,10 +32,12 @@ _RANGE_BY_KEY = {r[0]: r for r in RANGES}
 DEFAULT_RANGE = "24h"
 
 KIND_LABELS = {
-    "provider_down": "provider is down",
-    "model_set_aside": "model set aside",
-    "key_benched": "key benched",
-    "key_cooling": "key resting",
+    "provider_needs_you": "provider needs you",
+    "model_needs_you": "model needs you",
+    "key_needs_you": "key needs you",
+    "model_busy": "model busy",
+    "model_struggling": "model struggling",
+    "key_busy": "key busy",
     "unclear_error": "an error it isn't sure about",
 }
 
@@ -340,11 +342,11 @@ def _providers(summaries: list, window: dict, label: str) -> str:
             tag("td", tag("span", _swatch(color) + esc(s.name), cls="prov-name")
                 + tag("span", esc(s.base_url), cls="prov-url")),
             tag("td", ui.status(s.state)),
-            tag("td", esc(f"{s.keys_live} of {s.key_count} in use"), cls="dim"),
+            tag("td", esc(f"{s.keys_ready} of {s.key_count} ready"), cls="dim"),
             tag("td", num(reqs), cls="num"),
             tag("td", esc(answered), cls="num"),
             tag("td", shape),
-            tag("td", esc(s.quarantine_reason or ""), cls="dim"),
+            tag("td", esc(s.status_reason or ""), cls="dim"),
         ]), **{"data-row": f"provider:{s.name}", "data-value": f"{reqs}/{failed}/{s.state}"}))
     if len(rows) == 1:
         body = tag("div", ui.empty("No providers yet.",

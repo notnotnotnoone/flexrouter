@@ -67,7 +67,7 @@ def compute_uptime(state_dir: str, now: Optional[datetime] = None) -> dict:
                 sys_up += 1 if state == "up" else 0
     system = {"uptime_24h": (sys_up / sys_total) if sys_total else None}
 
-    # Incidents: pair penalized -> next recovered per model
+    # Incidents: pair a failure -> next recovered per model
     incidents = []
     epath = Path(state_dir) / "events.csv"
     if epath.exists():
@@ -76,7 +76,8 @@ def compute_uptime(state_dir: str, now: Optional[datetime] = None) -> dict:
         open_inc: dict[str, dict] = {}
         for e in evs:
             key = f"{e['provider']}/{e['model']}"
-            if e["event_type"] in ("penalized", "rate_limited", "server_error", "timeout"):
+            if e["event_type"] in ("busy", "struggling", "needs_you", "penalized",
+                                   "rate_limited", "server_error", "timeout"):
                 open_inc.setdefault(key, {
                     "start": e["timestamp"], "provider": e["provider"],
                     "model": e["model"], "event_type": e["event_type"]})

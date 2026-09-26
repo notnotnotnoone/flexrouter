@@ -13,6 +13,8 @@ import json
 import time
 from types import SimpleNamespace
 
+from flexrouter.status import StatusStore
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -29,41 +31,6 @@ OK_RESULT = {
 }
 
 
-class FakePenalties:
-    def __init__(self):
-        self._q: dict[str, dict] = {}
-        self._backoff: dict[str, float] = {}  # "provider/model" -> until epoch
-
-    def is_quarantined(self, provider, model):
-        return f"{provider}/{model}" in self._q
-
-    def penalize(self, provider, model, seconds=60):
-        """Test helper: put a model under a timed backoff, short of
-        quarantine - mirrors PenaltyBox.penalize()/penalize_short()."""
-        self._backoff[f"{provider}/{model}"] = time.time() + seconds
-
-    def is_penalized(self, provider, model):
-        # Models real PenaltyBox.is_penalized(): true for either a
-        # quarantine or an active backoff penalty, so a test could not
-        # delete this check from facts.py without a fake-backed test
-        # noticing - it used to just alias is_quarantined and so could
-        # never diverge from it.
-        if self.is_quarantined(provider, model):
-            return True
-        until = self._backoff.get(f"{provider}/{model}")
-        return until is not None and time.time() < until
-
-    def quarantine_reason(self, provider, model):
-        entry = self._q.get(f"{provider}/{model}")
-        return entry["reason"] if entry else None
-
-    def quarantined(self):
-        return dict(self._q)
-
-    def clear_quarantine(self, provider, model):
-        self._q.pop(f"{provider}/{model}", None)
-
-
 def _model(provider, model, score=85, vision=False):
     return SimpleNamespace(provider=provider, model=model, score=score,
                            rpm=60, tpm=60000, context_window=131072,
@@ -72,14 +39,14 @@ def _model(provider, model, score=85, vision=False):
 
 class FakeKeyStates:
     """Stands in for KeyStateStore: nothing has ever failed, so every key
-    reads as live and available - the sane default for a router that just
+    reads as ready and available - the sane default for a router that just
     started."""
 
     def is_available(self, provider, key_id, now=None):
         return True
 
     def get(self, provider, key_id, now=None):
-        return SimpleNamespace(status="live", until=None)
+        return SimpleNamespace(status="ready", until=None, reason="")
 
 
 class FakeErrorBrain:
@@ -127,7 +94,10 @@ class FakeRouter:
             port=None,
             dashboard_port=7352,
         )
-        self._engine = SimpleNamespace(_penalties=FakePenalties())
+        # A real, in-memory status store: it's plain data with no I/O, so a
+        # fake of it could only drift from the real thing.
+        self._status = StatusStore()
+        self._engine = SimpleNamespace(_status=self._status)
         # The dashboard's Overview page (flexrouter/dashboard/facts.py) reads
         # these three off a real LocalRouter; a router double that doesn't
         # carry them is the double's problem, not facts.overview()'s.
@@ -442,16 +412,30 @@ def test_models_carries_routing_metadata(client):
     entry = next(m for m in data if m["id"] == "openai/gpt-4o")
     assert entry["flexrouter"]["vision"] is True
     assert entry["flexrouter"]["score"] == 95
-    assert entry["flexrouter"]["quarantined"] is False
+    # The fake router has no "openai" provider set up, so this model can
+    # never be routed to - and says so, instead of "OK".
+    assert entry["flexrouter"]["status"]["value"] == "needs_you"
+    ready = next(m for m in data if m["id"] == "groq/llama-3.1-8b-instant")
+    assert ready["flexrouter"]["status"]["value"] == "ready"
 
 
-def test_models_flags_quarantined_routes(client, fake):
-    fake._engine._penalties._q["groq/llama-3.1-8b-instant"] = {
-        "until": 1e12, "reason": "404 model not found"}
+def test_models_reports_a_model_that_needs_you(client, fake):
+    fake._status.set_needs_you("groq", "llama-3.1-8b-instant", "Groq doesn't know this name.",
+                               kind="gone", action="remove", detail="404 model not found")
     data = client.get("/v1/models").json()["data"]
     entry = next(m for m in data if m["id"] == "groq/llama-3.1-8b-instant")
-    assert entry["flexrouter"]["quarantined"] is True
-    assert "404" in entry["flexrouter"]["quarantine_reason"]
+    status = entry["flexrouter"]["status"]
+    assert status["value"] == "needs_you"
+    assert status["action"] == "remove"
+    assert "404" in status["detail"]
+
+
+def test_models_reports_a_model_whose_provider_is_not_set_up(client, fake):
+    fake._cfg.tiers["low"].append(_model("zhipu", "glm-5-2", 50))
+    data = client.get("/v1/models").json()["data"]
+    entry = next(m for m in data if m["id"] == "zhipu/glm-5-2")
+    assert entry["flexrouter"]["status"]["value"] == "needs_you"
+    assert "No zhipu provider set up" in entry["flexrouter"]["status"]["reason"]
 
 
 def test_bare_models_matches_v1_models(client):
@@ -462,29 +446,28 @@ def test_bare_models_matches_v1_models(client):
     assert client.get("/models").json() == client.get("/v1/models").json()
 
 
-# --- quarantine endpoints ----------------------------------------------------
+# --- status endpoints ---------------------------------------------------------
 
-def test_quarantine_listing(client, fake):
-    fake._engine._penalties._q["groq/dead-model"] = {
-        "until": 1e12, "reason": "410 gone"}
-    body = client.get("/api/quarantine").json()
-    assert body["quarantined"] == [
-        {"provider": "groq", "model": "dead-model", "until": 1e12, "reason": "410 gone"}
-    ]
-
-
-def test_quarantine_can_be_cleared(client, fake):
-    fake._engine._penalties._q["groq/dead-model"] = {"until": 1e12, "reason": "410"}
-    assert client.delete("/api/quarantine/groq/dead-model").json() == {"ok": True}
-    assert client.get("/api/quarantine").json()["quarantined"] == []
+def test_status_listing(client, fake):
+    fake._status.set_needs_you("groq", "dead-model", "Groq doesn't know this name.",
+                               kind="gone", action="remove")
+    body = client.get("/api/statuses").json()
+    [entry] = body["statuses"]
+    assert (entry["provider"], entry["model"], entry["value"], entry["action"]) == \
+        ("groq", "dead-model", "needs_you", "remove")
 
 
-def test_quarantine_clear_handles_slashes_in_model_name(client, fake):
+def test_status_can_be_cleared(client, fake):
+    fake._status.set_needs_you("groq", "dead-model", "x", kind="gone", action="remove")
+    assert client.delete("/api/statuses/groq/dead-model").json() == {"ok": True}
+    assert client.get("/api/statuses").json()["statuses"] == []
+
+
+def test_status_clear_handles_slashes_in_model_name(client, fake):
     # Plenty of real model ids contain a slash: "meta-llama/llama-4-scout".
-    fake._engine._penalties._q["groq/meta-llama/llama-4"] = {
-        "until": 1e12, "reason": "404"}
-    client.delete("/api/quarantine/groq/meta-llama/llama-4")
-    assert client.get("/api/quarantine").json()["quarantined"] == []
+    fake._status.set_needs_you("groq", "meta-llama/llama-4", "x", kind="gone", action="remove")
+    client.delete("/api/statuses/groq/meta-llama/llama-4")
+    assert client.get("/api/statuses").json()["statuses"] == []
 
 
 # --- everything on one port --------------------------------------------------
@@ -492,7 +475,7 @@ def test_quarantine_clear_handles_slashes_in_model_name(client, fake):
 def test_api_and_v1_and_dashboard_share_a_port(client):
     # The whole point of the merge: these used to be two servers.
     assert client.get("/v1/models").status_code == 200
-    assert client.get("/api/quarantine").status_code == 200
+    assert client.get("/api/statuses").status_code == 200
     assert client.get("/").status_code == 200  # the real, server-rendered Overview
 
 
@@ -665,26 +648,26 @@ def test_retesting_an_unknown_provider_is_a_404(client):
     assert client.post("/api/providers/nope/test").status_code == 404
 
 
-def test_a_working_retest_lifts_a_stale_quarantine(client, fake, monkeypatch):
-    fake._engine._penalties._q["groq/*"] = {"until": 1e12, "reason": "401 rejected"}
+def test_a_working_retest_lifts_a_stale_needs_you(client, fake, monkeypatch):
+    fake._status.set_provider_needs_you("groq", "Groq rejected every key.")
 
     async def fake_probe(base_url, api_key, timeout=15.0):
         return ProbeResult(ok=True, models=["x"], status_code=200)
     monkeypatch.setattr(app_module, "probe_key", fake_probe)
 
     client.post("/api/providers/groq/test")
-    assert fake._engine._penalties.is_quarantined("groq", "*") is False
+    assert fake._status.provider_status("groq").value == "ready"
 
 
-def test_a_failing_retest_leaves_the_quarantine_alone(client, fake, monkeypatch):
-    fake._engine._penalties._q["groq/*"] = {"until": 1e12, "reason": "401 rejected"}
+def test_a_failing_retest_leaves_the_needs_you_alone(client, fake, monkeypatch):
+    fake._status.set_provider_needs_you("groq", "Groq rejected every key.")
 
     async def fake_probe(base_url, api_key, timeout=15.0):
         return ProbeResult(ok=False, error="still rejected", status_code=401)
     monkeypatch.setattr(app_module, "probe_key", fake_probe)
 
     client.post("/api/providers/groq/test")
-    assert fake._engine._penalties.is_quarantined("groq", "*") is True
+    assert fake._status.provider_status("groq").value == "needs_you"
 
 
 def test_the_streaming_bound_covers_the_whole_call_not_each_attempt(monkeypatch):

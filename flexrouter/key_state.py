@@ -2,8 +2,8 @@
 """Per-key runtime state: state/key_state.json, keyed by "provider:key_id".
 
 Replaces blind counter % len(keys) rotation (fault 5 in the v2 design doc)
-with real per-key memory that survives a restart: a rejected key benches
-only itself, a rate-limited key cools down instead of re-entering rotation
+with real per-key memory that survives a restart: a rejected key is Needs
+you on its own, a rate-limited key is Busy instead of re-entering rotation
 immediately, and every key's recent behaviour (failures, throughput,
 latency) is available to a Scheduler (flexrouter/scheduler.py) choosing
 between a provider's live keys.
@@ -26,7 +26,10 @@ from flexrouter.store import harden, read_json, write_json
 
 @dataclass
 class KeyState:
-    status: str = "live"  # live | cooling | benched | disabled
+    # grill-decisions.md §3's words: ready | busy | needs_you | off. The
+    # pre-v2.3 words (live | cooling | benched | disabled) are read and
+    # translated on load, see _LEGACY.
+    status: str = "ready"
     until: Optional[float] = None
     reason: str = ""
     consecutive_failures: int = 0
@@ -37,6 +40,9 @@ class KeyState:
     active_requests: int = 0
     ema_latency_ms: Optional[float] = None
     day: str = ""
+
+
+_LEGACY = {"live": "ready", "cooling": "busy", "benched": "needs_you", "disabled": "off"}
 
 
 def _today(now: float) -> str:
@@ -51,7 +57,9 @@ class KeyStateStore:
         for k, v in read_json(self._path, default={}).items():
             # A request cannot outlive the process that started it, so a count
             # left on disk by a crash would block the key forever.
-            self._states[k] = KeyState(**{**v, "active_requests": 0})
+            v = {**v, "active_requests": 0}
+            v["status"] = _LEGACY.get(v.get("status", "ready"), v.get("status", "ready"))
+            self._states[k] = KeyState(**v)
 
     def _key(self, provider: str, key_id: str) -> str:
         return f"{provider}:{key_id}"
@@ -88,17 +96,17 @@ class KeyStateStore:
         now = now if now is not None else time.time()
         k = self._key(provider, key_id)
         state = self._states.get(k)
-        if state is None or state.status == "live":
+        if state is None or state.status == "ready":
             return True
-        if state.status == "cooling":
+        if state.status == "busy":
             if state.until is not None and now >= state.until:
-                state.status = "live"
+                state.status = "ready"
                 state.until = None
                 self._states[k] = state
                 self._save()
                 return True
             return False
-        return False  # benched | disabled
+        return False  # needs_you | off
 
     def seconds_until_available(self, provider: str, key_id: str,
                                 now: Optional[float] = None) -> float:
@@ -106,7 +114,7 @@ class KeyStateStore:
         if self.is_available(provider, key_id, now=now):
             return 0.0
         state = self.get(provider, key_id, now=now)
-        if state.status == "cooling" and state.until is not None:
+        if state.status == "busy" and state.until is not None:
             return max(0.0, state.until - now)
         return float("inf")
 
@@ -116,8 +124,9 @@ class KeyStateStore:
         k = self._key(provider, key_id)
         state = self._states.get(k, KeyState())
         self._maybe_reset_day(state, now)
-        state.status = "live"
+        state.status = "ready"
         state.until = None
+        state.reason = ""
         state.consecutive_failures = 0
         state.requests_today += 1
         state.tokens_today += tokens
@@ -128,27 +137,29 @@ class KeyStateStore:
         self._states[k] = state
         self._save()
 
-    def mark_cooling(self, provider: str, key_id: str, seconds: float, reason: str,
-                     now: Optional[float] = None) -> None:
+    def mark_busy(self, provider: str, key_id: str, seconds: float, reason: str,
+                  now: Optional[float] = None) -> None:
+        """Rate-limited: back in `seconds` (the provider's figure, else 60s)."""
         now = now if now is not None else time.time()
         k = self._key(provider, key_id)
         state = self._states.get(k, KeyState())
         self._maybe_reset_day(state, now)
-        state.status = "cooling"
-        state.until = now + max(seconds, 30.0)
+        state.status = "busy"
+        state.until = now + max(seconds, 1.0)
         state.reason = reason
         state.consecutive_failures += 1
         state.failures_24h += 1
         self._states[k] = state
         self._save()
 
-    def mark_benched(self, provider: str, key_id: str, reason: str,
-                     now: Optional[float] = None) -> None:
+    def mark_needs_you(self, provider: str, key_id: str, reason: str,
+                       now: Optional[float] = None) -> None:
+        """The provider rejected this key. No timer: it needs a new key."""
         now = now if now is not None else time.time()
         k = self._key(provider, key_id)
         state = self._states.get(k, KeyState())
         self._maybe_reset_day(state, now)
-        state.status = "benched"
+        state.status = "needs_you"
         state.until = None
         state.reason = reason
         state.consecutive_failures += 1
@@ -163,12 +174,12 @@ class KeyStateStore:
         now = now if now is not None else time.time()
         return all(not self.is_available(provider, kid, now=now) for kid in key_ids)
 
-    def all_benched_or_disabled(self, provider: str, key_ids: list[str],
+    def all_need_you_or_off(self, provider: str, key_ids: list[str],
                                 now: Optional[float] = None) -> bool:
         if not key_ids:
             return False
         now = now if now is not None else time.time()
-        return all(self.get(provider, kid, now=now).status in ("benched", "disabled")
+        return all(self.get(provider, kid, now=now).status in ("needs_you", "off")
                   for kid in key_ids)
 
     def min_seconds_until_available(self, provider: str, key_ids: list[str],

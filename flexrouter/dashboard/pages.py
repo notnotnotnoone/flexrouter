@@ -179,14 +179,23 @@ def _add_provider_form() -> str:
     )
 
 
+def _key_counts(s) -> str:
+    """"2 ready, 1 busy" - the keys' statuses, zeros left out."""
+    parts = [f"{n} {word}" for n, word in (
+        (s.keys_ready, "ready"), (s.keys_busy, "busy"),
+        (s.keys_need_you, "need you" if s.keys_need_you != 1 else "needs you"),
+        (s.keys_off, "off")) if n]
+    return ", ".join(parts) or "no keys"
+
+
 def _provider_row(s) -> str:
     return tag("tr", "".join([
         tag("td", tag("a", esc(s.name), href=f"/providers/{quote(s.name)}")),
         tag("td", ui.status(s.state)),
         tag("td", esc(s.base_url), cls="dim"),
-        tag("td", esc(f"{s.keys_live} live, {s.keys_cooling} resting, {s.keys_parked} parked")),
+        tag("td", esc(_key_counts(s))),
         tag("td", _num(s.models_total), cls="num"),
-        tag("td", esc(s.quarantine_reason or ""), cls="dim"),
+        tag("td", esc(s.status_reason or ""), cls="dim"),
     ]))
 
 
@@ -295,7 +304,7 @@ def _key_fact(label: str, value: object) -> str:
 def _key_row(detail, k) -> str:
     until = f", back in {int(k.until - time.time())}s" if k.until else ""
     status = f"{k.status}{until}"
-    status_cls = "ok" if k.status == "live" else "warn" if k.status == "cooling" else "bad"
+    status_cls = {"ready": "ok", "busy": "warn", "off": "dim"}.get(k.status, "bad")
     last_used = (
         time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(k.last_used_at))
         if k.last_used_at else "never"
@@ -435,8 +444,8 @@ def _provider_models_line(label: str, models: list) -> str:
 def _provider_detail_body(detail, editable: dict, bucket_names: list,
                           banner: str = "", reset_counts: dict | None = None) -> str:
     quarantine_note = (
-        tag("p", esc(detail.quarantine_reason), cls="state-bad")
-        if detail.quarantined else ""
+        tag("p", esc(detail.status_reason), cls="state-bad")
+        if detail.status == "needs_you" else ""
     )
 
     models_panel = _panel(
@@ -618,7 +627,7 @@ def _models_body(router, banner: str = "") -> str:
     for n, r in enumerate(rows_data):
         caps = (_cap_cell(r.vision, "vision") + _cap_cell(r.tools, "tools")
                 + _cap_cell(r.reasoning, "reason") + _size_tag(r.learned_context or r.context_window))
-        ok = r.state == "available"
+        state = {"ready": "ok", "busy": "warn", "struggling": "warn"}.get(r.state, "bad")
         search = f"{r.provider} {r.model} {' '.join(r.buckets)}".lower()
         rows.append(tag("tr", "".join([
             tag("td", tag("span", esc(r.provider), cls="m-prov") + tag("span", esc(r.model),
@@ -630,7 +639,7 @@ def _models_body(router, banner: str = "") -> str:
             tag("td", esc(f"{r.response_rate:.0%} ({r.requests:,} reqs)")
                 if r.response_rate is not None else tag("span", "no data yet", cls="dim")),
             tag("td", tag("div", caps, cls="caps")),
-            tag("td", ui.status("ok" if ok else "bad")
+            tag("td", ui.status(state)
                 + (tag("div", esc(r.why), cls="m-why") if r.why else "")),
             tag("td", tag("button", ui.icon("arrow-right"), type="button", cls="m-open",
                           **{"aria-label": f"Details for {r.model}", "data-toggle": f"m-{n}"})),

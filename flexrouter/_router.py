@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import AsyncIterator, Literal, Optional
 
 from flexrouter.audit import AuditLogger
-from flexrouter.bench import BENCH_INTERVAL_SECONDS, check_response_rates
 from flexrouter.client import AsyncClient, RateLimitError, ProviderError
 from flexrouter.config import FlexConfig, load_config
 from flexrouter import errors, redact
@@ -28,10 +27,11 @@ from flexrouter.model_facts import ModelFactsStore
 from flexrouter.quota import QuotaTracker
 from flexrouter.rate_limits import RateLimitStore
 from flexrouter.reasoning import ReasoningStreamSplitter
-from flexrouter.recovery import PenaltyBox
 from flexrouter.redact import scrub
 from flexrouter.refresh import refresh_config, refresh_known_model_ids
 from flexrouter.sampler import PassiveSampler
+from flexrouter import status as st
+from flexrouter.status import StatusStore
 from flexrouter.scheduler import RoundRobinCounters, key_quota_ok, pick_key
 from flexrouter.traces import TraceWriter, new_trace_id
 
@@ -117,13 +117,13 @@ class LocalRouter:
         self._register_known_identifiers()
         self._quota_tracker = QuotaTracker(self._cfg.state_dir)
         self._events = EventLogger(self._cfg.state_dir)
-        self._penalties = PenaltyBox(
-            self._cfg.penalty_base_seconds, self._cfg.penalty_max_seconds,
-            state_dir=self._cfg.state_dir, on_event=self._events.record,
-            quarantine_seconds=self._cfg.quarantine_seconds,
-        )
+        # grill-decisions.md §3: one status per model, replacing the penalty
+        # box, quarantine, and the 7-day auto-bench (which is gone: a model
+        # that gives empty replies is Struggling for about an hour, and
+        # provider overload is only ever Busy).
+        self._status = StatusStore(self._cfg.state_dir, on_event=self._events.record)
         self._engine = RoutingEngine(
-            self._cfg, rate_limit_store=self._rate_limit_store, penalties=self._penalties,
+            self._cfg, rate_limit_store=self._rate_limit_store, status=self._status,
             quota_tracker=self._quota_tracker)
         self._pin_engine = self._build_pin_engine()
         self._audit = AuditLogger(self._cfg.state_dir)
@@ -142,11 +142,6 @@ class LocalRouter:
             self._engine.health_snapshot, self._history.record,
             self._cfg.sample_interval_seconds)
         self._sampler.start()
-        self._bench_sampler = PassiveSampler(
-            lambda: check_response_rates(self._cfg.state_dir, self._penalties),
-            lambda _: None,
-            BENCH_INTERVAL_SECONDS)
-        self._bench_sampler.start()
         self._client = AsyncClient(rate_limit_store=self._rate_limit_store)
         self._hooks = HookRunner()
         self._loop = asyncio.new_event_loop()
@@ -155,32 +150,44 @@ class LocalRouter:
         self._last_mtime: tuple = self._newest_mtime()
         self._reload_error: str | None = None
 
-    def _quarantine_block_reason(self, tier: str) -> str | None:
-        """Explain a tier that is empty only because everything is quarantined.
+    def _blocked_reason(self, tier: str) -> str | None:
+        """Explain a bucket (or pinned model) that has nothing to try.
 
-        Waiting is the right answer to a rate limit — a slot opens shortly.
-        It is the wrong answer to a model the provider deleted, which will
-        still be deleted in 24 hours. Without this check, wait=True sleeps on
-        a tier that cannot recover, which looks exactly like a hang.
+        Waiting is the right answer to Busy - it clears on its own. It is the
+        wrong answer to Needs you, which never does. Without this check,
+        wait=True sleeps on a bucket that cannot recover, which looks exactly
+        like a hang. A pinned model that is Busy gets its own answer too
+        (§1: "429: busy, retry in 40s"), because a pinned call never waits.
         """
-        models = self._cfg.tiers.get(tier) or []
+        engine = self._engine_for(tier)
+        models = engine._cfg.tiers.get(tier) or []
         if not models:
             return None
-        if not all(self._penalties.is_quarantined(m.provider, m.model)
-                   for m in models):
+        skips = [(m, engine._skip_reason(m, 0, False, engine._strategy(tier))) for m in models]
+        if "/" in tier and len(models) == 1:
+            m = models[0]
+            status = self._status.get(m.provider, m.model)
+            if status.value == st.BUSY:
+                left = status.seconds_left() or 0
+                code = status.status_code or 429
+                return (f"{code}: {m.provider}/{m.model} is busy ({status.reason}), "
+                        f"retry in {left}s")
+        if not all(skip is not None and skip[0] == st.NEEDS_YOU for _, skip in skips):
             return None
 
         lines: list[str] = []
-        for m in models:
-            reason = self._penalties.quarantine_reason(m.provider, m.model) or "unavailable"
-            line = f"{m.provider}/{m.model}: {reason.splitlines()[0][:120]}"
+        for m, skip in skips:
+            # The plain sentence, then the provider's own words after it.
+            said = self._status.get(m.provider, m.model).detail
+            text = f"{skip[1]} {said}".strip() if said else skip[1]
+            line = f"{m.provider}/{m.model}: {text.splitlines()[0][:300]}"
             if line not in lines:
                 lines.append(line)
         shown = lines[:5]
         if len(lines) > len(shown):
             shown.append(f"...and {len(lines) - len(shown)} more")
         joined = ("\n  ").join(shown)
-        return (f"Every model in bucket {tier!r} is quarantined - this will "
+        return (f"Every model in bucket {tier!r} needs you - this will "
                 f"not clear on its own:\n  {joined}")
 
     def _register_known_identifiers(self) -> None:
@@ -204,65 +211,76 @@ class LocalRouter:
             body=getattr(exc, "body", None))
 
     def _handle_auth_failure(self, route, exc, key_id: Optional[str]) -> None:
-        """Sideline the key that was rejected, not the whole provider.
+        """A rejected key is Needs you on that key only, not the whole provider.
 
-        Stage 4's whole point (spec fault 5): a rejected key used to abort
-        every route through its provider, even routes using a different,
-        perfectly good key. Now only that one key is benched. The provider
-        itself is only quarantined when every configured key for it has
-        become benched or disabled (ruling 2/4) — a fact about the account,
-        not about one credential.
+        The provider itself becomes Needs you only when every configured key
+        for it is Needs you or off - a fact about the account, not about one
+        credential. A keyless provider has nothing to single out, so it goes
+        straight to the provider.
 
-        The reason is scrubbed here, at the write site, for the same reason
-        it always has been: this text is persisted and later served
-        unauthenticated by /api/* and /v1/models.
+        Scrubbed here, at the write site: this text is persisted and later
+        served by /api/* and /v1/models.
         """
-        reason = scrub(str(exc))
+        detail = scrub(str(exc))
+        name = st.provider_label(route.provider)
         provider_cfg = self._cfg.providers.get(route.provider)
         if key_id is None or not provider_cfg or not provider_cfg.keys:
-            # No key identity to bench (keyless provider, or the failure
-            # happened before a key was ever chosen) — fall back to the
-            # pre-Stage-4 behaviour rather than silently doing nothing.
-            self._penalties.quarantine_provider(route.provider, reason)
+            self._status.set_provider_needs_you(
+                route.provider, f"{name} rejected the key.", status_code=401, detail=detail)
             self._events.record(
                 route.provider, route.model, "server_error",
-                detail=f"provider quarantined (auth): {reason}")
+                detail=f"provider needs you (key rejected): {detail}")
             return
-        self._key_states.mark_benched(route.provider, key_id, reason)
+        self._key_states.mark_needs_you(route.provider, key_id, f"{name} rejected this key.")
         key_ids = [r.id for r in provider_cfg.keys]
-        if self._key_states.all_benched_or_disabled(route.provider, key_ids):
-            self._penalties.quarantine_provider(route.provider, reason)
+        if self._key_states.all_need_you_or_off(route.provider, key_ids):
+            self._status.set_provider_needs_you(
+                route.provider, f"{name} rejected every key.", status_code=401, detail=detail)
             self._events.record(
                 route.provider, route.model, "server_error",
-                detail=f"provider quarantined (auth, every key benched): {reason}")
+                detail=f"provider needs you (every key rejected): {detail}")
         else:
             self._events.record(
                 route.provider, route.model, "server_error",
-                detail=f"key benched (auth): {reason}")
+                detail=f"key needs you (rejected): {detail}")
 
     def _handle_provider_error(self, route, exc) -> None:
-        """Sideline a route after a provider error, and record why.
+        """Set the model's status after a provider error, and record why.
 
-        A permanent status (the provider saying the model is gone) quarantines
-        the route instead of penalizing it — otherwise the backoff loop retries
-        a deleted model every 30 seconds until the heat death of the universe.
+        §3: busy things (429, 5xx, no answer) are Busy for as long as the
+        provider asked, else 60s, never doubling. Broken things (402, 403,
+        404/410, a 429 whose quota is 0) are Needs you at once, no timer.
 
-        Scrubbed at the write site for the same reason as _handle_auth_failure:
-        a provider error's text is built from the provider's own response body,
-        and this reason is persisted and then served unauthenticated.
+        Scrubbed at the write site for the same reason as
+        _handle_auth_failure: the provider's text is persisted and served.
         """
-        reason = scrub(str(exc))
-        if exc.is_permanent:
-            self._penalties.quarantine(route.provider, route.model, reason)
-            self._events.record(
-                route.provider, route.model, "server_error",
-                detail=f"quarantined: {reason}")
-            return
-        self._engine.penalize(route.provider, route.model)
+        detail = scrub(str(exc))
+        status_code = 429 if isinstance(exc, RateLimitError) else getattr(exc, "status_code", None)
+        failure = self._status.record_failure(
+            route.provider, route.model, status_code, getattr(exc, "body", "") or str(exc),
+            retry_after=getattr(exc, "retry_after", None), detail=detail)
+        status = self._status.get(route.provider, route.model)
         self._events.record(
-            route.provider, route.model, "server_error",
-            detail=reason,
-            penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+            route.provider, route.model,
+            "rate_limited" if status_code == 429 else "server_error",
+            detail=f"{failure.value}: {detail}",
+            penalty_seconds=status.seconds_left() or 0)
+
+    def _handle_rate_limit(self, route, exc, key_id: Optional[str]) -> None:
+        """A 429. The model is Busy (or Needs you, when its quota is 0), and
+        the key that hit it is Busy for the same length of time."""
+        self._handle_provider_error(route, exc)
+        status = self._status.get(route.provider, route.model)
+        if key_id is not None and status.value == st.BUSY:
+            self._key_states.mark_busy(
+                route.provider, key_id, status.seconds_left() or st.BUSY_DEFAULT_SECONDS,
+                "Too many requests")
+
+    def _handle_empty_reply(self, route, detail: str) -> None:
+        """§2: an empty reply makes the model Struggling, for about an hour."""
+        self._status.set_struggling(
+            route.provider, route.model, "Gave an empty reply.", detail=detail)
+        self._events.record(route.provider, route.model, "server_error", detail=detail)
 
     def generate(
         self,
@@ -313,6 +331,10 @@ class LocalRouter:
             if not s["available"]
         ]
         attempts: list[dict] = []
+        # Models tried in this request whose failure left their status alone
+        # (§13: the caller's max_tokens ran out while it was thinking) - not
+        # the model's fault, but trying it again here would fail the same way.
+        tried_no_status: set[str] = set()
         # Time spent waiting for a slot to free up since the last attempt,
         # attributed to whichever attempt comes next - so a caller reading
         # error.flexrouter.attempts[].waited_ms can tell "the model answered
@@ -367,13 +389,14 @@ class LocalRouter:
                         f"Tried every model in bucket {tier!r} for "
                         f"about {int(FAILOVER_BUDGET_SECONDS)}s without success"), attempts)
 
-                route, key_id = await self._route_with_key(tier, estimated_tokens, vision, session_id)
+                route, key_id = await self._route_with_key(
+                    tier, estimated_tokens, vision, session_id, frozenset(tried_no_status))
 
                 if route is None:
                     if last_auth_error is not None:
                         _write_trace(ok=False)
                         raise _tag_attempts(last_auth_error, attempts)
-                    blocked = self._quarantine_block_reason(tier)
+                    blocked = self._blocked_reason(tier)
                     if blocked:
                         _write_trace(ok=False)
                         raise _tag_attempts(RouterBusy(blocked), attempts)
@@ -396,16 +419,7 @@ class LocalRouter:
                 try:
                     result = await self._client.chat(route, messages, **kwargs)
                 except RateLimitError as exc:
-                    self._engine.penalize(route.provider, route.model)
-                    if key_id is not None:
-                        self._key_states.mark_cooling(
-                            route.provider, key_id,
-                            self._penalties.penalty_seconds(route.provider, route.model),
-                            "too_fast")
-                    self._events.record(
-                        route.provider, route.model, "rate_limited",
-                        detail=scrub(str(exc)),
-                        penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                    self._handle_rate_limit(route, exc, key_id)
                     self._audit.log(
                         tier=tier, provider=route.provider, model=route.model,
                         prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
@@ -486,7 +500,7 @@ class LocalRouter:
                         message_too_long=verdict.verdict == "message_too_long")
                     if action is Verdict.RETURN:
                         # A genuinely bad request is the caller's fault, not
-                        # this model's - no penalty, and no more models tried.
+                        # this model's - no status change, no more models tried.
                         _write_trace(ok=False)
                         raise _tag_attempts(exc, attempts)
                     self._handle_provider_error(route, exc)
@@ -523,6 +537,7 @@ class LocalRouter:
                     budget_detail = caller_budget_detail(finish_reason, kwargs.get("max_tokens"))
                     if budget_detail is not None:
                         empty_detail = budget_detail
+                        tried_no_status.add(f"{route.provider}/{route.model}")
                     else:
                         empty_detail = (
                             f"empty response (no content, no tool calls); "
@@ -537,11 +552,7 @@ class LocalRouter:
                                 "finish_reason": finish_reason,
                             },
                         )
-                        self._engine.penalize(route.provider, route.model)
-                        self._events.record(
-                            route.provider, route.model, "server_error",
-                            detail=empty_detail,
-                            penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                        self._handle_empty_reply(route, empty_detail)
                     self._audit.log(
                         tier=tier, provider=route.provider, model=route.model,
                         prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, cost_usd=0.0,
@@ -632,6 +643,7 @@ class LocalRouter:
             if not s["available"]
         ]
         attempts: list[dict] = []
+        tried_no_status: set[str] = set()  # see agenerate()
         attempt = 0
         # See agenerate()'s identical field: only deliberate waiting for
         # bucket capacity counts against the ~30s failover budget.
@@ -670,14 +682,15 @@ class LocalRouter:
                         f"Tried every model in bucket {tier!r} for "
                         f"about {int(FAILOVER_BUDGET_SECONDS)}s without success"), attempts)
 
-                route, key_id = await self._route_with_key(tier, estimated_tokens, vision, session_id)
+                route, key_id = await self._route_with_key(
+                    tier, estimated_tokens, vision, session_id, frozenset(tried_no_status))
 
                 if route is None:
                     # Unlike the sync path this loop has no wait=False escape, so
-                    # without the quarantine check it sleeps forever on a bucket
+                    # without the needs-you check it sleeps forever on a bucket
                     # that can never come back — the reported hang, via the
                     # streaming route a chat client actually uses.
-                    blocked = self._quarantine_block_reason(tier)
+                    blocked = self._blocked_reason(tier)
                     if blocked:
                         _write_trace(ok=False)
                         raise _tag_attempts(RouterBusy(blocked), attempts)
@@ -711,11 +724,7 @@ class LocalRouter:
                 except StopAsyncIteration:
                     # Empty stream — no content at all. Treat as a provider
                     # error so the retry loop rotates to the next model.
-                    self._engine.penalize(route.provider, route.model)
-                    self._events.record(
-                        route.provider, route.model, "server_error",
-                        detail="empty stream response",
-                        penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                    self._handle_empty_reply(route, "empty stream response")
                     self._audit.log(
                         tier=tier, provider=route.provider, model=route.model,
                         prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
@@ -748,16 +757,7 @@ class LocalRouter:
                             attempts)
                     continue
                 except RateLimitError as exc:
-                    self._engine.penalize(route.provider, route.model)
-                    if key_id is not None:
-                        self._key_states.mark_cooling(
-                            route.provider, key_id,
-                            self._penalties.penalty_seconds(route.provider, route.model),
-                            "too_fast")
-                    self._events.record(
-                        route.provider, route.model, "rate_limited",
-                        detail=scrub(str(exc)),
-                        penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                    self._handle_rate_limit(route, exc, key_id)
                     self._audit.log(
                         tier=tier, provider=route.provider, model=route.model,
                         prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
@@ -1047,16 +1047,13 @@ class LocalRouter:
                             },
                         )
                         # Declining to retry this request is not the same as
-                        # declining to remember: the penalty box is what keeps
+                        # declining to remember: the model's status is what keeps
                         # this model from being picked first on the *next*
                         # request, and that isn't conditional on retrying within
-                        # this one. Same penalize/record calls as the retry path
+                        # this one. Same status/record calls as the retry path
                         # below, just without the retry.
-                        self._engine.penalize(route.provider, route.model)
-                        self._events.record(
-                            route.provider, route.model, "server_error",
-                            detail="empty response after partial output - " + empty_detail,
-                            penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                        self._handle_empty_reply(
+                            route, "empty response after partial output - " + empty_detail)
                         self._audit.log(
                             tier=tier, provider=route.provider, model=route.model,
                             prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
@@ -1081,6 +1078,7 @@ class LocalRouter:
                     budget_detail = caller_budget_detail(finish_reason, kwargs.get("max_tokens"))
                     if budget_detail is not None:
                         empty_detail = budget_detail
+                        tried_no_status.add(f"{route.provider}/{route.model}")
                     else:
                         logger.warning(
                             "empty completion, retrying next provider",
@@ -1090,11 +1088,7 @@ class LocalRouter:
                                 "attempt": attempt + 1, "max_attempts": max_attempts,
                             },
                         )
-                        self._engine.penalize(route.provider, route.model)
-                        self._events.record(
-                            route.provider, route.model, "server_error",
-                            detail=empty_detail,
-                            penalty_seconds=self._penalties.penalty_seconds(route.provider, route.model))
+                        self._handle_empty_reply(route, empty_detail)
                     self._audit.log(
                         tier=tier, provider=route.provider, model=route.model,
                         prompt_tokens=0, completion_tokens=0, cost_usd=0.0,
@@ -1210,9 +1204,9 @@ class LocalRouter:
         name in the config it was given. `engine.py` is reused unchanged by
         spec decree, so instead of teaching it about pins we hand a second
         instance a shadow config. Both share the same rate-limit store,
-        penalty box and quota tracker, so a pinned call consumes and respects
-        exactly the same allowances as a bucket call, and a model quarantined
-        through one is quarantined through the other.
+        status store and quota tracker, so a pinned call consumes and respects
+        exactly the same allowances as a bucket call, and a model's status is
+        the same through either.
         """
         pinned: dict[str, list] = {}
         for model_configs in self._cfg.tiers.values():
@@ -1222,7 +1216,7 @@ class LocalRouter:
         return RoutingEngine(
             shadow,
             rate_limit_store=self._rate_limit_store,
-            penalties=self._penalties,
+            status=self._status,
             quota_tracker=self._quota_tracker,
         )
 
@@ -1237,15 +1231,17 @@ class LocalRouter:
 
     async def _route_with_key(
         self, tier: str, estimated_tokens: int, vision: bool, session_id: Optional[str],
+        exclude: frozenset = frozenset(),
     ) -> tuple[Optional[RouteResult], Optional[str]]:
         """engine.select() plus a key, waiting out keys that are merely busy.
 
         A key at its concurrency cap frees up as soon as an in-flight request
         gets its first chunk back, so it is queued for here rather than
-        treated as a failure: no penalty, and no retry spent on it.
+        treated as a failure: no status change, and no retry spent on it.
         """
         while True:
-            route = self._engine_for(tier).select(tier, estimated_tokens, vision, session_id)
+            route = self._engine_for(tier).select(
+                tier, estimated_tokens, vision, session_id, exclude=exclude)
             if route is None:
                 return None, None
             route_with_key, key_id, busy = self._pick_key(route)
@@ -1261,8 +1257,7 @@ class LocalRouter:
         Returns (None, None, True) when a usable key is only at its
         concurrency cap, and (None, None, False) when every configured key
         for this provider is unavailable, signalling that back to engine.py
-        through PenaltyBox primitives it already reads, never by teaching it
-        anything new.
+        through the model/provider status it already reads.
         """
         provider_cfg = self._cfg.providers.get(route.provider)
         candidates = provider_cfg.keys if provider_cfg else []
@@ -1277,14 +1272,14 @@ class LocalRouter:
             quota_tracker=self._quota_tracker,
         )
         if chosen is None:
-            # A key that's allowed and not benched/cooling but still didn't
+            # A key that's allowed and not busy/needs-you but still didn't
             # get picked is blocked by one of two very different things: the
             # concurrency cap (frees up in seconds, as soon as an in-flight
             # request on it returns — worth a short poll) or its own quota
             # (frees up whenever that window rolls over, possibly a whole
             # day — polling every KEY_BUSY_POLL_SECONDS for that would just
             # spin). Sort candidates into those two buckets instead of
-            # treating every non-benched key as "busy" the same way.
+            # treating every usable key as "busy" the same way.
             live_allowed = [r for r in candidates
                             if allows(r, model_id) and self._key_states.is_available(route.provider, r.id)]
             quota_blocked = [r for r in live_allowed
@@ -1292,9 +1287,10 @@ class LocalRouter:
             if len(quota_blocked) < len(live_allowed):
                 return None, None, True  # at least one is only cap-limited
             key_ids = [r.id for r in candidates]
-            if self._key_states.all_benched_or_disabled(route.provider, key_ids):
-                self._penalties.quarantine_provider(
-                    route.provider, "every configured key is benched")
+            if self._key_states.all_need_you_or_off(route.provider, key_ids):
+                self._status.set_provider_needs_you(
+                    route.provider,
+                    f"Every {st.provider_label(route.provider)} key needs you.")
             else:
                 wait = self._key_states.min_seconds_until_available(route.provider, key_ids)
                 if quota_blocked:
@@ -1303,8 +1299,9 @@ class LocalRouter:
                         for r in quota_blocked)
                     wait = quota_wait if wait == float("inf") else min(wait, quota_wait)
                 if wait != float("inf"):
-                    self._penalties.penalize_short(
-                        route.provider, route.model, int(max(wait, 30.0)))
+                    self._status.set_busy(
+                        route.provider, route.model, max(wait, 1.0),
+                        "Every key is busy", kind="keys_busy")
             return None, None, False
 
         return dataclasses.replace(route, api_key=chosen.secret), chosen.id, False
@@ -1352,7 +1349,6 @@ class LocalRouter:
 
     def close(self) -> None:
         self._sampler.stop()
-        self._bench_sampler.stop()
         self._loop.close()
 
     def __enter__(self) -> "LocalRouter":

@@ -4,7 +4,7 @@ flexrouter learned about them, for the dashboard's Danger zone.
 "Models" are the dashboard-added bucket entries and per-model field edits
 in overrides.json, plus parked non-chat models. "What it learned" is every
 state file keyed by "provider/model": scores and their source, rate limits
-(learned and recorded), capability facts, quarantine and penalties, and the
+(learned and recorded), capability facts, model statuses, and the
 catalogue's pending suggestions (keyed by provider).
 
 Never touched: keys and key health, providers, settings, buckets, and the
@@ -27,7 +27,7 @@ from flexrouter.store import read_json, write_json
 
 # State files keyed by "provider/model".
 MODEL_KEYED = ("score_facts", "rate_limit_facts", "model_facts", "rate_limits",
-               "quarantine", "penalties", "parked_models")
+               "status", "parked_models")
 # State files keyed by provider.
 PROVIDER_KEYED = ("catalog_pending",)
 
@@ -91,10 +91,7 @@ def reset(state_dir: str, overrides_path=None, provider: Optional[str] = None) -
 
 
 def forget_live(router, provider: Optional[str]) -> None:
-    """Drop the running router's in-memory quarantine and penalties for
-    `provider`: PenaltyBox is loaded once at startup, and would otherwise
-    write the old entries straight back on its next save."""
-    box = router._penalties
-    for store in (box._state, box._quarantine):
-        for key in [k for k in store if matches(k, provider)]:
-            del store[key]
+    """Drop the running router's in-memory statuses for `provider`: the
+    status store is loaded once at startup, and would otherwise write the
+    old entries straight back on its next save."""
+    router._status.forget(lambda key: matches(key, provider))

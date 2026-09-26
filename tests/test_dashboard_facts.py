@@ -43,42 +43,42 @@ def test_provider_summary_reports_base_url_and_model_count(router):
     assert summary.models_total == 1
 
 
-def test_an_env_sourced_key_still_gets_a_record_and_counts_as_live(router):
+def test_an_env_sourced_key_still_gets_a_record_and_counts_as_ready(router):
     pcfg = router._cfg.providers["groq"]
     # Environment-sourced credentials get a KeyRecord with id="env:GROQ_API_KEY"
     assert pcfg.keys, "env-sourced credentials should have keys"
     summary = facts.provider_summaries(router)[0]
     assert summary.key_count == 1
-    assert summary.keys_live == 1
-    assert summary.keys_cooling == 0
-    assert summary.keys_parked == 0
+    assert summary.keys_ready == 1
+    assert summary.keys_busy == 0
+    assert summary.keys_need_you == 0
 
 
 def test_healthy_provider_reads_as_ok(router):
     assert facts.provider_summaries(router)[0].state == "ok"
 
 
-def test_a_provider_whose_only_key_is_resting_reads_as_warn(router):
+def test_a_provider_whose_only_key_is_busy_reads_as_warn(router):
     pcfg = router._cfg.providers["groq"]
     key_id = pcfg.keys[0].id
-    router._key_states.mark_cooling("groq", key_id, 30, "went too fast")
+    router._key_states.mark_busy("groq", key_id, 30, "went too fast")
     summary = facts.provider_summaries(router)[0]
-    assert summary.keys_cooling == 1
-    assert summary.keys_live == 0
-    # A resting key comes back on its own, so this is amber, not red.
+    assert summary.keys_busy == 1
+    assert summary.keys_ready == 0
+    # A busy key comes back on its own, so this is amber, not red.
     assert summary.state == "warn"
 
 
-def test_a_key_marked_benched_reports_as_parked(router):
+def test_a_key_that_needs_you_is_counted_as_such(router):
     pcfg = router._cfg.providers["groq"]
     key_id = pcfg.keys[0].id
-    router._key_states.mark_benched("groq", key_id, "bad key")
+    router._key_states.mark_needs_you("groq", key_id, "bad key")
     summary = facts.provider_summaries(router)[0]
-    assert summary.keys_parked == 1
+    assert summary.keys_need_you == 1
     assert summary.state == "bad"
 
 
-def test_a_provider_with_one_benched_and_one_cooling_key_reads_as_warn(router):
+def test_a_provider_with_one_needs_you_and_one_busy_key_reads_as_warn(router):
     from flexrouter.keys import KeyRecord
     pcfg = router._cfg.providers["groq"]
     # Add a second key to the provider
@@ -86,35 +86,33 @@ def test_a_provider_with_one_benched_and_one_cooling_key_reads_as_warn(router):
     pcfg.keys.append(second_key)
 
     # Bench the first key, cool the second
-    router._key_states.mark_benched("groq", pcfg.keys[0].id, "bad key")
-    router._key_states.mark_cooling("groq", pcfg.keys[1].id, 30, "went too fast")
+    router._key_states.mark_needs_you("groq", pcfg.keys[0].id, "bad key")
+    router._key_states.mark_busy("groq", pcfg.keys[1].id, 30, "went too fast")
 
     summary = facts.provider_summaries(router)[0]
-    assert summary.keys_parked == 1
-    assert summary.keys_cooling == 1
-    assert summary.keys_live == 0
-    # One key will recover (cooling), so this is warn, not bad
+    assert summary.keys_need_you == 1
+    assert summary.keys_busy == 1
+    assert summary.keys_ready == 0
+    # One key will recover (busy), so this is warn, not bad
     assert summary.state == "warn"
 
 
-def test_a_key_marked_cooling_reports_as_live_after_cooldown_expires(router):
+def test_a_busy_key_reports_as_ready_after_its_time_is_up(router):
     import time
     pcfg = router._cfg.providers["groq"]
     key_id = pcfg.keys[0].id
     now = time.time()
-    # Mark cooling; mark_cooling enforces minimum 30 second cooldown
-    router._key_states.mark_cooling("groq", key_id, 1, "went too fast", now=now)
-    # Call with time past the 30-second cooldown
+    router._key_states.mark_busy("groq", key_id, 1, "went too fast", now=now)
     summary = facts.provider_summaries(router, now=now + 31)[0]
-    assert summary.keys_cooling == 0
-    assert summary.keys_live == 1
+    assert summary.keys_busy == 0
+    assert summary.keys_ready == 1
     assert summary.state == "ok"
 
 
 def test_provider_summaries_does_not_write_when_a_cooldown_has_expired(router):
     """Rendering the Overview must never write to disk.
 
-    is_available() would flip an expired cooling key back to "live" and
+    is_available() would flip an expired busy key back to "ready" and
     persist that, which means a plain GET rewrites key_state.json (and, on
     Windows, shells out to icacls via harden()) on every render. Reading
     the expiry directly instead must leave the file untouched.
@@ -123,7 +121,7 @@ def test_provider_summaries_does_not_write_when_a_cooldown_has_expired(router):
     pcfg = router._cfg.providers["groq"]
     key_id = pcfg.keys[0].id
     now = time.time()
-    router._key_states.mark_cooling("groq", key_id, 1, "went too fast", now=now)
+    router._key_states.mark_busy("groq", key_id, 1, "went too fast", now=now)
 
     path = router._key_states._path
     before = path.read_text(encoding="utf-8")
@@ -139,12 +137,12 @@ def test_provider_with_no_credentials_reads_as_bad(router_no_credentials):
     assert summary.state == "bad"
 
 
-def test_quarantined_provider_reads_as_bad_and_carries_its_reason(router):
-    router._engine._penalties.quarantine_provider("groq", "key rejected")
+def test_a_provider_that_needs_you_reads_as_bad_and_carries_its_reason(router):
+    router._status.set_provider_needs_you("groq", "key rejected")
     summary = facts.provider_summaries(router)[0]
     assert summary.state == "bad"
-    assert summary.quarantined is True
-    assert summary.quarantine_reason == "key rejected"
+    assert summary.status == "needs_you"
+    assert summary.status_reason == "key rejected"
 
 
 def test_overview_counts_providers_by_state(router):
@@ -155,7 +153,7 @@ def test_overview_counts_providers_by_state(router):
 def test_overview_counts_keys(router):
     out = facts.overview(router)
     assert out["keys"]["total"] == 1
-    assert out["keys"]["live"] == 1
+    assert out["keys"]["ready"] == 1
 
 
 def test_overview_counts_models_and_how_many_are_reachable(router):
@@ -164,11 +162,12 @@ def test_overview_counts_models_and_how_many_are_reachable(router):
     assert out["models"]["available"] == 1
 
 
-def test_overview_counts_a_quarantined_model_as_unavailable(router):
-    router._engine._penalties.quarantine("groq", "llama-3.1-8b-instant", "gone")
+def test_overview_counts_a_model_that_needs_you_as_unavailable(router):
+    router._status.set_needs_you("groq", "llama-3.1-8b-instant", "model gone", kind="gone", action="remove")
     out = facts.overview(router)
     assert out["models"]["total"] == 1
     assert out["models"]["available"] == 0
+    assert out["models"]["statuses"]["needs_you"] == 1
 
 
 def test_overview_reports_what_has_been_learned(router):
@@ -212,68 +211,94 @@ def test_broken_is_empty_when_nothing_is_wrong(router):
     assert out["handling_itself"] == []
 
 
-def test_a_benched_key_needs_you(router):
+def test_a_key_that_needs_you_is_listed(router):
     pcfg = router._cfg.providers["groq"]
     key_id = pcfg.keys[0].id
-    router._key_states.mark_benched("groq", key_id, "bad key")
+    router._key_states.mark_needs_you("groq", key_id, "bad key")
     out = facts.broken(router)
     assert len(out["needs_you"]) == 1
     item = out["needs_you"][0]
-    assert item.kind == "key_benched"
+    assert item.kind == "key_needs_you"
     assert item.provider == "groq"
     assert item.reason == "bad key"
     assert out["handling_itself"] == []
 
 
-def test_a_cooling_key_is_handled_by_the_service(router):
+def test_a_busy_key_is_handled_by_the_service(router):
     pcfg = router._cfg.providers["groq"]
     key_id = pcfg.keys[0].id
-    router._key_states.mark_cooling("groq", key_id, 30, "went too fast")
+    router._key_states.mark_busy("groq", key_id, 30, "went too fast")
     out = facts.broken(router)
     assert out["needs_you"] == []
     assert len(out["handling_itself"]) == 1
     item = out["handling_itself"][0]
-    assert item.kind == "key_cooling"
+    assert item.kind == "key_busy"
     assert item.reason == "went too fast"
 
 
-def test_a_cooling_key_stops_appearing_once_its_cooldown_has_passed(router):
+def test_a_busy_key_stops_appearing_once_its_time_is_up(router):
     import time
     pcfg = router._cfg.providers["groq"]
     key_id = pcfg.keys[0].id
     now = time.time()
-    router._key_states.mark_cooling("groq", key_id, 1, "went too fast", now=now)
+    router._key_states.mark_busy("groq", key_id, 1, "went too fast", now=now)
     out = facts.broken(router, now=now + 31)
     assert out["handling_itself"] == []
 
 
-def test_a_provider_wide_quarantine_needs_you(router):
-    router._engine._penalties.quarantine_provider("groq", "key rejected")
+def test_a_provider_that_needs_you_is_listed(router):
+    router._status.set_provider_needs_you("groq", "key rejected")
     out = facts.broken(router)
     assert len(out["needs_you"]) == 1
     item = out["needs_you"][0]
-    assert item.kind == "provider_down"
+    assert item.kind == "provider_needs_you"
     assert item.provider == "groq"
     assert item.reason == "key rejected"
     assert out["handling_itself"] == []
 
 
-def test_a_single_model_quarantine_is_handled_by_the_service(router):
-    # Distinct from a provider-wide quarantine: only one model is affected,
-    # the router keeps routing to the rest of the provider on its own, and
-    # the quarantine expires by itself - nothing for the owner to do.
-    router._engine._penalties.quarantine("groq", "llama-3.1-8b-instant", "model gone")
+def test_a_model_that_needs_you_is_in_the_needs_you_pile(router):
+    # grill-decisions.md §3: a wrong ID or a model not on the plan never
+    # clears on its own, so it is the owner's to fix - not "handled".
+    router._status.set_needs_you("groq", "llama-3.1-8b-instant", "model gone", kind="gone", action="remove")
     out = facts.broken(router)
-    assert out["needs_you"] == []
-    assert len(out["handling_itself"]) == 1
-    item = out["handling_itself"][0]
-    assert item.kind == "model_set_aside"
+    assert out["handling_itself"] == []
+    [item] = out["needs_you"]
+    assert item.kind == "model_needs_you"
     assert item.detail == "llama-3.1-8b-instant"
     assert item.reason == "model gone"
+    assert item.action == "remove"
+
+
+def test_a_busy_model_is_handled_by_the_service_with_a_countdown(router):
+    router._status.set_busy("groq", "llama-3.1-8b-instant", 42, "Too many requests")
+    out = facts.broken(router)
+    assert out["needs_you"] == []
+    [item] = out["handling_itself"]
+    assert item.kind == "model_busy"
+    assert item.until is not None
+
+
+def test_a_struggling_model_is_handled_by_the_service(router):
+    router._status.set_struggling("groq", "llama-3.1-8b-instant", "Gave an empty reply.")
+    [item] = facts.broken(router)["handling_itself"]
+    assert item.kind == "model_struggling"
+    assert item.action == "try_now"
+
+
+def test_a_model_whose_provider_is_not_set_up_needs_you(router):
+    from flexrouter.config import ModelConfig
+    router._cfg.tiers["low"].append(ModelConfig(provider="zhipu", model="glm-5-2",
+                                                score=50, rpm=60, tpm=60000))
+    items = [i for i in facts.broken(router)["needs_you"] if i.provider == "zhipu"]
+    assert [(i.kind, i.reason, i.action) for i in items] == \
+        [("model_needs_you", "No zhipu provider set up.", "remove")]
+    row = next(r for r in facts.models(router) if r.provider == "zhipu")
+    assert row.state == "needs_you"
 
 
 def test_a_provider_wide_quarantine_does_not_also_double_count_its_models(router):
-    router._engine._penalties.quarantine_provider("groq", "key rejected")
+    router._status.set_provider_needs_you("groq", "key rejected")
     out = facts.broken(router)
     assert len(out["needs_you"]) == 1
     assert out["handling_itself"] == []
@@ -290,14 +315,14 @@ def test_an_unclear_error_needs_you(router):
 def test_broken_never_returns_a_secret(router):
     import json
     pcfg = router._cfg.providers["groq"]
-    router._key_states.mark_benched("groq", pcfg.keys[0].id, "bad key")
+    router._key_states.mark_needs_you("groq", pcfg.keys[0].id, "bad key")
     blob = json.dumps(facts.broken(router), default=lambda o: o.__dict__)
     assert "test-key" not in blob
 
 
 def test_overview_reports_how_many_things_need_you(router):
     assert facts.overview(router)["needs_you"] == 0
-    router._engine._penalties.quarantine_provider("groq", "key rejected")
+    router._status.set_provider_needs_you("groq", "key rejected")
     assert facts.overview(router)["needs_you"] == 1
 
 
@@ -310,7 +335,7 @@ def test_provider_detail_reports_the_provider_shape(router):
     assert detail.name == "groq"
     assert detail.base_url == "https://api.groq.com/openai/v1"
     assert detail.state == "ok"
-    assert detail.quarantined is False
+    assert detail.status == "ready"
     assert detail.configured_models == ["llama-3.1-8b-instant"]
     assert detail.models_alive == ["llama-3.1-8b-instant"]
     assert detail.models_gone == []
@@ -324,12 +349,12 @@ def test_provider_detail_lists_key_readings(router):
     assert k.label == "GROQ_API_KEY"
     assert k.masked.endswith("-key")
     assert "test-key" not in k.masked
-    assert k.status == "live"
+    assert k.status == "ready"
     assert k.source == "env"
 
 
-def test_provider_detail_shows_a_quarantined_model_as_gone(router):
-    router._engine._penalties.quarantine("groq", "llama-3.1-8b-instant", "model gone")
+def test_provider_detail_shows_a_model_that_needs_you_as_gone(router):
+    router._status.set_needs_you("groq", "llama-3.1-8b-instant", "model gone", kind="gone", action="remove")
     detail = facts.provider_detail(router, "groq")
     assert detail.models_gone == ["llama-3.1-8b-instant"]
     assert detail.models_alive == []
@@ -348,7 +373,7 @@ def test_models_lists_every_configured_model_once(router):
     assert row.provider == "groq"
     assert row.model == "llama-3.1-8b-instant"
     assert row.buckets == ["low"]
-    assert row.state == "available"
+    assert row.state == "ready"
 
 
 def test_a_model_in_two_buckets_lists_both(router):
@@ -362,10 +387,10 @@ def test_a_model_in_two_buckets_lists_both(router):
     assert sorted(rows[0].buckets) == ["high", "low"]
 
 
-def test_a_quarantined_model_reads_as_gone_with_its_reason(router):
-    router._engine._penalties.quarantine("groq", "llama-3.1-8b-instant", "model gone")
+def test_a_model_that_needs_you_reads_as_such_with_its_reason(router):
+    router._status.set_needs_you("groq", "llama-3.1-8b-instant", "model gone", kind="gone", action="remove")
     row = facts.models(router)[0]
-    assert row.state == "gone"
+    assert row.state == "needs_you"
     assert row.why == "model gone"
 
 
@@ -430,8 +455,8 @@ def test_buckets_sorts_models_by_score_descending(router):
     assert scores == sorted(scores, reverse=True)
 
 
-def test_a_quarantined_model_is_not_in_the_running_and_says_why(router):
-    router._engine._penalties.quarantine("groq", "llama-3.1-8b-instant", "model gone")
+def test_a_model_that_needs_you_is_not_in_the_running_and_says_why(router):
+    router._status.set_needs_you("groq", "llama-3.1-8b-instant", "model gone", kind="gone", action="remove")
     row = facts.buckets(router)[0].models[0]
     assert row.available is False
     assert row.in_the_running is False

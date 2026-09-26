@@ -13,7 +13,7 @@ def client(config_file):
 
 
 def _down():
-    app_module.get_router()._engine._penalties.quarantine_provider("groq", "key rejected")
+    app_module.get_router()._status.set_provider_needs_you("groq", "key rejected")
 
 
 def test_all_clear_when_nothing_is_wrong(client):

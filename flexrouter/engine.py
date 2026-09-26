@@ -7,7 +7,7 @@ from typing import Optional
 
 from flexrouter.config import FlexConfig, ModelConfig
 from flexrouter.exceptions import ContextWindowWarning
-from flexrouter.recovery import PenaltyBox
+from flexrouter.status import READY, StatusStore
 from flexrouter.window import SlidingWindow
 from flexrouter.budget import DailyBudget
 
@@ -23,13 +23,12 @@ class RouteResult:
 
 
 class RoutingEngine:
-    def __init__(self, cfg: FlexConfig, rate_limit_store=None, penalties: Optional[PenaltyBox] = None,
+    def __init__(self, cfg: FlexConfig, rate_limit_store=None, status: Optional[StatusStore] = None,
                  quota_tracker=None) -> None:
         self._cfg = cfg
         self._rate_limit_store = rate_limit_store
         self._quota_tracker = quota_tracker
-        self._penalties = penalties if penalties is not None else PenaltyBox(
-            cfg.penalty_base_seconds, cfg.penalty_max_seconds)
+        self._status = status if status is not None else StatusStore()
         self._budget = DailyBudget(cfg.provider_budget)
         self._windows: dict[str, SlidingWindow] = {}
         self._key_counters: dict[str, int] = {}
@@ -48,8 +47,6 @@ class RoutingEngine:
         self._cfg = cfg
         self._budget = DailyBudget(cfg.provider_budget)
         self._session_ttl = cfg.session_ttl_minutes * 60
-        self._penalties.base_seconds = cfg.penalty_base_seconds
-        self._penalties.max_seconds = cfg.penalty_max_seconds
         for tier_models in cfg.tiers.values():
             for m in tier_models:
                 k = f"{m.provider}/{m.model}"
@@ -62,13 +59,19 @@ class RoutingEngine:
         estimated_tokens: int,
         vision: bool,
         session_id: Optional[str] = None,
+        exclude: frozenset = frozenset(),
     ) -> Optional[RouteResult]:
+        """`exclude` is "provider/model" names already tried in this request
+        whose failure changed no status (the caller's budget ran out) - so
+        failover moves on instead of picking the same model again."""
         models = self._cfg.tiers[tier]  # raises KeyError for unknown tier
+        if exclude:
+            models = [m for m in models if f"{m.provider}/{m.model}" not in exclude]
 
         # Session stickiness
         if session_id:
             result = self._try_session(session_id, tier, estimated_tokens, vision)
-            if result:
+            if result and f"{result.provider}/{result.model}" not in exclude:
                 return result
 
         strategy = self._strategy(tier)
@@ -91,20 +94,14 @@ class RoutingEngine:
     def record_cost(self, provider: str, cost_usd: float) -> None:
         self._budget.record(provider, cost_usd)
 
-    def penalize(self, provider: str, model: str) -> None:
-        self._penalties.penalize(provider, model)
-
-    def penalize_short(self, provider: str, model: str, seconds: int = 30) -> None:
-        self._penalties.penalize_short(provider, model, seconds)
-
     def seconds_until_available(self, tier: str) -> float:
         models = self._cfg.tiers.get(tier, [])
         min_wait = float("inf")
         for m in models:
-            if self._penalties.is_penalized(m.provider, m.model):
-                until = self._penalties.penalty_until(m.provider, m.model)
-                if until:
-                    min_wait = min(min_wait, until - time.time())
+            st = self._status.get(m.provider, m.model)
+            if st.value != READY:
+                if st.until:
+                    min_wait = min(min_wait, st.until - time.time())
             elif self._rate_limit_store is not None and self._rate_limit_store.is_exhausted(m.provider, m.model):
                 avail = self._rate_limit_store.available_at(m.provider, m.model)
                 if avail is not None:
@@ -128,22 +125,21 @@ class RoutingEngine:
                 if key in seen:
                     continue
                 seen.add(key)
-                penalized = self._penalties.is_penalized(m.provider, m.model)
-                until = self._penalties.penalty_until(m.provider, m.model)
+                st = self._status.get(m.provider, m.model)
+                down = st.value != READY
                 w = self._windows.get(key)
                 rpm = w.current_rpm() if w else 0
                 tpm = w.current_tpm() if w else 0
                 models[key] = {
-                    "status": "penalized" if penalized else "up",
+                    "status": st.value,
                     "rpm": rpm,
                     "tpm": tpm,
-                    "penalized": penalized,
-                    "penalty_until": until,
+                    "until": st.until,
                     "latency_ewma_ms": None,
                 }
                 pv = providers.setdefault(m.provider, {"models_up": 0, "models_total": 0})
                 pv["models_total"] += 1
-                if not penalized:
+                if not down:
                     pv["models_up"] += 1
         return {"models": models, "providers": providers}
 
@@ -219,17 +215,20 @@ class RoutingEngine:
         """
         if vision and not m.vision:
             return ("not_vision_capable", "request needs image support")
-        if strategy == "fastest" and m.tokens_per_second is None:
-            return ("no_speed_data", "this bucket ranks by speed, but no "
-                    "tokens/s is recorded for this model")
-        # Checked before is_penalized, which also reports True for quarantined
-        # routes — quarantine has the more specific explanation.
-        if self._penalties.is_quarantined(m.provider, m.model):
-            return ("quarantined",
-                    self._penalties.quarantine_reason(m.provider, m.model) or "")
-        if self._penalties.is_penalized(m.provider, m.model):
-            secs = self._penalties.penalty_seconds(m.provider, m.model)
-            return ("penalized", f"backing off {secs}s after a failure")
+        # grill-decisions.md §10: a model whose provider isn't set up can
+        # never be routed to - it is Needs you, not "OK".
+        if m.provider not in self._cfg.providers:
+            return ("needs_you", f"No {m.provider} provider set up.")
+        # §3: one status. Anything but Ready is skipped, with its own reason.
+        # There is no "no speed data" skip any more: an unmeasured model in a
+        # speed-ranked bucket is tried, and measured on that request.
+        st = self._status.get(m.provider, m.model)
+        if st.value != READY:
+            detail = st.reason
+            left = st.seconds_left()
+            if left is not None and st.value == "busy":
+                detail = f"{st.reason} · back in {left}s"
+            return (st.value, detail)
         if self._rate_limit_store is not None and self._rate_limit_store.is_exhausted(m.provider, m.model):
             return ("provider_rate_limit", "provider reports no headroom left")
         if self._quota_tracker is not None and m.quotas and not self._quota_tracker.is_available(m.provider, m.model, m.quotas):
@@ -245,8 +244,13 @@ class RoutingEngine:
                     f"local rate window full (rpm {self._model_rpm(m)}, tpm {self._model_tpm(m)})")
         return None
 
-    def _rank_value(self, m: ModelConfig, strategy: str) -> float:
-        return m.tokens_per_second if strategy == "fastest" else m.score
+    def _rank_value(self, m: ModelConfig, strategy: str,
+                    unmeasured: float = 0.0) -> float:
+        if strategy == "fastest":
+            # An unmeasured model ranks with the fastest, so it gets tried
+            # (and measured) instead of being skipped forever.
+            return m.tokens_per_second if m.tokens_per_second is not None else unmeasured
+        return m.score
 
     def _score_candidates(
         self, models: list[ModelConfig], estimated_tokens: int, vision: bool,
@@ -254,13 +258,15 @@ class RoutingEngine:
     ) -> list[tuple[float, ModelConfig]]:
         ctx_skipped = False
         scored = []
+        measured = [m.tokens_per_second for m in models if m.tokens_per_second]
+        unmeasured = max(measured) if measured else 1.0
         for m in models:
             skip = self._skip_reason(m, estimated_tokens, vision, strategy)
             if skip is not None:
                 if skip[0] == "context_too_small":
                     ctx_skipped = True
                 continue
-            scored.append((self._rank_value(m, strategy), m))
+            scored.append((self._rank_value(m, strategy, unmeasured), m))
 
         if ctx_skipped:
             warnings.warn(
@@ -339,9 +345,9 @@ class RoutingEngine:
     ) -> bool:
         if vision and not m.vision:
             return False
-        if strategy == "fastest" and m.tokens_per_second is None:
+        if m.provider not in self._cfg.providers:
             return False
-        if self._penalties.is_penalized(m.provider, m.model):
+        if not self._status.is_usable(m.provider, m.model):
             return False
         if self._rate_limit_store is not None and self._rate_limit_store.is_exhausted(m.provider, m.model):
             return False

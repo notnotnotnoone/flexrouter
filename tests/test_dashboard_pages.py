@@ -56,16 +56,16 @@ def test_overview_says_nothing_needs_you_when_nothing_does(client):
 
 def test_overview_points_at_broken_once_something_does(client):
     router = app_module.get_router()
-    router._engine._penalties.quarantine_provider("groq", "key rejected")
+    router._status.set_provider_needs_you("groq", "key rejected")
     body = client.get("/").text
     assert "need" in body.lower()
     assert 'href="/broken"' in body
 
 
-def test_a_benched_key_reason_is_escaped_not_injected(client):
+def test_a_needs_you_key_reason_is_escaped_not_injected(client):
     router = app_module.get_router()
     pcfg = router._cfg.providers["groq"]
-    router._key_states.mark_benched(
+    router._key_states.mark_needs_you(
         "groq", pcfg.keys[0].id, "<script>bad</script> said the provider")
     body = client.get("/broken").text
     assert "<script>bad</script>" not in body
@@ -86,7 +86,7 @@ def test_providers_list_links_to_the_detail_page(client):
 def test_provider_detail_page_shows_its_keys(client):
     body = client.get("/providers/groq").text
     assert "GROQ_API_KEY" in body
-    assert "live" in body.lower()
+    assert "ready" in body.lower()
 
 
 def test_provider_detail_page_404s_for_an_unknown_provider(client):
@@ -138,9 +138,9 @@ def test_bare_models_is_the_json_api_not_the_dashboard_page(client):
     assert "<html" not in r.text.lower()  # not the dashboard's HTML page
 
 
-def test_models_shows_a_quarantined_model_as_gone_and_why(client):
+def test_models_shows_a_model_that_needs_you_and_why(client):
     router = app_module.get_router()
-    router._engine._penalties.quarantine("groq", "llama-3.1-8b-instant", "model gone")
+    router._status.set_needs_you("groq", "llama-3.1-8b-instant", "model gone", kind="gone", action="remove")
     body = client.get("/models_catalog").text
     assert "model gone" in body
 
@@ -198,7 +198,7 @@ def test_buckets_shows_the_would_answer_verdict(client):
 
 def test_buckets_shows_why_a_model_is_skipped(client):
     router = app_module.get_router()
-    router._engine._penalties.quarantine("groq", "llama-3.1-8b-instant", "model gone")
+    router._status.set_needs_you("groq", "llama-3.1-8b-instant", "model gone", kind="gone", action="remove")
     body = client.get("/buckets").text
     assert "model gone" in body
 
@@ -296,17 +296,17 @@ def test_the_private_api_still_works(client):
 
 def test_a_healthy_provider_shows_state_ok(client):
     # The colored state marker is the first thing the owner's eye goes to;
-    # the config_file fixture's one provider has a live, unquarantined key,
+    # the config_file fixture's one provider has a ready key,
     # so it must render as "ok".
     body = client.get("/").text
     assert "status-ok" in body and "● OK" in body
 
 
-def test_a_quarantined_provider_shows_state_bad_and_why(client):
+def test_a_provider_that_needs_you_shows_state_bad_and_why(client):
     # Same router the app is already using - not a second LocalRouter - so
-    # the quarantine is visible to the request the test client makes.
+    # the status is visible to the request the test client makes.
     router = app_module.get_router()
-    router._engine._penalties.quarantine_provider("groq", "key rejected")
+    router._status.set_provider_needs_you("groq", "key rejected")
     body = client.get("/").text
     assert "status-bad" in body and "▲ BROKEN" in body
     assert "key rejected" in body
@@ -341,11 +341,11 @@ def test_a_provider_base_url_is_escaped_not_injected(client, config_file):
     assert "&lt;script&gt;bad&lt;/script&gt;" in body
 
 
-def test_a_quarantine_reason_is_escaped_not_injected(client):
+def test_a_needs_you_reason_is_escaped_not_injected(client):
     # The reason text originates from a provider's own error response, so it
     # is exactly as untrusted as a provider's name or address.
     router = app_module.get_router()
-    router._engine._penalties.quarantine_provider(
+    router._status.set_provider_needs_you(
         "groq", "<script>bad</script> said the provider")
     body = client.get("/").text
     assert "<script>bad</script>" not in body

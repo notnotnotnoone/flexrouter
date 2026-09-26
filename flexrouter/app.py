@@ -52,7 +52,7 @@ ROUTE_TIMEOUT_SECONDS = float(os.environ.get("FLEXROUTER_ROUTE_TIMEOUT", "90"))
 
 _TIMEOUT_HINT = (
     "No model in bucket {tier!r} became available within {secs:g}s - every model "
-    "is rate-limited, over budget, or quarantined. Check the dashboard for why, "
+    "is busy, over budget, or needs you. Check the dashboard for why, "
     "or run `flexrouter refresh` if the model list is stale."
 )
 
@@ -190,6 +190,16 @@ def _best_bucket(router) -> str:
     return best
 
 
+def model_status(router, provider: str, model: str) -> dict:
+    """A model's one status as plain data (flexrouter/status.py), including
+    the one the engine works out itself: a provider that isn't set up."""
+    if provider not in router._cfg.providers:
+        from flexrouter.status import NEEDS_YOU, REMOVE, Status
+        return Status(NEEDS_YOU, f"No {provider} provider set up.", None, REMOVE,
+                      "no_provider").to_dict()
+    return router._status.get(provider, model).to_dict()
+
+
 def _model_entries(router) -> list[dict]:
     """Everything /v1/models advertises: buckets first, then `auto`, then every
     model by its own name.
@@ -200,7 +210,6 @@ def _model_entries(router) -> list[dict]:
     chose himself, at the top.
     """
     tiers = router._cfg.tiers
-    penalties = router._engine._penalties
     entries: list[dict] = []
 
     for name, model_configs in tiers.items():
@@ -248,8 +257,9 @@ def _model_entries(router) -> list[dict]:
                     "tpm": mc.tpm,
                     "context_window": mc.context_window,
                     "vision": mc.vision,
-                    "quarantined": penalties.is_quarantined(mc.provider, mc.model),
-                    "quarantine_reason": penalties.quarantine_reason(mc.provider, mc.model),
+                    # grill-decisions.md §3: one status, never "OK" on a
+                    # dead model.
+                    "status": model_status(router, mc.provider, mc.model),
                 },
             })
 
@@ -614,29 +624,25 @@ def api_post_refresh():
     return run_refresh(_state_dir())
 
 
-@api.get("/quarantine")
-def api_quarantine():
-    """Routes sidelined because a provider said the model is gone.
+@api.get("/statuses")
+def api_model_statuses():
+    """Every model that isn't Ready right now, with its one status.
 
-    The dashboard needs this distinct from the penalty countdown: a 30-second
-    backoff is worth waiting out, a quarantine means fix your config.
+    grill-decisions.md §3: busy / struggling / needs_you, each with one
+    plain reason, an `until` (null when it won't clear on its own) and at
+    most one action.
     """
-    penalties = get_router()._engine._penalties
     entries = []
-    for key, entry in penalties.quarantined().items():
+    for key, status in get_router()._status.all().items():
         provider, _, model = key.partition("/")
-        entries.append({
-            "provider": provider,
-            "model": model,
-            "until": entry["until"],
-            "reason": entry["reason"],
-        })
-    return {"quarantined": entries}
+        entries.append({"provider": provider, "model": model, **status.to_dict()})
+    return {"statuses": entries}
 
 
-@api.delete("/quarantine/{provider}/{model:path}")
-def api_clear_quarantine(provider: str, model: str):
-    get_router()._engine._penalties.clear_quarantine(provider, model)
+@api.delete("/statuses/{provider}/{model:path}")
+def api_clear_model_status(provider: str, model: str):
+    """[Try now] / [Retry]: back to Ready, to be tried on the next request."""
+    get_router()._status.clear(provider, model)
     return {"ok": True}
 
 
@@ -666,7 +672,6 @@ def _configured_models(router, provider: str) -> list[str]:
 def api_providers():
     """Every configured provider, with its key masked and its key count."""
     router = get_router()
-    penalties = router._engine._penalties
     out = []
     for name, pcfg in router._cfg.providers.items():
         keys = list(pcfg.api_keys or [])
@@ -677,8 +682,7 @@ def api_providers():
             "key_masked": _mask(keys[0] if keys else None),
             "has_key": bool(keys),
             "configured_models": _configured_models(router, name),
-            "quarantined": penalties.is_quarantined(name, "*"),
-            "quarantine_reason": penalties.quarantine_reason(name, "*"),
+            "status": router._status.provider_status(name).to_dict(),
         })
     return {"providers": out}
 
@@ -731,9 +735,9 @@ async def api_retest_provider(provider: str):
     payload["configured_models"] = configured
     payload["stale_models"] = stale_models(configured, result.models) if result.ok else []
 
-    # A key that works again should not stay sidelined by a stale quarantine.
+    # A key that works again should not stay Needs you from a stale failure.
     if result.ok:
-        router._engine._penalties.clear_quarantine(provider, "*")
+        router._status.clear_provider(provider)
     return payload
 
 

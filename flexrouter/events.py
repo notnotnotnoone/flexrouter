@@ -6,8 +6,11 @@ from pathlib import Path
 
 from flexrouter.redact import scrub
 
-_EVENT_TYPES = {"penalized", "recovered", "rate_limited", "timeout", "server_error",
-                "quarantined"}
+# "busy" / "struggling" / "needs_you" / "recovered" are the status changes
+# (flexrouter/status.py). "penalized" and "quarantined" are the pre-v2.3
+# names, still accepted so old events.csv rows keep reading.
+_EVENT_TYPES = {"busy", "struggling", "needs_you", "recovered", "rate_limited",
+                "timeout", "server_error", "penalized", "quarantined"}
 
 
 class EventLogger:

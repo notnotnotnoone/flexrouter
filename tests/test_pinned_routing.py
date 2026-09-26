@@ -45,15 +45,15 @@ def test_pinned_selection_always_returns_that_model(tmp_path, monkeypatch):
         assert (route.provider, route.model) == ("beta", "small")
 
 
-def test_pin_and_bucket_share_one_penalty_box(tmp_path, monkeypatch):
+def test_pin_and_bucket_share_one_status_store(tmp_path, monkeypatch):
     router = _built_router(tmp_path, monkeypatch)
-    assert router._pin_engine._penalties is router._engine._penalties
+    assert router._pin_engine._status is router._engine._status
     assert router._pin_engine._cfg is not router._engine._cfg
 
 
-def test_a_quarantine_through_one_engine_is_seen_by_the_other(tmp_path, monkeypatch):
+def test_a_needs_you_through_one_engine_is_seen_by_the_other(tmp_path, monkeypatch):
     router = _built_router(tmp_path, monkeypatch)
-    router._penalties.quarantine("beta", "small", "gone")
+    router._status.set_needs_you("beta", "small", "gone", kind="gone", action="remove")
     assert router._pin_engine.select("beta/small", 10, False) is None
 
 

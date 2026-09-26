@@ -65,8 +65,8 @@ async def test_an_auth_failure_benches_only_the_used_key_in_streaming(tmp_path, 
     monkeypatch.setattr("flexrouter.client.AsyncClient.stream_chat", fake_stream)
     await _drain(router)
 
-    assert router._key_states.get("alpha", "k1").status == "benched"
-    assert router._key_states.get("alpha", "k2").status == "live"
+    assert router._key_states.get("alpha", "k1").status == "needs_you"
+    assert router._key_states.get("alpha", "k2").status == "ready"
 
 
 @pytest.mark.asyncio

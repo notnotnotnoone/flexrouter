@@ -167,7 +167,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 
 ## Phase 2 · One status
 
-### ☐ Session 6 — One status per model and key 🔗
+### ☑ Session 6 — One status per model and key 🔗
 **Model:** **Opus** (replaces 5 mechanisms and migrates state)
 **Decisions:** §3, the mapping table at the end of `grill-log.md`. **US:** 16–20, 24–28.
 - A **status store** replacing quarantine / penalty / bench / cooling / auto-bench (`recovery.py`, `key_state.py`, the auto-bench, `quarantine.json`, `penalties.json`). Values: `ready | busy | struggling | needs_you | off`, each with a one-sentence `reason`, an `until`, and at most one `action`.
@@ -180,9 +180,19 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 - Migrate the existing `quarantine.json` / `penalties.json` on first start. Don't strand old state.
 
 **Done when:**
-- [ ] Each status transition has a test.
-- [ ] `/v1/models` and the facts layer report the new status.
-- [ ] Old state files are migrated or ignored cleanly.
+- [x] Each status transition has a test.
+- [x] `/v1/models` and the facts layer report the new status.
+- [x] Old state files are migrated or ignored cleanly.
+
+**Done 26 Sep 2026.** Choices the plan left open:
+- The store is `flexrouter/status.py` (`state/status.json`). `recovery.py` (penalty box + quarantine) and `bench.py` (auto-bench) are deleted. Keys keep their own status in `key_state.py`, now in the same words (`ready | busy | needs_you | off`); old words are translated on load.
+- Migration: a quarantine becomes Needs you (by its status code); an "auto-benched" one is dropped (it was mostly Google's overload, only ever Busy now); a penalty becomes Busy capped at 60s. The old files are renamed `*.migrated-v2.3`, so it runs once.
+- Busy reads `Retry-After`, `x-ratelimit-reset-*` and Google's `retryDelay` / "retry in Ns" (`status.parse_retry_after`). A 429 whose body says `limit: 0` is Needs you, "Not on your plan", on the model only (the key stays Ready).
+- Struggling (~1h, [Try now]) is set on an empty reply. A caller-budget empty reply (§13) changes no status; the request skips that model for the rest of the call instead of picking it again.
+- "Off" can't live in the store (a disabled model is dropped from the live config), so the facts layer counts it from overrides (`facts.status_counts`).
+- `/api/quarantine` is replaced by `GET /api/statuses` and `DELETE /api/statuses/{provider}/{model}` ([Try now] / [Retry]); `/api/status` was already the service status. `/v1/models` entries carry `flexrouter.status` `{value, reason, until, action, kind, detail, …}`.
+- `facts.broken()` now puts a model that needs you in the Needs-you pile (it used to be "handling it"). The pages only got the renames they needed; Session 8 rebuilds them.
+- `penalty_*` / `quarantine_seconds` / `retry.*` are still parsed but do nothing; Session 10 removes them.
 
 **Starter prompt:**
 > Do Session 6 of PLAN-V2.3.md. Read that block, grill-decisions.md §3, and the mapping table at the bottom of grill-log.md.

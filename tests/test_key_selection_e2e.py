@@ -49,5 +49,5 @@ def test_a_real_401_through_the_http_surface_benches_one_key_and_the_next_reques
     key_state_path = tmp_path / "state" / "key_state.json"
     on_disk = json.loads(key_state_path.read_text(encoding="utf-8"))
     statuses = {k: v["status"] for k, v in on_disk.items()}
-    assert statuses.get("alpha:k1") == "benched"
-    assert statuses.get("alpha:k2", "live") == "live"
+    assert statuses.get("alpha:k1") == "needs_you"
+    assert statuses.get("alpha:k2", "ready") == "ready"

@@ -400,9 +400,9 @@ def test_export_explains_itself_when_the_file_cannot_be_read_at_all(
 #
 # A provider that answers 4xx/5xx has its response body folded into the
 # ProviderError text by describe_http_error, and several providers echo the
-# rejected credential back in that body. That text was handed to the penalty
-# box as the quarantine reason, written to quarantine.json on disk, and then
-# served verbatim by /v1/models, /api/providers and /api/quarantine - none of
+# rejected credential back in that body. That text was handed to the status
+# store as the reason, written to status.json on disk, and then
+# served verbatim by /v1/models, /api/providers and /api/statuses - none of
 # which pass through openai_error or _sse_error, so the scrubber was simply
 # not on that exit, and /api/* is unauthenticated and CORS-open. The fix
 # scrubs at the write sites in _router.py, so nothing unscrubbed is persisted.
@@ -437,7 +437,7 @@ def _sideline_client(tmp_path, monkeypatch):
 
 
 def _state_dir_text(tmp_path) -> str:
-    """Everything the penalty box and the event log wrote to disk."""
+    """Everything the status store and the event log wrote to disk."""
     # errors="ignore": the event log is written in the platform encoding, so
     # the "…" the scrubber leaves behind is not decodable as utf-8 here. The
     # only thing this helper looks for is a key, which is plain ASCII.
@@ -464,7 +464,7 @@ def test_a_sidelined_provider_does_not_persist_or_serve_the_key(
         assert SIDELINE_KEY not in _state_dir_text(tmp_path)
         assert SIDELINE_KEY not in client.get("/v1/models").text
         assert SIDELINE_KEY not in client.get("/api/providers").text
-        assert SIDELINE_KEY not in client.get("/api/quarantine").text
+        assert SIDELINE_KEY not in client.get("/api/statuses").text
         # The rest of the message is still there to explain itself.
         assert "Incorrect API key" in client.get("/api/providers").text
     finally:
@@ -483,14 +483,14 @@ def test_a_sidelined_route_does_not_persist_or_serve_the_key(
         exc = ProviderError(
             f"404 from groq: no such model (key {SIDELINE_KEY})",
             status_code=404)
-        assert exc.is_permanent            # the route-quarantine branch
+        assert exc.is_permanent            # the needs-you branch
         router._handle_provider_error(route, exc)
 
         assert SIDELINE_KEY not in _state_dir_text(tmp_path)
         assert SIDELINE_KEY not in client.get("/v1/models").text
         assert SIDELINE_KEY not in client.get("/api/providers").text
-        assert SIDELINE_KEY not in client.get("/api/quarantine").text
-        assert "no such model" in client.get("/api/quarantine").text
+        assert SIDELINE_KEY not in client.get("/api/statuses").text
+        assert "no such model" in client.get("/api/statuses").text
     finally:
         app_mod.state.router = None
 

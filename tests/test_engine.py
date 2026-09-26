@@ -3,7 +3,6 @@ import warnings
 import pytest
 from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig, RetryConfig
 from flexrouter.window import SlidingWindow
-from flexrouter.recovery import PenaltyBox
 from flexrouter.budget import DailyBudget
 from flexrouter.engine import RoutingEngine, RouteResult
 from flexrouter.rate_limits import RateLimitStore
@@ -33,9 +32,9 @@ def test_picks_highest_score_when_both_available():
     assert result.model == "llama-8b"  # score 85 wins over 70
 
 
-def test_skips_penalized_model():
+def test_skips_a_busy_model():
     engine = make_engine()
-    engine._penalties.penalize("groq", "llama-8b")
+    engine._status.set_busy("groq", "llama-8b", 60, "Too many requests")
     result = engine.select("low", estimated_tokens=0, vision=False)
     assert result.model == "llama-70b"
 
@@ -52,8 +51,8 @@ def test_skips_rpm_exhausted_model():
 
 def test_no_models_available_returns_none():
     engine = make_engine()
-    engine._penalties.penalize("groq", "llama-8b")
-    engine._penalties.penalize("groq", "llama-70b")
+    engine._status.set_busy("groq", "llama-8b", 60, "Too many requests")
+    engine._status.set_busy("groq", "llama-70b", 60, "Too many requests")
     result = engine.select("low", estimated_tokens=0, vision=False)
     assert result is None
 
@@ -105,8 +104,8 @@ def test_session_expiry_rerouts(monkeypatch):
 
 def test_seconds_until_available():
     engine = make_engine()
-    engine._penalties.penalize("groq", "llama-8b")
-    engine._penalties.penalize("groq", "llama-70b")
+    engine._status.set_busy("groq", "llama-8b", 60, "Too many requests")
+    engine._status.set_busy("groq", "llama-70b", 60, "Too many requests")
     secs = engine.seconds_until_available("low")
     assert secs >= 0
 
@@ -115,7 +114,7 @@ def test_seconds_until_available_measures_penalty_not_epoch():
     """Regression test: seconds_until_available must return "seconds
     remaining", not an epoch timestamp.
 
-    PenaltyBox.penalty_until() returns a wall-clock (time.time()-based)
+    A status's `until` is a wall-clock (time.time()-based)
     timestamp. If seconds_until_available() ever subtracts time.monotonic()
     (a different, arbitrary-reference clock) from that timestamp instead of
     time.time(), the result comes out around the epoch itself (~1.7 billion
@@ -124,8 +123,8 @@ def test_seconds_until_available_measures_penalty_not_epoch():
     >= 0.
     """
     engine = make_engine()
-    engine._penalties.penalize_short("groq", "llama-8b", seconds=5)
-    engine._penalties.penalize_short("groq", "llama-70b", seconds=5)
+    engine._status.set_busy("groq", "llama-8b", 5, "Too many requests")
+    engine._status.set_busy("groq", "llama-70b", 5, "Too many requests")
     secs = engine.seconds_until_available("low")
     assert secs < 120
 
@@ -163,22 +162,6 @@ def test_score_candidates_uses_learned_rpm(tmp_path):
     # With learned rpm=5, window should be full; with config rpm=30, it wouldn't be
     candidates = engine._score_candidates(cfg.tiers["default"], 0, False)
     assert candidates == []
-
-
-def test_update_config_updates_penalty_params():
-    engine = make_engine()
-    assert engine._penalties.base_seconds == 30
-    new_cfg = FlexConfig(
-        tiers={"low": [ModelConfig("groq", "llama-8b", score=85, rpm=60, tpm=60000, context_window=131072)]},
-        providers={"groq": ProviderConfig("http://groq", ["key"])},
-        window_seconds=60,
-        penalty_base_seconds=60,
-        penalty_max_seconds=3600,
-        session_ttl_minutes=30,
-    )
-    engine.update_config(new_cfg)
-    assert engine._penalties.base_seconds == 60
-    assert engine._penalties.max_seconds == 3600
 
 
 def test_exhausted_model_skipped(tmp_path):
@@ -245,26 +228,34 @@ def test_fastest_strategy_picks_within_top_20_percent_of_speed():
     assert seen == {"fastest", "close-second"}
 
 
-def test_fastest_strategy_skips_models_with_no_speed_data():
+def test_fastest_strategy_tries_a_model_with_no_speed_data():
+    """grill-decisions.md §3/§14: an unmeasured model is tried, not skipped."""
     models = [
         ModelConfig("groq", "has-speed", score=50, rpm=60, tpm=60000, tokens_per_second=100),
         ModelConfig("groq", "no-speed", score=90, rpm=60, tpm=60000),
     ]
     engine = make_engine(models, bucket_strategy={"low": "fastest"})
-    result = engine.select("low", estimated_tokens=0, vision=False)
-    assert result.model == "has-speed"
+    seen = {engine.select("low", estimated_tokens=0, vision=False).model for _ in range(50)}
+    assert "no-speed" in seen
 
 
-def test_fastest_strategy_with_no_speed_data_anywhere_returns_none():
+def test_fastest_strategy_with_no_speed_data_anywhere_still_answers():
     models = [ModelConfig("groq", "no-speed", score=90, rpm=60, tpm=60000)]
     engine = make_engine(models, bucket_strategy={"low": "fastest"})
-    result = engine.select("low", estimated_tokens=0, vision=False)
-    assert result is None
+    assert engine.select("low", estimated_tokens=0, vision=False).model == "no-speed"
 
 
-def test_explain_unavailable_reports_no_speed_data_reason():
+def test_explain_unavailable_has_no_speed_data_reason_any_more():
     models = [ModelConfig("groq", "no-speed", score=90, rpm=60, tpm=60000)]
     engine = make_engine(models, bucket_strategy={"low": "fastest"})
     out = engine.explain_unavailable("low")
-    assert out[0]["reason"] == "no_speed_data"
-    assert out[0]["available"] is False
+    assert out[0]["available"] is True
+
+
+def test_a_model_whose_provider_is_not_set_up_needs_you():
+    models = [ModelConfig("zhipu", "glm-5-2", score=90, rpm=60, tpm=60000)]
+    engine = make_engine(models)
+    out = engine.explain_unavailable("low")
+    assert out[0]["reason"] == "needs_you"
+    assert "No zhipu provider set up" in out[0]["detail"]
+    assert engine.select("low", estimated_tokens=0, vision=False) is None

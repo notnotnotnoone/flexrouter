@@ -20,7 +20,7 @@ def test_generate_returns_response(config_file):
 def test_generate_raises_router_busy_when_no_wait(config_file):
     router = LocalRouter(str(config_file))
     # Exhaust the single model
-    router._engine.penalize("groq", "llama-3.1-8b-instant")
+    router._status.set_busy("groq", "llama-3.1-8b-instant", 60, "Too many requests")
     with pytest.raises(RouterBusy):
         router.generate([{"role": "user", "content": "hi"}], tier="low", wait=False)
 
@@ -35,14 +35,14 @@ def test_agenerate_works(config_file):
     assert "choices" in result
 
 @respx.mock
-def test_generate_penalizes_on_429(config_file):
+def test_generate_marks_busy_on_429(config_file):
     respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
         return_value=httpx.Response(429, json={"error": {"message": "rate limited"}})
     )
     router = LocalRouter(str(config_file))
     with pytest.raises(RouterBusy):
         router.generate([{"role": "user", "content": "hi"}], tier="low", wait=False)
-    assert router._engine._penalties.is_penalized("groq", "llama-3.1-8b-instant")
+    assert router._status.get("groq", "llama-3.1-8b-instant").value == "busy"
 
 @respx.mock
 def test_reload_reloads_config(config_file):

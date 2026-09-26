@@ -59,9 +59,9 @@ def test_one_refused_model_leaves_the_key_and_the_other_models_working(
     result = router.generate([{"role": "user", "content": "hi"}], tier="smart")
 
     assert result["choices"][0]["message"]["content"] == "hello"
-    assert router._key_states.get("alpha", "k1").status == "live"
-    assert router._penalties.is_quarantined("alpha", "refused") is True
-    assert router._penalties.is_quarantined("alpha", "fine") is False
+    assert router._key_states.get("alpha", "k1").status == "ready"
+    assert router._status.get("alpha", "refused").value == "needs_you"
+    assert router._status.get("alpha", "fine").value == "ready"
 
 
 @pytest.mark.asyncio

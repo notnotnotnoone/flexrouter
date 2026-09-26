@@ -31,7 +31,7 @@ def _select_sequence(routes):
     hands back routes (or None) from `routes` in order, one per call."""
     it = iter(routes)
 
-    def _select(tier, estimated_tokens, vision, session_id=None):
+    def _select(tier, estimated_tokens, vision, session_id=None, exclude=frozenset()):
         return next(it, None)
 
     return _select
@@ -306,11 +306,11 @@ async def test_reasoning_only_empty_completion_fails_without_retry(
     assert kinds == ["AttemptEvent", "ReasoningDeltaEvent"]
 
 
-async def test_reasoning_only_empty_completion_still_penalizes_the_model(
+async def test_reasoning_only_empty_completion_still_marks_the_model_struggling(
     config_file, monkeypatch
 ):
     # Declining to retry within this request is not the same as declining to
-    # remember: the penalty box is what keeps a model that reliably produces
+    # remember: the model's status is what keeps a model that reliably produces
     # reasoning and nothing else from being picked first on the *next*
     # request. That bookkeeping must happen even though this request fails
     # without trying another provider.
@@ -328,7 +328,7 @@ async def test_reasoning_only_empty_completion_still_penalizes_the_model(
         async for _ in router.agenerate_stream(MESSAGES, tier="low"):
             pass
 
-    assert router._engine._penalties.is_penalized(ROUTE.provider, ROUTE.model)
+    assert router._status.get(ROUTE.provider, ROUTE.model).value == "struggling"
 
 
 async def test_empty_committed_stream_with_no_yields_still_retries_next_provider(

@@ -30,8 +30,8 @@ class ProviderError(Exception):
 
     ``status_code`` is the HTTP status when the failure came from a response,
     and None when it came from below the HTTP layer (connection reset,
-    timeout, unparseable body). The router uses it to decide between a
-    temporary penalty and a quarantine.
+    timeout, unparseable body). The router uses it to decide between Busy
+    and Needs you (flexrouter/status.py).
     """
 
     def __init__(self, message: str, status_code: int | None = None) -> None:
@@ -43,12 +43,19 @@ class ProviderError(Exception):
         return self.status_code in PERMANENT_STATUSES
 
 
-def _with_body(exc: BaseException, body) -> BaseException:
+def _with_body(exc: BaseException, body, headers=None) -> BaseException:
     """Attach the provider's whole response body, for the Error brain. The
-    message stays one clipped line; the body is everything the provider said."""
+    message stays one clipped line; the body is everything the provider said.
+
+    Also attaches `retry_after`: the seconds the provider asked us to wait
+    (Retry-After, x-ratelimit-reset-*, or Google's retryDelay in the body),
+    or None. grill-decisions.md §3: Busy lasts exactly that long, else 60s."""
+    from flexrouter.status import parse_retry_after
+
     if isinstance(body, bytes):
         body = body.decode("utf-8", errors="replace")
     exc.body = body or ""
+    exc.retry_after = parse_retry_after(exc.body, headers)
     return exc
 
 
@@ -118,14 +125,16 @@ class AsyncClient:
 
         if resp.status_code == 429:
             raise _with_body(RateLimitError(
-                describe_http_error(429, route.provider, route.model, resp.text)), resp.text)
+                describe_http_error(429, route.provider, route.model, resp.text)),
+                resp.text, resp.headers)
         if resp.status_code == 401:
             raise _with_body(RouterError(
-                f"Auth failure for provider {route.provider!r}: {resp.status_code}"), resp.text)
+                f"Auth failure for provider {route.provider!r}: {resp.status_code}"),
+                resp.text, resp.headers)
         if resp.status_code >= 400:
             raise _with_body(ProviderError(
                 describe_http_error(resp.status_code, route.provider, route.model, resp.text),
-                status_code=resp.status_code), resp.text)
+                status_code=resp.status_code), resp.text, resp.headers)
 
         if self._rate_limit_store is not None:
             parsed = parse_headers(route.header_parser, resp.headers)
@@ -206,13 +215,15 @@ class AsyncClient:
                 body = await resp.aread()
                 if resp.status_code == 429:
                     raise _with_body(RateLimitError(
-                        describe_http_error(429, route.provider, route.model, body)), body)
+                        describe_http_error(429, route.provider, route.model, body)),
+                        body, resp.headers)
                 if resp.status_code == 401:
                     raise _with_body(RouterError(
-                        f"Auth failure for provider {route.provider!r}: {resp.status_code}"), body)
+                        f"Auth failure for provider {route.provider!r}: {resp.status_code}"),
+                        body, resp.headers)
                 raise _with_body(ProviderError(
                     describe_http_error(resp.status_code, route.provider, route.model, body),
-                    status_code=resp.status_code), body)
+                    status_code=resp.status_code), body, resp.headers)
 
             if self._rate_limit_store is not None:
                 parsed = parse_headers(route.header_parser, resp.headers)

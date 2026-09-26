@@ -18,8 +18,9 @@ from flexrouter.dashboard import facts, ui
 from flexrouter.dashboard.render import attrs, esc, tag
 
 _REASON = {  # engine._skip_reason names, in plain words
-    "penalized": "resting after errors",
-    "quarantined": "provider set aside",
+    "busy": "busy",
+    "struggling": "struggling",
+    "needs_you": "needs you",
     "provider_rate_limit": "provider says slow down",
     "quota_exhausted": "used up its cap",
     "over_budget": "over its budget",

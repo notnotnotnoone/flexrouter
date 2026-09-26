@@ -1,9 +1,10 @@
-"""Permanent provider failures must not be retried forever.
+"""What a real provider failure does to a model's status, end to end.
 
-Before this, every failure was treated as temporary: penalize 30s, recover,
-retry, fail, repeat. A model the provider has deleted answers 404 every time,
-so that loop never terminated — the real audit log showed 239 penalties
-against 235 recoveries with no progress.
+grill-decisions.md §3: broken things (404, 402, 403, a rejected key) are
+Needs you at once and never clear on a timer; busy things (429, 5xx) are
+Busy and clear on their own. Before v2.3 a deleted model was retried every
+24h forever - the real audit log showed 239 penalties against 235
+recoveries with no progress.
 """
 import asyncio
 import csv
@@ -15,7 +16,7 @@ import respx
 
 from flexrouter import LocalRouter, RouterBusy
 from flexrouter.client import ProviderError
-from flexrouter.recovery import PenaltyBox
+from flexrouter import status as st
 
 CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL = "llama-3.1-8b-instant"
@@ -39,70 +40,6 @@ def test_error_without_status_is_not_permanent():
     assert ProviderError("connection reset").is_permanent is False
 
 
-# --- PenaltyBox quarantine ---------------------------------------------------
-
-def test_quarantine_makes_route_unavailable():
-    pb = PenaltyBox(base_seconds=30, max_seconds=1800)
-    pb.quarantine("groq", MODEL, "404 model not found")
-    assert pb.is_quarantined("groq", MODEL) is True
-    # Routing skips anything is_penalized() reports, so this must cover it.
-    assert pb.is_penalized("groq", MODEL) is True
-
-
-def test_quarantine_records_reason():
-    pb = PenaltyBox(base_seconds=30, max_seconds=1800)
-    pb.quarantine("groq", MODEL, "404 from groq: no such model")
-    assert "no such model" in pb.quarantine_reason("groq", MODEL)
-
-
-def test_quarantine_expires():
-    pb = PenaltyBox(base_seconds=30, max_seconds=1800)
-    pb.quarantine("groq", MODEL, "gone", seconds=-1)
-    assert pb.is_quarantined("groq", MODEL) is False
-    assert pb.is_penalized("groq", MODEL) is False
-
-
-def test_quarantine_can_be_cleared():
-    pb = PenaltyBox(base_seconds=30, max_seconds=1800)
-    pb.quarantine("groq", MODEL, "gone")
-    pb.clear_quarantine("groq", MODEL)
-    assert pb.is_quarantined("groq", MODEL) is False
-
-
-def test_quarantine_survives_restart(tmp_path):
-    state = str(tmp_path)
-    PenaltyBox(base_seconds=30, max_seconds=1800, state_dir=state).quarantine(
-        "groq", MODEL, "404 model not found")
-    revived = PenaltyBox(base_seconds=30, max_seconds=1800, state_dir=state)
-    assert revived.is_quarantined("groq", MODEL) is True
-    assert "404" in revived.quarantine_reason("groq", MODEL)
-
-
-def test_expired_quarantine_not_reloaded(tmp_path):
-    state = str(tmp_path)
-    pb = PenaltyBox(base_seconds=30, max_seconds=1800, state_dir=state)
-    pb.quarantine("groq", MODEL, "gone", seconds=-1)
-    revived = PenaltyBox(base_seconds=30, max_seconds=1800, state_dir=state)
-    assert revived.is_quarantined("groq", MODEL) is False
-
-
-def test_quarantined_listing_excludes_expired():
-    pb = PenaltyBox(base_seconds=30, max_seconds=1800)
-    pb.quarantine("groq", "alive-but-gone", "404")
-    pb.quarantine("groq", "already-back", "404", seconds=-1)
-    listed = pb.quarantined()
-    assert "groq/alive-but-gone" in listed
-    assert "groq/already-back" not in listed
-
-
-def test_quarantine_is_separate_from_penalty_backoff():
-    # A quarantine must not inflate the exponential backoff counter, or a
-    # route that heals comes back with an absurd penalty.
-    pb = PenaltyBox(base_seconds=30, max_seconds=1800)
-    pb.quarantine("groq", MODEL, "404")
-    assert pb.penalty_seconds("groq", MODEL) == 0
-
-
 # --- End-to-end through the router ------------------------------------------
 
 def _events(config_file):
@@ -117,24 +54,25 @@ def _events(config_file):
 
 
 @respx.mock
-def test_404_quarantines_the_model(config_file):
+def test_404_makes_the_model_need_you(config_file):
     respx.post(CHAT_URL).mock(return_value=httpx.Response(
         404, json={"error": {"message": "model not found"}}))
     router = LocalRouter(str(config_file))
     with pytest.raises(RouterBusy):
         router.generate([{"role": "user", "content": "hi"}], tier="low", wait=False)
-    assert router._engine._penalties.is_quarantined("groq", MODEL) is True
+    s = router._status.get("groq", MODEL)
+    assert s.value == st.NEEDS_YOU and s.kind == "gone" and s.until is None
 
 
 @respx.mock
-def test_500_penalizes_but_does_not_quarantine(config_file):
+def test_500_is_only_busy(config_file):
     respx.post(CHAT_URL).mock(return_value=httpx.Response(500, text="upstream exploded"))
     router = LocalRouter(str(config_file))
     with pytest.raises(RouterBusy):
         router.generate([{"role": "user", "content": "hi"}], tier="low", wait=False)
-    pens = router._engine._penalties
-    assert pens.is_quarantined("groq", MODEL) is False
-    assert pens.is_penalized("groq", MODEL) is True
+    s = router._status.get("groq", MODEL)
+    assert s.value == st.BUSY
+    assert s.until is not None and s.until - time.time() <= 61
 
 
 @respx.mock
@@ -167,17 +105,17 @@ def test_rate_limit_message_is_recorded(config_file):
 
 
 @respx.mock
-def test_quarantine_event_is_emitted(config_file):
+def test_needs_you_event_is_emitted(config_file):
     respx.post(CHAT_URL).mock(return_value=httpx.Response(404, text="no such model"))
     router = LocalRouter(str(config_file))
     with pytest.raises(RouterBusy):
         router.generate([{"role": "user", "content": "hi"}], tier="low", wait=False)
 
     evs = _events(config_file)
-    assert any(e["event_type"] == "quarantined" for e in evs), \
-        f"expected a quarantined event, got {[e['event_type'] for e in evs]}"
+    assert any(e["event_type"] == "needs_you" for e in evs), \
+        f"expected a needs_you event, got {[e['event_type'] for e in evs]}"
     detail = " ".join(e["detail"] for e in evs if e["event_type"] == "server_error")
-    assert "quarantined" in detail
+    assert "needs_you" in detail
 
 
 # --- auth failures sideline the provider, not the request -------------------
@@ -220,29 +158,6 @@ def two_provider_config(tmp_path):
     return p
 
 
-def test_provider_quarantine_covers_all_its_models():
-    pb = PenaltyBox(base_seconds=30, max_seconds=1800)
-    pb.quarantine_provider("groq", "401 Auth failure")
-    # Any model on that provider, including ones never seen before.
-    assert pb.is_quarantined("groq", "llama-3.1-8b-instant") is True
-    assert pb.is_quarantined("groq", "some-model-added-tomorrow") is True
-    assert pb.is_quarantined("cerebras", "gpt-oss-120b") is False
-
-
-def test_provider_quarantine_reason_is_reported_per_model():
-    pb = PenaltyBox(base_seconds=30, max_seconds=1800)
-    pb.quarantine_provider("groq", "401 Auth failure")
-    assert "401" in pb.quarantine_reason("groq", "any-model")
-
-
-def test_provider_quarantine_survives_restart(tmp_path):
-    state = str(tmp_path)
-    PenaltyBox(base_seconds=30, max_seconds=1800,
-               state_dir=state).quarantine_provider("groq", "401")
-    revived = PenaltyBox(base_seconds=30, max_seconds=1800, state_dir=state)
-    assert revived.is_quarantined("groq", "whatever") is True
-
-
 @respx.mock
 def test_auth_failure_rotates_to_a_healthy_provider(two_provider_config):
     """One dead key must not take down a tier that has a working provider.
@@ -260,8 +175,11 @@ def test_auth_failure_rotates_to_a_healthy_provider(two_provider_config):
     result = router.generate([{"role": "user", "content": "hi"}], tier="low")
 
     assert result["choices"][0]["message"]["content"] == "hello"
-    assert router._engine._penalties.is_quarantined("groq", "llama-3.1-8b-instant")
-    assert not router._engine._penalties.is_quarantined("cerebras", "gpt-oss-120b")
+    # The only groq key was rejected, so the provider needs you...
+    assert router._status.get("groq", "llama-3.1-8b-instant").value == st.NEEDS_YOU
+    assert router._key_states.get("groq", router._cfg.providers["groq"].keys[0].id).status \
+        == "needs_you"
+    assert router._status.get("cerebras", "gpt-oss-120b").value == st.READY
 
 
 @respx.mock
@@ -278,7 +196,7 @@ def test_auth_failure_is_recorded_with_its_reason(two_provider_config):
     state = yaml.safe_load(two_provider_config.read_text())["settings"]["state_dir"]
     with (Path(state) / "events.csv").open() as f:
         rows = list(csv.DictReader(f))
-    auth = [r for r in rows if "auth" in r["detail"].lower()]
+    auth = [r for r in rows if "rejected" in r["detail"].lower()]
     assert auth, f"auth failure not explained in events: {rows}"
     assert any("401" in r["detail"] for r in auth)
 
@@ -297,11 +215,10 @@ def test_every_provider_dead_still_raises_a_clear_auth_error(two_provider_config
         router.generate([{"role": "user", "content": "hi"}], tier="low", wait=False)
 
 
-def test_402_quarantines_the_model_not_the_provider():
+def test_402_is_permanent():
     # A billing problem doesn't resolve on a timer (seen live on cerebras),
     # so 402 is permanent. But it is not always account-wide: llm7 answers
-    # 402 for its paid models while its free ones keep working, and a
-    # provider-wide quarantine took those down with it.
+    # 402 for its paid models while its free ones keep working.
     assert ProviderError("nope", status_code=402).is_permanent is True
 
 
@@ -316,14 +233,14 @@ def test_payment_required_sidelines_the_model_and_rotates(two_provider_config):
     result = router.generate([{"role": "user", "content": "hi"}], tier="low")
 
     assert result["choices"][0]["message"]["content"] == "hello"
-    pens = router._engine._penalties
-    assert pens.is_quarantined("groq", "llama-3.1-8b-instant") is True
-    assert "Payment required" in pens.quarantine_reason("groq", "llama-3.1-8b-instant")
-    assert pens.is_quarantined("groq", "some-free-model") is False
+    s = router._status.get("groq", "llama-3.1-8b-instant")
+    assert s.value == st.NEEDS_YOU and s.kind == "balance_empty"
+    assert "Payment required" in s.detail
+    assert router._status.get("groq", "some-free-model").value == st.READY
 
 
 @respx.mock
-def test_fully_quarantined_tier_fails_fast_instead_of_waiting(two_provider_config):
+def test_bucket_that_all_needs_you_fails_fast_instead_of_waiting(two_provider_config):
     """A dead tier must error, not hang.
 
     wait=True is correct for a rate limit (a slot opens in seconds) and wrong
@@ -336,13 +253,13 @@ def test_fully_quarantined_tier_fails_fast_instead_of_waiting(two_provider_confi
 
     router = LocalRouter(str(two_provider_config))
     started = time.monotonic()
-    with pytest.raises(RouterBusy, match="quarantined"):
+    with pytest.raises(RouterBusy, match="needs you"):
         router.generate([{"role": "user", "content": "hi"}], tier="low")
     assert time.monotonic() - started < 30, "router waited instead of failing fast"
 
 
 @respx.mock
-def test_quarantine_failure_names_the_dead_models(two_provider_config):
+def test_needs_you_failure_names_the_dead_models(two_provider_config):
     respx.post(CHAT_URL).mock(return_value=httpx.Response(
         404, text="Model llama-3.1-8b-instant is archived"))
     respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
@@ -358,7 +275,7 @@ def test_quarantine_failure_names_the_dead_models(two_provider_config):
 
 
 @respx.mock
-def test_streaming_fully_quarantined_tier_fails_fast(two_provider_config):
+def test_streaming_bucket_that_all_needs_you_fails_fast(two_provider_config):
     respx.post(CHAT_URL).mock(return_value=httpx.Response(404, text="gone"))
     respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
         return_value=httpx.Response(404, text="gone"))
@@ -371,6 +288,77 @@ def test_streaming_fully_quarantined_tier_fails_fast(two_provider_config):
             pass
 
     started = time.monotonic()
-    with pytest.raises(RouterBusy, match="quarantined"):
+    with pytest.raises(RouterBusy, match="needs you"):
         asyncio.run(drain())
     assert time.monotonic() - started < 30, "stream waited instead of failing fast"
+
+
+@respx.mock
+def test_empty_reply_makes_the_model_struggling(two_provider_config):
+    respx.post(CHAT_URL).mock(return_value=httpx.Response(200, json={
+        "choices": [{"message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}],
+        "usage": {}}))
+    respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=OK_RESPONSE))
+    router = LocalRouter(str(two_provider_config))
+    router.generate([{"role": "user", "content": "hi"}], tier="low")
+    s = router._status.get("groq", "llama-3.1-8b-instant")
+    assert s.value == st.STRUGGLING and s.action == "try_now"
+
+
+@respx.mock
+def test_429_uses_retry_after_and_the_key_is_busy_too(two_provider_config):
+    respx.post(CHAT_URL).mock(return_value=httpx.Response(
+        429, headers={"Retry-After": "42"}, json={"error": "slow down"}))
+    respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=OK_RESPONSE))
+    router = LocalRouter(str(two_provider_config))
+    router.generate([{"role": "user", "content": "hi"}], tier="low")
+    s = router._status.get("groq", "llama-3.1-8b-instant")
+    assert s.value == st.BUSY
+    assert 40 <= s.until - time.time() <= 42
+    key = router._key_states.get("groq", router._cfg.providers["groq"].keys[0].id)
+    assert key.status == "busy"
+
+
+@respx.mock
+def test_429_with_zero_quota_is_not_on_your_plan(two_provider_config):
+    respx.post(CHAT_URL).mock(return_value=httpx.Response(429, json=[{"error": {
+        "code": 429, "message": "Quota exceeded for metric: free_tier_requests, limit: 0"}}]))
+    respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=OK_RESPONSE))
+    router = LocalRouter(str(two_provider_config))
+    router.generate([{"role": "user", "content": "hi"}], tier="low")
+    s = router._status.get("groq", "llama-3.1-8b-instant")
+    assert s.value == st.NEEDS_YOU and s.kind == "not_on_plan"
+    # The key is fine: it's this model that isn't on the plan.
+    key = router._key_states.get("groq", router._cfg.providers["groq"].keys[0].id)
+    assert key.status == "ready"
+
+
+def test_pinned_busy_model_fails_at_once_with_the_countdown(two_provider_config):
+    router = LocalRouter(str(two_provider_config))
+    router._status.set_busy("groq", "llama-3.1-8b-instant", 40, "Too many requests",
+                            status_code=429)
+    started = time.monotonic()
+    with pytest.raises(RouterBusy, match=r"429: .*retry in \d+s"):
+        router.generate([{"role": "user", "content": "hi"}],
+                        tier="groq/llama-3.1-8b-instant")
+    assert time.monotonic() - started < 1
+
+
+def test_model_whose_provider_is_not_set_up_needs_you(two_provider_config):
+    import warnings
+    import yaml
+    cfg = yaml.safe_load(two_provider_config.read_text())
+    cfg["tiers"]["low"].append({"provider": "zhipu", "model": "glm-5-2", "score": 50,
+                                "rpm": 60, "tpm": 60000})
+    two_provider_config.write_text(yaml.dump(cfg))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        router = LocalRouter(str(two_provider_config))
+    rows = {(r["provider"], r["model"]): r for r in router._engine.explain_unavailable("low")}
+    zhipu = rows[("zhipu", "glm-5-2")]
+    assert zhipu["available"] is False
+    assert zhipu["reason"] == "needs_you"
+    assert "No zhipu provider set up" in zhipu["detail"]

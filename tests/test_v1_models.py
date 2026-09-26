@@ -56,7 +56,7 @@ def test_a_model_entry_carries_its_routing_facts(tmp_path, monkeypatch):
     assert fx["provider"] == "alpha"
     assert fx["score"] == 99
     assert fx["buckets"] == ["smart"]
-    assert fx["quarantined"] is False
+    assert fx["status"]["value"] == "ready"
 
 
 def test_get_one_bucket(tmp_path, monkeypatch):
