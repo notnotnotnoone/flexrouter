@@ -73,6 +73,27 @@ def test_fingerprint_clips_to_two_hundred_chars():
     assert len(fingerprint("x" * 500)) <= 200
 
 
+def test_fingerprint_drops_the_model_name():
+    """grill-decisions.md §4: the same shape of error from two different
+    models is one fingerprint, not 139 of them - one per model."""
+    a = fingerprint("model 'llama-3.1-8b-instant' not found", "groq", "llama-3.1-8b-instant")
+    b = fingerprint("model 'gpt-4o' not found", "openai", "gpt-4o")
+    assert a == b
+    assert "<model>" in a
+
+
+def test_error_brain_asks_the_decider_once_for_the_same_kind_of_error_across_models(tmp_path):
+    # Known identifiers survive scrub() untouched (redact.py's _shield);
+    # the router registers every configured name the same way at startup.
+    redact.set_known_identifiers({"llama-3.1-8b-instant", "gpt-4o", "groq", "openai"})
+    decider = _StubDecider(verdict="model_gone", confidence=0.9)
+    brain = ErrorBrain(str(tmp_path), decider)
+    brain.classify("model 'llama-3.1-8b-instant' not found", 400,
+                   provider="groq", model="llama-3.1-8b-instant")
+    brain.classify("model 'gpt-4o' not found", 400, provider="openai", model="gpt-4o")
+    assert len(decider.calls) == 1  # the second sighting is the same fingerprint
+
+
 def test_error_brain_classifies_via_rule_without_consulting_the_decider(tmp_path):
     # Was written against 429. That status is now contestable on purpose --
     # providers overload it for billing -- so it does reach the decider when

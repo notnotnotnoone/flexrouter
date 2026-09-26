@@ -81,8 +81,18 @@ _DIGITS = re.compile(r"\d+")
 _WHITESPACE = re.compile(r"\s+")
 
 
-def fingerprint(text: str) -> str:
-    normalized = _DIGITS.sub("#", text.lower())
+def fingerprint(text: str, provider: Optional[str] = None, model: Optional[str] = None) -> str:
+    """grill-decisions.md §4: drop the model name, so the same shape of
+    error from every model becomes one fingerprint (about 10 kinds, not
+    ~139 - one per model times the handful of things that go wrong) and
+    JEV is asked once per kind of error, not once per model."""
+    normalized = text.lower()
+    names = sorted(
+        filter(None, (f"{provider}/{model}" if provider and model else None, model, provider)),
+        key=len, reverse=True)
+    for name in names:
+        normalized = normalized.replace(name.lower(), "<model>")
+    normalized = _DIGITS.sub("#", normalized)
     normalized = _WHITESPACE.sub(" ", normalized).strip()
     return normalized[:200]
 
@@ -158,10 +168,10 @@ class ErrorBrain:
 
         rule = classify_by_rule(clean, status)
         if rule is not None and not self._is_contestable(status):
-            self._record(fingerprint(clean), rule, clean, now, seen)
+            self._record(fingerprint(clean, provider, model), rule, clean, now, seen)
             return rule
 
-        fp = fingerprint(clean)
+        fp = fingerprint(clean, provider, model)
         with self._lock:
             existing = self._entries.get(fp)
             if existing is not None:
