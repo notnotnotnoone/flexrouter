@@ -37,12 +37,12 @@ def test_both_columns_are_labelled(client):
 
 def test_the_menu_badge_counts_what_needs_you(client):
     _down()
-    body = client.get("/models").text      # any page carries the menu
+    body = client.get("/models_catalog").text      # any page carries the menu
     assert 'class="nav-badge"' in body
 
 
 def test_no_badge_when_nothing_needs_you(client):
-    assert 'class="nav-badge"' not in client.get("/models").text
+    assert 'class="nav-badge"' not in client.get("/models_catalog").text
 
 
 def test_broken_polls_itself(client):

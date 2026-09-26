@@ -1,4 +1,4 @@
-"""GET/POST /models/add-with-ai - the copy-paste "Add models with AI" flow.
+"""GET/POST /models_catalog/add-with-ai - the copy-paste "Add models with AI" flow.
 
 Same shape as the rank-models tests in test_dashboard_pages.py: build a
 prompt, paste an answer back, review, apply. No network call is ever made.
@@ -33,23 +33,23 @@ ANSWER_ONE_NEW_CHAT_MODEL = json.dumps([_row()])
 
 
 def test_the_button_is_on_the_models_page(client):
-    body = client.get("/models").text
-    assert 'href="/models/add-with-ai"' in body
+    body = client.get("/models_catalog").text
+    assert 'href="/models_catalog/add-with-ai"' in body
     assert "add models with ai" in body.lower()
 
 
 def test_step1_only_lists_providers_that_have_a_key(client, config_file):
-    body = client.get("/models/add-with-ai").text
+    body = client.get("/models_catalog/add-with-ai").text
     assert "groq" in body
 
 
 def test_step1_with_no_provider_chosen_shows_no_prompt_yet(client):
-    body = client.get("/models/add-with-ai").text
+    body = client.get("/models_catalog/add-with-ai").text
     assert "paste the ai" not in body.lower() or "json array" not in body.lower()
 
 
 def test_choosing_a_provider_builds_a_prompt_naming_it_and_its_models(client):
-    body = client.get("/models/add-with-ai", params={"provider": "groq"}).text
+    body = client.get("/models_catalog/add-with-ai", params={"provider": "groq"}).text
     assert "groq" in body
     assert "llama-3.1-8b-instant" in body
     assert "JSON array" in body
@@ -57,18 +57,18 @@ def test_choosing_a_provider_builds_a_prompt_naming_it_and_its_models(client):
 
 
 def test_the_prompt_has_a_copy_button(client):
-    body = client.get("/models/add-with-ai", params={"provider": "groq"}).text
+    body = client.get("/models_catalog/add-with-ai", params={"provider": "groq"}).text
     assert "data-copy" in body
 
 
 def test_an_unknown_or_keyless_provider_is_rejected(client):
-    body = client.get("/models/add-with-ai", params={"provider": "no-such-provider"}).text
+    body = client.get("/models_catalog/add-with-ai", params={"provider": "no-such-provider"}).text
     assert "no-such-provider" in body
     assert "JSON array" not in body
 
 
 def test_review_shows_a_parsed_row(client):
-    body = client.post("/models/add-with-ai/review", data={
+    body = client.post("/models_catalog/add-with-ai/review", data={
         "provider": "groq", "answer": ANSWER_ONE_NEW_CHAT_MODEL,
     }).text
     assert "new-chat-model" in body
@@ -76,7 +76,7 @@ def test_review_shows_a_parsed_row(client):
 
 
 def test_review_marks_an_existing_model_as_update_with_old_and_new_values(client):
-    body = client.post("/models/add-with-ai/review", data={
+    body = client.post("/models_catalog/add-with-ai/review", data={
         "provider": "groq",
         "answer": json.dumps([_row(
             model="llama-3.1-8b-instant", context=200000, rpm=60, tpm=60000,
@@ -89,7 +89,7 @@ def test_review_marks_an_existing_model_as_update_with_old_and_new_values(client
 
 
 def test_review_lists_an_unparseable_entry_with_its_reason_never_dropping_it(client):
-    body = client.post("/models/add-with-ai/review", data={
+    body = client.post("/models_catalog/add-with-ai/review", data={
         "provider": "groq",
         "answer": json.dumps([_row(model="broken", context="not-a-number")]),
     }).text
@@ -98,7 +98,7 @@ def test_review_lists_an_unparseable_entry_with_its_reason_never_dropping_it(cli
 
 
 def test_review_offers_a_bucket_picker_for_a_chat_row(client):
-    body = client.post("/models/add-with-ai/review", data={
+    body = client.post("/models_catalog/add-with-ai/review", data={
         "provider": "groq", "answer": ANSWER_ONE_NEW_CHAT_MODEL,
     }).text
     assert 'name="bucket:0"' in body
@@ -106,7 +106,7 @@ def test_review_offers_a_bucket_picker_for_a_chat_row(client):
 
 
 def test_review_has_no_bucket_picker_for_a_non_chat_row(client):
-    body = client.post("/models/add-with-ai/review", data={
+    body = client.post("/models_catalog/add-with-ai/review", data={
         "provider": "groq",
         "answer": json.dumps([_row(
             model="whisper-ish", kind="speech_to_text", context=None, rpm=None,
@@ -117,7 +117,7 @@ def test_review_has_no_bucket_picker_for_a_non_chat_row(client):
 
 
 def test_pasted_text_is_escaped_not_injected(client):
-    body = client.post("/models/add-with-ai/review", data={
+    body = client.post("/models_catalog/add-with-ai/review", data={
         "provider": "groq",
         "answer": json.dumps([_row(model="<script>bad</script>", context="not-a-number")]),
     }).text
@@ -126,7 +126,7 @@ def test_pasted_text_is_escaped_not_injected(client):
 
 
 def test_notes_are_escaped_on_the_prompt_page(client):
-    body = client.get("/models/add-with-ai", params={
+    body = client.get("/models_catalog/add-with-ai", params={
         "provider": "groq", "notes": "<script>bad</script>",
     }).text
     assert "<script>bad</script>" not in body
@@ -151,13 +151,13 @@ def _apply_one_row(client, **overrides):
         "bucket:0": "low",
     }
     row.update(overrides)
-    return client.post("/models/add-with-ai/apply", data=row, follow_redirects=False)
+    return client.post("/models_catalog/add-with-ai/apply", data=row, follow_redirects=False)
 
 
 def test_apply_adds_a_new_chat_model_to_the_chosen_bucket(client):
     r = _apply_one_row(client)
     assert r.status_code == 303
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert "new-chat-model" in body
 
 
@@ -190,7 +190,7 @@ def test_apply_records_an_ai_paste_fact(client):
 
 
 def test_apply_updates_an_existing_chat_model(client):
-    r = client.post("/models/add-with-ai/apply", data={
+    r = client.post("/models_catalog/add-with-ai/apply", data={
         "row_count": "1",
         "apply:0": "on",
         "provider:0": "groq",
@@ -205,12 +205,12 @@ def test_apply_updates_an_existing_chat_model(client):
         "bucket:0": "low",
     }, follow_redirects=False)
     assert r.status_code == 303
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert ">77<" in body
 
 
 def test_apply_parks_a_non_chat_model_instead_of_bucketing_it(client):
-    r = client.post("/models/add-with-ai/apply", data={
+    r = client.post("/models_catalog/add-with-ai/apply", data={
         "row_count": "1",
         "apply:0": "on",
         "provider:0": "groq",
@@ -230,18 +230,18 @@ def test_apply_parks_a_non_chat_model_instead_of_bucketing_it(client):
     assert entry is not None
     assert entry["kind"] == "speech_to_text"
     # never put in a bucket
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert "whisper-ish" not in body.split("Saved, not routable yet")[0]
 
 
 def test_models_page_shows_parked_models_section(client):
-    client.post("/models/add-with-ai/apply", data={
+    client.post("/models_catalog/add-with-ai/apply", data={
         "row_count": "1", "apply:0": "on", "provider:0": "groq",
         "model:0": "whisper-ish", "kind:0": "speech_to_text",
         "context:0": "none", "rpm:0": "none", "tpm:0": "none",
         "vision:0": "", "free:0": "on", "score:0": "none",
     })
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert "Saved, not routable yet" in body
     assert "whisper-ish" in body
     assert "speech_to_text" in body
@@ -249,7 +249,7 @@ def test_models_page_shows_parked_models_section(client):
 
 def test_unchecked_rows_are_not_applied(client):
     r = _apply_one_row(client, **{"apply:0": ""})
-    body = client.get(r.headers["location"]).text if r.status_code == 303 else client.get("/models").text
+    body = client.get(r.headers["location"]).text if r.status_code == 303 else client.get("/models_catalog").text
     assert "new-chat-model" not in body
 
 

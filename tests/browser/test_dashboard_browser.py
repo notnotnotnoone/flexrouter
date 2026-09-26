@@ -22,7 +22,7 @@ def _write_trace(trace: dict):
 
 
 def test_every_page_loads_without_a_script_error(page, server, errors):
-    for path in ["/", "/providers", "/models", "/buckets", "/requests", "/playground",
+    for path in ["/", "/providers", "/models_catalog", "/buckets", "/requests", "/playground",
                  "/broken", "/brain", "/allowance", "/settings"]:
         page.goto(server + path)
         expect(page.locator(".page-title")).to_be_visible()
@@ -99,7 +99,7 @@ def test_motion_off_disables_entrances(page, server):
 
 
 def test_models_rows_expand_and_sort(page, server):
-    page.goto(server + "/models")
+    page.goto(server + "/models_catalog")
     page.locator(".m-row").first.click()
     expect(page.locator(".m-detail:not([hidden])")).to_have_count(1)
     page.locator("th[data-sort=score]").click()
@@ -122,9 +122,9 @@ def test_the_playground_shows_the_message_it_sends(page, server):
 
 def test_add_with_ai_builds_a_prompt_and_the_copy_button_works(page, server, errors):
     page.context.grant_permissions(["clipboard-read", "clipboard-write"])
-    page.goto(server + "/models")
+    page.goto(server + "/models_catalog")
     page.click("text=Add models with AI")
-    expect(page).to_have_url(server + "/models/add-with-ai")
+    expect(page).to_have_url(server + "/models_catalog/add-with-ai")
     page.select_option("select[name=provider]", "groq")
     page.click("button:has-text('Build prompt')")
     expect(page.locator("#add-ai-prompt")).to_be_visible()
@@ -136,7 +136,7 @@ def test_add_with_ai_builds_a_prompt_and_the_copy_button_works(page, server, err
 
 
 def test_add_with_ai_review_lets_you_edit_and_apply_a_row(page, server, errors):
-    page.goto(server + "/models/add-with-ai")
+    page.goto(server + "/models_catalog/add-with-ai")
     page.select_option("select[name=provider]", "groq")
     page.click("button:has-text('Build prompt')")
     page.fill("textarea[name=answer]",
@@ -144,6 +144,6 @@ def test_add_with_ai_review_lets_you_edit_and_apply_a_row(page, server, errors):
     page.click("button:has-text('Show what would be added')")
     expect(page.locator("input[name='model:0']")).to_have_value("new-model-x")
     page.click("button:has-text('Apply checked rows')")
-    expect(page).to_have_url(server + "/models?ok=1&message=1%20added")
+    expect(page).to_have_url(server + "/models_catalog?ok=1&message=1%20added")
     expect(page.locator("body")).to_contain_text("added")
     assert errors == []

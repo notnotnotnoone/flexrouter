@@ -15,7 +15,7 @@ _FIX = {
     "provider_down": ("Open provider", "/providers/{p}"),
     "key_benched": ("Replace key", "/providers/{p}"),
     "unclear_error": ("Review in Error brain", "/brain"),
-    "model_set_aside": ("See models", "/models"),
+    "model_set_aside": ("See models", "/models_catalog"),
 }
 
 

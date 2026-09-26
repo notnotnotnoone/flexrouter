@@ -124,20 +124,29 @@ def test_a_failed_key_test_shows_the_real_reason(client, monkeypatch):
 
 
 def test_models_is_no_longer_a_stub(client):
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert "not built yet" not in body.lower()
     assert "llama-3.1-8b-instant" in body
+
+
+def test_bare_models_is_the_json_api_not_the_dashboard_page(client):
+    """Bare /models is the OpenAI-compatible model-listing API (see
+    tests/test_app.py); the dashboard's own Models page moved to
+    /models_catalog specifically so the two don't collide."""
+    r = client.get("/models")
+    assert r.headers["content-type"].startswith("application/json")
+    assert "<html" not in r.text.lower()  # not the dashboard's HTML page
 
 
 def test_models_shows_a_quarantined_model_as_gone_and_why(client):
     router = app_module.get_router()
     router._engine._penalties.quarantine("groq", "llama-3.1-8b-instant", "model gone")
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert "model gone" in body
 
 
 def test_models_with_no_requests_shows_no_data_yet(client):
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert "no data yet" in body
 
 
@@ -147,7 +156,7 @@ def test_models_shows_its_response_rate(client):
     router._audit.log("low", "groq", "llama-3.1-8b-instant", 0, 0, 0.0, 100, "rate_limited")
     router._audit.log("low", "groq", "llama-3.1-8b-instant", 0, 0, 0.0, 100, "rate_limited")
     router._audit.log("low", "groq", "llama-3.1-8b-instant", 0, 0, 0.0, 100, "rate_limited")
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert "25% (4 reqs)" in body
 
 
@@ -159,7 +168,7 @@ def test_pending_catalogue_says_nothing_pending_when_empty(client):
     router = app_module.get_router()
     from flexrouter.store import write_json
     write_json(router._cfg.state_dir + "/catalog_pending.json", {})
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert "nothing pending" in body.lower()
 
 
@@ -171,7 +180,7 @@ def test_pending_catalogue_shows_what_a_refresh_found(client):
         "groq": {"checked_at": "now", "appeared": [{"model": "brand-new-model"}],
                  "vanished": [], "changed": []},
     })
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert "brand-new-model" in body
 
 
@@ -461,7 +470,7 @@ def test_onboarding_a_provider_key_and_model_together(client):
         "bucket": "low", "model": "onboard-model", "score": "80",
         "rpm": "10", "tpm": "1000",
     })
-    models_body = client.get("/models").text
+    models_body = client.get("/models_catalog").text
     assert "onboard-model" in models_body
     buckets_body = client.get("/buckets").text
     assert "onboard-model" in buckets_body
@@ -492,7 +501,7 @@ def test_onboarding_a_malformed_model_row_does_not_discard_the_provider_or_key(c
     # the provider and its key both survived the failed model row
     assert "sk-keepme0" not in body
     assert "…pme0" in body
-    models_body = client.get("/models").text
+    models_body = client.get("/models_catalog").text
     assert "half-baked" not in models_body
 
 
@@ -538,16 +547,16 @@ def test_add_a_model_with_missing_required_fields_fails_cleanly(client):
 
 
 def test_edit_a_model_and_see_the_new_score(client):
-    client.post("/models/groq/llama-3.1-8b-instant", data={
+    client.post("/models_catalog/groq/llama-3.1-8b-instant", data={
         "action": "edit", "score": "42", "rpm": "60", "tpm": "60000",
         "context_window": "131072",
     })
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert ">42<" in body
 
 
 def test_rank_page_lists_current_models_in_the_prompt(client):
-    body = client.get("/models/rank").text
+    body = client.get("/models_catalog/rank").text
     assert "groq" in body
     assert "llama-3.1-8b-instant" in body
     assert "current score 85" in body
@@ -555,7 +564,7 @@ def test_rank_page_lists_current_models_in_the_prompt(client):
 
 
 def test_rank_proposal_shows_current_vs_proposed(client):
-    body = client.post("/models/rank/proposal", data={
+    body = client.post("/models_catalog/rank/proposal", data={
         "answer": "groq | llama-3.1-8b-instant | 99",
     }).text
     assert ">85<" in body
@@ -563,27 +572,27 @@ def test_rank_proposal_shows_current_vs_proposed(client):
 
 
 def test_rank_apply_updates_the_score(client):
-    client.post("/models/rank/apply", data={
+    client.post("/models_catalog/rank/apply", data={
         "apply:groq/llama-3.1-8b-instant": "on",
         "score:groq/llama-3.1-8b-instant": "99",
     })
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert ">99<" in body
 
 
 def test_rank_apply_with_nothing_checked_changes_nothing(client):
-    r = client.post("/models/rank/apply", data={}, follow_redirects=False)
+    r = client.post("/models_catalog/rank/apply", data={}, follow_redirects=False)
     body = client.get(r.headers["location"]).text
     assert "nothing was checked" in body.lower()
-    assert ">85<" in client.get("/models").text
+    assert ">85<" in client.get("/models_catalog").text
 
 
 def test_rank_skips_a_score_pinned_by_hand(client):
-    client.post("/models/groq/llama-3.1-8b-instant", data={
+    client.post("/models_catalog/groq/llama-3.1-8b-instant", data={
         "action": "edit", "score": "42", "rpm": "60", "tpm": "60000",
         "context_window": "131072",
     })
-    body = client.post("/models/rank/proposal", data={
+    body = client.post("/models_catalog/rank/proposal", data={
         "answer": "groq | llama-3.1-8b-instant | 99",
     }).text
     assert "pinned by hand" in body.lower()
@@ -592,23 +601,23 @@ def test_rank_skips_a_score_pinned_by_hand(client):
 
 
 def test_rank_answer_for_an_unconfigured_model_is_ignored(client):
-    body = client.post("/models/rank/proposal", data={
+    body = client.post("/models_catalog/rank/proposal", data={
         "answer": "nosuchprovider | nosuchmodel | 50",
     }).text
     assert "nothing to propose" in body.lower()
 
 
 def test_disable_a_model_removes_it_from_the_live_table(client):
-    client.post("/models/groq/llama-3.1-8b-instant", data={"action": "disable"})
-    body = client.get("/models").text
+    client.post("/models_catalog/groq/llama-3.1-8b-instant", data={"action": "disable"})
+    body = client.get("/models_catalog").text
     assert "llama-3.1-8b-instant" not in body.split("Disabled models")[0]
     assert "groq/llama-3.1-8b-instant" in body
 
 
 def test_a_disabled_model_can_be_put_back(client):
-    client.post("/models/groq/llama-3.1-8b-instant", data={"action": "disable"})
-    client.post("/models/groq/llama-3.1-8b-instant", data={"action": "clear"})
-    body = client.get("/models").text
+    client.post("/models_catalog/groq/llama-3.1-8b-instant", data={"action": "disable"})
+    client.post("/models_catalog/groq/llama-3.1-8b-instant", data={"action": "clear"})
+    body = client.get("/models_catalog").text
     assert "No disabled models" in body
 
 
@@ -623,9 +632,9 @@ def test_accept_an_appeared_pending_model(client):
                  "appeared": [{"model": "brand-new", "score": 70, "rpm": 30, "tpm": 6000}],
                  "vanished": [], "changed": []},
     })
-    client.post("/models/pending/groq/appeared/brand-new",
+    client.post("/models_catalog/pending/groq/appeared/brand-new",
                data={"action": "accept", "bucket": "low"})
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert "brand-new" in body
     assert "brand-new appeared" not in body
 
@@ -639,8 +648,8 @@ def test_reject_an_appeared_pending_model(client):
                  "appeared": [{"model": "brand-new", "score": 70, "rpm": 30, "tpm": 6000}],
                  "vanished": [], "changed": []},
     })
-    client.post("/models/pending/groq/appeared/brand-new", data={"action": "reject"})
-    body = client.get("/models").text
+    client.post("/models_catalog/pending/groq/appeared/brand-new", data={"action": "reject"})
+    body = client.get("/models_catalog").text
     assert "brand-new appeared" not in body
 
 
@@ -652,8 +661,8 @@ def test_accept_a_vanished_pending_model_disables_it(client):
         "groq": {"checked_at": "now", "appeared": [],
                  "vanished": ["llama-3.1-8b-instant"], "changed": []},
     })
-    client.post("/models/pending/groq/vanished/llama-3.1-8b-instant", data={"action": "accept"})
-    body = client.get("/models").text
+    client.post("/models_catalog/pending/groq/vanished/llama-3.1-8b-instant", data={"action": "accept"})
+    body = client.get("/models_catalog").text
     assert "groq/llama-3.1-8b-instant" in body.split("Pending catalogue")[0]
 
 
@@ -666,9 +675,9 @@ def test_accept_a_changed_pending_field(client):
                  "changed": [{"model": "llama-3.1-8b-instant", "field": "rpm",
                              "old": 60, "new": 999}]},
     })
-    client.post("/models/pending/groq/changed/llama-3.1-8b-instant",
+    client.post("/models_catalog/pending/groq/changed/llama-3.1-8b-instant",
                data={"action": "accept", "field": "rpm"})
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert 'name="rpm" value="999"' in body
 
 
@@ -689,7 +698,7 @@ def test_a_failure_message_stays_on_the_page(client):
     assert 'class="state-bad">Nope<' in body
 
 
-@pytest.mark.parametrize("path", ["/providers", "/models", "/buckets", "/requests",
+@pytest.mark.parametrize("path", ["/providers", "/models_catalog", "/buckets", "/requests",
                                   "/broken", "/brain", "/allowance", "/settings"])
 def test_every_page_uses_the_new_page_title(client, path):
     body = client.get(path).text

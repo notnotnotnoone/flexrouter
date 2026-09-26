@@ -18,7 +18,7 @@ def _stack(stack: dict, colors: dict) -> str:
         return ui.box("Stacked daily headroom", ui.empty(
             "No daily caps set yet. Give a model a requests-per-day cap on Models "
             "and its headroom stacks up here.",
-            action=ui.button("Set caps on Models", href="/models")),
+            action=ui.button("Set caps on Models", href="/models_catalog")),
             **{"data-enter": "", "data-box": "stack"})
     used_share = stack["total"] - stack["left"]
     bar = ui.stacked_bar([(p["provider"], p["left"], colors[p["provider"]]) for p in stack["parts"]],

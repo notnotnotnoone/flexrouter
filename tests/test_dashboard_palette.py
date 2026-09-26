@@ -20,5 +20,5 @@ def test_the_index_lists_pages_providers_models_settings_and_actions(client):
 
 
 def test_every_page_carries_the_command_bar_shell(client):
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert 'id="palette"' in body

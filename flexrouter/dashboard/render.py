@@ -45,6 +45,17 @@ def areas() -> list[tuple[str, str, str, str]]:
     return AREAS + ([LOGS_AREA] if log_setup.enabled() else [])
 
 
+# Two slugs whose page doesn't live at the obvious f"/{slug}": Overview sits
+# at the root so the owner's address bar just shows the service's own
+# address, and Models sits at /models_catalog because bare /models is the
+# OpenAI-compatible model-listing API (see app.py), not a dashboard page.
+_HREF_OVERRIDES = {"overview": "/", "models": "/models_catalog"}
+
+
+def _page_href(slug: str) -> str:
+    return _HREF_OVERRIDES.get(slug, f"/{slug}")
+
+
 def esc(value: object) -> str:
     """HTML-escape any value, quotes included. `None` becomes empty."""
     if value is None:
@@ -124,7 +135,9 @@ def _nav(current: str, badges: dict) -> str:
             "a", ui.icon(icon) + tag("span", esc(label)) + badge,
             # The Overview lives at the root, not at /overview, so that the
             # address the owner is given is just the service's own address.
-            href="/" if slug == "overview" else f"/{slug}",
+            # Models lives at /models_catalog, not /models - that bare path
+            # is the OpenAI-compatible model-listing API (ADR ... see app.py).
+            href=_page_href(slug),
             cls="nav-link",
             **{"aria-current": "page" if here else None},
         ))

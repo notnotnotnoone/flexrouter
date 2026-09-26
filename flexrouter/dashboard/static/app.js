@@ -795,7 +795,7 @@
 
   /* ── keyboard shortcuts ──────────────────────────────────── */
 
-  var GO = { o: "/", p: "/providers", m: "/models", b: "/buckets", r: "/requests",
+  var GO = { o: "/", p: "/providers", m: "/models_catalog", b: "/buckets", r: "/requests",
              a: "/allowance", s: "/settings", l: "/playground" };
   var pendingG = 0;
 

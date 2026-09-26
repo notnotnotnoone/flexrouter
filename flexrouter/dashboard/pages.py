@@ -542,20 +542,20 @@ def _pending_body(pending: dict, bucket_names: list) -> str:
         items = []
         for m in bucket.get("appeared") or []:
             model = m.get("model")
-            url = f"/models/pending/{quote(provider, safe=':')}/appeared/{quote(model, safe=':')}"
+            url = f"/models_catalog/pending/{quote(provider, safe=':')}/appeared/{quote(model, safe=':')}"
             picker = f"<select{attrs({'name': 'bucket'})}>{bucket_options}</select>"
             items.append(tag("li", esc(f"{provider}/{model} appeared")
                              + " " + _pending_action_form("accept", url, picker)
                              + " " + _pending_action_form("reject", url)))
         for model_id in bucket.get("vanished") or []:
-            url = f"/models/pending/{quote(provider, safe=':')}/vanished/{quote(model_id, safe=':')}"
+            url = f"/models_catalog/pending/{quote(provider, safe=':')}/vanished/{quote(model_id, safe=':')}"
             items.append(tag("li", esc(f"{provider}/{model_id} vanished")
                              + " " + _pending_action_form("accept", url)
                              + " " + _pending_action_form("reject", url)))
         for c in bucket.get("changed") or []:
             model = c.get("model")
             field = c.get("field")
-            url = (f"/models/pending/{quote(provider, safe=':')}/changed/"
+            url = (f"/models_catalog/pending/{quote(provider, safe=':')}/changed/"
                    f"{quote(model, safe=':')}")
             hidden_field = _input(type="hidden", name="field", value=esc(field))
             items.append(tag("li", esc(
@@ -591,13 +591,13 @@ def _model_edit_form(r) -> str:
                               **{"checked": True} if vision_checked else {})
               + "Can see images", cls="check-field")
         + tag("button", "Save", type="submit"),
-        method="post", action=f"/models/{ident}", cls="grouped-form",
+        method="post", action=f"/models_catalog/{ident}", cls="grouped-form",
     )
     disable = tag(
         "form",
         _input(type="hidden", name="action", value="disable")
         + tag("button", "Disable this model", type="submit", cls="danger"),
-        method="post", action=f"/models/{ident}",
+        method="post", action=f"/models_catalog/{ident}",
     )
     return edit + disable
 
@@ -675,7 +675,7 @@ def _models_body(router, banner: str = "") -> str:
             _input(type="hidden", name="action", value="clear")
             + tag("button", "Put it back", type="submit"),
             method="post",
-            action=f"/models/{_model_ident_path(*ident.split('/', 1))}",
+            action=f"/models_catalog/{_model_ident_path(*ident.split('/', 1))}",
         )),
     ])) for ident in disabled]
     disabled_section = (
@@ -703,11 +703,11 @@ def _models_body(router, banner: str = "") -> str:
     head = tag("div",
                tag("div", tag("h1", "Models", cls="page-title")
                    + tag("p", esc(status), cls="page-status"), cls="page-head-text")
-               + tag("div", ui.button("Rank models with an AI", href="/models/rank",
+               + tag("div", ui.button("Rank models with an AI", href="/models_catalog/rank",
                                       icon_name="brain")
-                     + ui.button("Get rate limits with an AI", href="/models/rate-limits",
+                     + ui.button("Get rate limits with an AI", href="/models_catalog/rate-limits",
                                 icon_name="gauge")
-                     + ui.button("Add models with AI", href="/models/add-with-ai",
+                     + ui.button("Add models with AI", href="/models_catalog/add-with-ai",
                                 icon_name="plus"), cls="page-actions"),
                cls="page-head")
     legend = tag("div", tag("span", "Tag styles say where a fact came from:")
@@ -755,7 +755,7 @@ def _import_all_form(bucket_names: list) -> str:
                      "key, straight into ")
         + f"<select{attrs({'name': 'bucket'})}>{bucket_options}</select>"
         + " " + tag("button", "Discover and import everything", type="submit"),
-        method="post", action="/models/import-all", cls="set-actions",
+        method="post", action="/models_catalog/import-all", cls="set-actions",
         **{"data-busy": "Checking every provider and scoring what it finds..."},
     )
 
@@ -766,7 +766,7 @@ def _rank_body(prompt: str, notes: str) -> str:
         _textarea(esc(notes), name="notes", rows="6",
                  placeholder="benchmark material or notes (optional)")
         + " " + tag("button", "Build prompt", type="submit"),
-        method="get", action="/models/rank",
+        method="get", action="/models_catalog/rank",
     )
     paste_form = tag(
         "form",
@@ -774,7 +774,7 @@ def _rank_body(prompt: str, notes: str) -> str:
                   placeholder="paste the AI's reply here, one line per "
                               "model: provider | model | score")
         + " " + tag("button", "Show proposed changes", type="submit"),
-        method="post", action="/models/rank/proposal",
+        method="post", action="/models_catalog/rank/proposal",
     )
     return (
         tag("h1", "Rank models with an AI", cls="page-title")
@@ -824,7 +824,7 @@ def _rank_proposal_body(changes: list, skipped_manual: list) -> str:
         body = tag(
             "form", tag("table", "".join(rows_html))
             + tag("button", "Apply checked scores", type="submit"),
-            method="post", action="/models/rank/apply", cls="table-form",
+            method="post", action="/models_catalog/rank/apply", cls="table-form",
         )
 
     skipped_note = (
@@ -850,7 +850,7 @@ def _rate_limits_body(prompt: str, docs: str) -> str:
         _textarea(esc(docs), name="docs", rows="10",
                  placeholder="paste the provider's rate-limit documentation here")
         + " " + tag("button", "Build prompt", type="submit"),
-        method="post", action="/models/rate-limits/build",
+        method="post", action="/models_catalog/rate-limits/build",
     )
     body = (
         tag("h1", "Get rate limits with an AI", cls="page-title")
@@ -871,7 +871,7 @@ def _rate_limits_body(prompt: str, docs: str) -> str:
                       placeholder="paste the AI's reply here, one line per "
                                   "model: provider | model | rpm | tpm")
             + " " + tag("button", "Show proposed changes", type="submit"),
-            method="post", action="/models/rate-limits/proposal",
+            method="post", action="/models_catalog/rate-limits/proposal",
         )
         body += (
             tag("h3", "2. The prompt - copy this")
@@ -911,7 +911,7 @@ def _rate_limits_proposal_body(changes: list, skipped_manual: list) -> str:
         body = tag(
             "form", tag("table", "".join(rows_html))
             + tag("button", "Apply checked limits", type="submit"),
-            method="post", action="/models/rate-limits/apply", cls="table-form",
+            method="post", action="/models_catalog/rate-limits/apply", cls="table-form",
         )
 
     skipped_note = (
@@ -945,7 +945,7 @@ def _add_with_ai_step1_form(providers: list[str], provider: str, notes: str) -> 
                  _textarea(esc(notes), name="notes", rows="6",
                           placeholder="paste provider docs or a model list here (optional)"))
         + tag("button", "Build prompt", type="submit"),
-        method="get", action="/models/add-with-ai", cls="grouped-form",
+        method="get", action="/models_catalog/add-with-ai", cls="grouped-form",
     )
 
 
@@ -975,7 +975,7 @@ def _add_with_ai_body(providers: list[str], provider: str, notes: str, prompt: s
                        placeholder="paste the AI's reply here: a JSON array, one object per "
                                    "model")
             + " " + tag("button", "Show what would be added", type="submit"),
-            method="post", action="/models/add-with-ai/review",
+            method="post", action="/models_catalog/add-with-ai/review",
         ))
     return "".join(parts)
 
@@ -1067,7 +1067,7 @@ def _add_with_ai_review_body(rows_info: list, issues: list, bucket_names: list) 
             _input(type="hidden", name="row_count", value=str(len(rows_info)))
             + table
             + tag("button", "Apply checked rows", type="submit"),
-            method="post", action="/models/add-with-ai/apply", cls="table-form",
+            method="post", action="/models_catalog/add-with-ai/apply", cls="table-form",
         ))
     else:
         parts.append(tag("p", "Nothing parsed from that answer.", cls="note"))
@@ -1400,13 +1400,13 @@ def _message_banner(ok: str, message: str) -> str:
             + tag("p", esc(message), cls="state-bad"))
 
 
-@pages.get("/models", response_class=HTMLResponse, include_in_schema=False)
+@pages.get("/models_catalog", response_class=HTMLResponse, include_in_schema=False)
 def models_page(ok: str = "", message: str = "") -> HTMLResponse:
     banner = _message_banner(ok, message)
     return HTMLResponse(page("Models", "models", _models_body(_live_router(), banner)))
 
 
-@pages.post("/models/pending/{provider}/{kind}/{model:path}", include_in_schema=False)
+@pages.post("/models_catalog/pending/{provider}/{kind}/{model:path}", include_in_schema=False)
 async def model_pending_action(provider: str, kind: str, model: str,
                                request: Request) -> RedirectResponse:
     form = await request.form()
@@ -1441,18 +1441,18 @@ async def model_pending_action(provider: str, kind: str, model: str,
         else:
             raise ValueError(f"unknown pending kind {kind!r}")
     except (ValueError, pending_actions.PendingActionError) as e:
-        return _redirect_with_message("/models", ok=False, message=str(e))
-    return _redirect_with_message("/models", ok=True, message=f"{provider}/{model} {action}ed")
+        return _redirect_with_message("/models_catalog", ok=False, message=str(e))
+    return _redirect_with_message("/models_catalog", ok=True, message=f"{provider}/{model} {action}ed")
 
 
-@pages.get("/models/rank", response_class=HTMLResponse, include_in_schema=False)
+@pages.get("/models_catalog/rank", response_class=HTMLResponse, include_in_schema=False)
 def models_rank_page(notes: str = "") -> HTMLResponse:
     rows = facts.models(_live_router())
     prompt = ranking.build_prompt(rows, notes)
     return HTMLResponse(page("Rank models", "models", _rank_body(prompt, notes)))
 
 
-@pages.post("/models/rank/proposal", response_class=HTMLResponse, include_in_schema=False)
+@pages.post("/models_catalog/rank/proposal", response_class=HTMLResponse, include_in_schema=False)
 async def models_rank_proposal(request: Request) -> HTMLResponse:
     form = await request.form()
     answer = form.get("answer") or ""
@@ -1478,7 +1478,7 @@ async def models_rank_proposal(request: Request) -> HTMLResponse:
         page("Rank models", "models", _rank_proposal_body(changes, skipped_manual)))
 
 
-@pages.post("/models/rank/apply", include_in_schema=False)
+@pages.post("/models_catalog/rank/apply", include_in_schema=False)
 async def models_rank_apply(request: Request) -> RedirectResponse:
     form = await request.form()
     router = _live_router()
@@ -1500,15 +1500,15 @@ async def models_rank_apply(request: Request) -> RedirectResponse:
         applied.append(ident)
 
     message = f"{len(applied)} score(s) applied" if applied else "nothing was checked"
-    return _redirect_with_message("/models", ok=bool(applied), message=message)
+    return _redirect_with_message("/models_catalog", ok=bool(applied), message=message)
 
 
-@pages.get("/models/rate-limits", response_class=HTMLResponse, include_in_schema=False)
+@pages.get("/models_catalog/rate-limits", response_class=HTMLResponse, include_in_schema=False)
 def models_rate_limits_page() -> HTMLResponse:
     return HTMLResponse(page("Rate limits with an AI", "models", _rate_limits_body("", "")))
 
 
-@pages.post("/models/rate-limits/build", response_class=HTMLResponse, include_in_schema=False)
+@pages.post("/models_catalog/rate-limits/build", response_class=HTMLResponse, include_in_schema=False)
 async def models_rate_limits_build(request: Request) -> HTMLResponse:
     form = await request.form()
     docs = form.get("docs") or ""
@@ -1517,7 +1517,7 @@ async def models_rate_limits_build(request: Request) -> HTMLResponse:
     return HTMLResponse(page("Rate limits with an AI", "models", _rate_limits_body(prompt, docs)))
 
 
-@pages.post("/models/rate-limits/proposal", response_class=HTMLResponse, include_in_schema=False)
+@pages.post("/models_catalog/rate-limits/proposal", response_class=HTMLResponse, include_in_schema=False)
 async def models_rate_limits_proposal(request: Request) -> HTMLResponse:
     form = await request.form()
     answer = form.get("answer") or ""
@@ -1545,7 +1545,7 @@ async def models_rate_limits_proposal(request: Request) -> HTMLResponse:
                              _rate_limits_proposal_body(changes, skipped_manual)))
 
 
-@pages.post("/models/rate-limits/apply", include_in_schema=False)
+@pages.post("/models_catalog/rate-limits/apply", include_in_schema=False)
 async def models_rate_limits_apply(request: Request) -> RedirectResponse:
     form = await request.form()
     router = _live_router()
@@ -1569,10 +1569,10 @@ async def models_rate_limits_apply(request: Request) -> RedirectResponse:
         applied.append(ident)
 
     message = f"{len(applied)} rate limit(s) applied" if applied else "nothing was checked"
-    return _redirect_with_message("/models", ok=bool(applied), message=message)
+    return _redirect_with_message("/models_catalog", ok=bool(applied), message=message)
 
 
-@pages.post("/models/import-all", include_in_schema=False)
+@pages.post("/models_catalog/import-all", include_in_schema=False)
 async def models_import_all(request: Request) -> RedirectResponse:
     """Check every provider with a valid key and add everything it lists.
 
@@ -1582,7 +1582,7 @@ async def models_import_all(request: Request) -> RedirectResponse:
     who wants it, this is the "just import all of it" shortcut for a first
     run or a provider that just shipped a dozen new models at once.
 
-    Registered before `/models/{ident:path}` below on purpose: that catch-all
+    Registered before `/models_catalog/{ident:path}` below on purpose: that catch-all
     would otherwise swallow this POST first (route matching is registration
     order, not specificity) and read "import-all" as a provider name.
     """
@@ -1590,23 +1590,23 @@ async def models_import_all(request: Request) -> RedirectResponse:
     form = await request.form()
     bucket = (form.get("bucket") or "").strip()
     if not bucket:
-        return _redirect_with_message("/models", ok=False, message="Pick a bucket to import into")
+        return _redirect_with_message("/models_catalog", ok=False, message="Pick a bucket to import into")
     router = _live_router()
     if not router._cfg.experimental_model_discovery:
         return _redirect_with_message(
-            "/models", ok=False,
+            "/models_catalog", ok=False,
             message="Model discovery is off. Turn on experimental_model_discovery "
                     "in Settings to use it.")
     state_dir = router._cfg.state_dir
     try:
         await asyncio.to_thread(run_refresh, state_dir)
     except Exception as e:  # noqa: BLE001 - report, don't 500
-        return _redirect_with_message("/models", ok=False, message=f"Discovery failed: {e}")
+        return _redirect_with_message("/models_catalog", ok=False, message=f"Discovery failed: {e}")
     count = pending_actions.accept_all_appeared(state_dir, bucket)
     message = (f"Checked every provider with a valid key and imported {count} new "
               f"model(s) into {bucket!r}" if count else
               "Checked every provider with a valid key - nothing new to import")
-    return _redirect_with_message("/models", ok=True, message=message)
+    return _redirect_with_message("/models_catalog", ok=True, message=message)
 
 
 def _opt_int(raw) -> Optional[int]:
@@ -1629,7 +1629,7 @@ def _opt_float(raw) -> Optional[float]:
     return float(s)
 
 
-@pages.get("/models/add-with-ai", response_class=HTMLResponse, include_in_schema=False)
+@pages.get("/models_catalog/add-with-ai", response_class=HTMLResponse, include_in_schema=False)
 def models_add_with_ai_page(provider: str = "", notes: str = "") -> HTMLResponse:
     router = _live_router()
     providers = add_models.providers_with_keys(router)
@@ -1645,7 +1645,7 @@ def models_add_with_ai_page(provider: str = "", notes: str = "") -> HTMLResponse
                              _add_with_ai_body(providers, provider, notes, prompt, error)))
 
 
-@pages.post("/models/add-with-ai/review", response_class=HTMLResponse, include_in_schema=False)
+@pages.post("/models_catalog/add-with-ai/review", response_class=HTMLResponse, include_in_schema=False)
 async def models_add_with_ai_review(request: Request) -> HTMLResponse:
     form = await request.form()
     answer = form.get("answer") or ""
@@ -1669,7 +1669,7 @@ async def models_add_with_ai_review(request: Request) -> HTMLResponse:
                              _add_with_ai_review_body(rows_info, result.issues, bucket_names)))
 
 
-@pages.post("/models/add-with-ai/apply", include_in_schema=False)
+@pages.post("/models_catalog/add-with-ai/apply", include_in_schema=False)
 async def models_add_with_ai_apply(request: Request) -> RedirectResponse:
     form = await request.form()
     router = _live_router()
@@ -1804,10 +1804,10 @@ async def models_add_with_ai_apply(request: Request) -> RedirectResponse:
     if errors:
         bits.append(f"{len(errors)} skipped - {'; '.join(errors)}")
     message = ", ".join(bits) if bits else "nothing was checked"
-    return _redirect_with_message("/models", ok=bool(added or updated or parked), message=message)
+    return _redirect_with_message("/models_catalog", ok=bool(added or updated or parked), message=message)
 
 
-@pages.post("/models/{ident:path}", include_in_schema=False)
+@pages.post("/models_catalog/{ident:path}", include_in_schema=False)
 async def model_write(ident: str, request: Request) -> RedirectResponse:
     provider, _, model = ident.partition("/")
     form = await request.form()
@@ -1840,8 +1840,8 @@ async def model_write(ident: str, request: Request) -> RedirectResponse:
         else:
             raise ValueError(f"unknown action {action!r}")
     except ValueError as e:
-        return _redirect_with_message("/models", ok=False, message=str(e))
-    return _redirect_with_message("/models", ok=True, message=f"{ident} updated")
+        return _redirect_with_message("/models_catalog", ok=False, message=str(e))
+    return _redirect_with_message("/models_catalog", ok=True, message=f"{ident} updated")
 
 
 @pages.get("/requests", response_class=HTMLResponse, include_in_schema=False)
@@ -2509,7 +2509,7 @@ async def settings_refresh_models() -> RedirectResponse:
         await asyncio.to_thread(run_refresh, router._cfg.state_dir)
     except Exception as e:  # noqa: BLE001 - report, don't 500
         return _redirect_with_message("/settings", ok=False, message=f"Check failed: {e}")
-    return _redirect_with_message("/models", ok=True,
+    return _redirect_with_message("/models_catalog", ok=True,
                                   message="Checked every provider; anything new is listed below")
 
 

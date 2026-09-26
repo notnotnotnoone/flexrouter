@@ -96,7 +96,7 @@ def test_pending_tray_hidden_when_discovery_is_off(client):
         "groq": {"checked_at": "now", "appeared": [{"model": "brand-new-model"}],
                  "vanished": [], "changed": []},
     })
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert "Pending catalogue changes" not in body
     assert "brand-new-model" not in body
 
@@ -110,7 +110,7 @@ def test_pending_tray_shown_when_discovery_is_on(client):
         "groq": {"checked_at": "now", "appeared": [{"model": "brand-new-model"}],
                  "vanished": [], "changed": []},
     })
-    body = client.get("/models").text
+    body = client.get("/models_catalog").text
     assert "Pending catalogue changes" in body
     assert "brand-new-model" in body
 
@@ -178,10 +178,10 @@ def test_import_all_route_refuses_when_discovery_is_off(client, monkeypatch):
     called = []
     monkeypatch.setattr("flexrouter.dashboard.api.run_refresh",
                         lambda state_dir: called.append(state_dir))
-    r = client.post("/models/import-all", data={"bucket": "fast"}, follow_redirects=False)
+    r = client.post("/models_catalog/import-all", data={"bucket": "fast"}, follow_redirects=False)
     assert not called
     assert "ok=0" in r.headers["location"]
 
 
 def test_models_page_hides_import_all_when_discovery_is_off(client):
-    assert "/models/import-all" not in client.get("/models").text
+    assert "/models_catalog/import-all" not in client.get("/models_catalog").text
