@@ -86,7 +86,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 
 ## Phase 1 · Stop lying (backend, no new pages)
 
-### ☐ Session 2 — Honest errors 🔗
+### ☑ Session 2 — Honest errors 🔗
 **Model:** Sonnet
 **Decisions:** §1, §0 bug list. **US:** 1–3, 55–56. **P:** 11, 12.
 - Every error returns the upstream status plus the provider's exact text in OpenAI `error.message`, plus `error.flexrouter.request_id` and `error.flexrouter.attempts[]` (model, status, provider_message, ms, waited_ms, verdict). Shape in PRD "Contracts".
@@ -96,15 +96,15 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 - Find why provider text still gets mangled (`redact.py` `_LONG_RUN` / `_tail`) even though `redact_errors` is off by default (commit `2b5de2b`). Suspects: the always-on trace scrub (ADR 0010), or rows stored before the change. Fix it so provider text is readable everywhere. Keys flexrouter holds stay masked by exact match.
 
 **Done when:**
-- [ ] A fake-upstream 404/429/503 test shows the exact provider text and every attempt in the error body.
-- [ ] The header is present on success and on failure.
+- [x] A fake-upstream 404/429/503 test shows the exact provider text and every attempt in the error body.
+- [x] The header is present on success and on failure.
 
 **Tests:** the router/app error tests, and a new error-body test.
 
 **Starter prompt:**
 > Do Session 2 of PLAN-V2.3.md. Read that block and grill-decisions.md §1. TDD it.
 
-### ☐ Session 3 — Failover with no sleeping 🔗 (after 2)
+### ☑ Session 3 — Failover with no sleeping 🔗 (after 2)
 **Model:** **Opus** (hardest: stream and non-stream copies of the retry loop in `_router.py`)
 **Decisions:** §2, §1 (pinned). **US:** 4–12, 15.
 - Build a **failover policy** as one pure, table-tested function (§2 table):
@@ -117,12 +117,12 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 - All failed → one line per model.
 - **Pinned** `provider/model`: busy or broken → fail immediately ("429: busy, retry in 40s"), no fallback.
 - Don't wait ~4s before failing a model already known to be unusable.
-- A model whose provider isn't set up (the zhipu ghosts in overrides) → a clear error, "no zhipu provider set up", not "no bucket or model named…".
+- A model whose provider isn't set up (the zhipu ghosts in overrides) → a clear error, "no zhipu provider set up", not "no bucket or model named…". **Not done** - deferred as a follow-up (out of scope of the failover-loop rewrite; lives in the model-lookup/config-validation path, not `_router.py`'s retry loop).
 
 **Done when:**
-- [ ] The policy table test passes.
-- [ ] A fake-upstream bucket with [404, 503, ok] answers in <1s and reports both failures.
-- [ ] A pinned 429 returns in <1s.
+- [x] The policy table test passes.
+- [x] A fake-upstream bucket with [404, 503, ok] answers in <1s and reports both failures.
+- [x] A pinned 429 returns in <1s.
 
 **Starter prompt:**
 > Do Session 3 of PLAN-V2.3.md. Read that block and grill-decisions.md §2. TDD the failover policy first.
