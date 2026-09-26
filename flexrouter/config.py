@@ -161,15 +161,17 @@ class FlexConfig:
     probe_timeout_seconds: float = 15.0
     error_max_length: int = 300
     unscored_fallback_score: int = 50
-    experimental_model_discovery: bool = False
-    """Off by default (2026-09-23): the owner now adds models by hand, and
-    asking every provider's /models endpoint on every startup and on demand
-    is an experimental feature someone opts into, not a given. Every call
-    site that would otherwise probe a provider (the startup catalogue
-    refresh, the dashboard's "check for new models"/discover routes, the
-    `flexrouter refresh` CLI command, and a preset's auto-import after
-    adding a key) reads this before doing so. The discovery code itself is
-    untouched - only gated."""
+    auto_add_models: bool = False
+    """Off by default. grill-decisions.md §12 splits discovery in two:
+    *reading* each provider's real model list is always on (see
+    `flexrouter.refresh.refresh_known_model_ids`, called unconditionally at
+    startup) and costs nothing extra since it never writes a bucket by
+    itself. *Auto-add* - the full catalogue refresh that stages new models
+    into `catalog_pending.json` for the owner to accept, plus the CLI/
+    dashboard routes that trigger it (`flexrouter refresh`, "check for new
+    models", a preset's auto-import after adding a key) - is what this
+    setting still gates, renamed from `experimental_model_discovery` (still
+    read as an alias, see `load_config`)."""
     redact_errors: bool = False
     """Off by default: error text is shown exactly as the provider sent it.
     On, flexrouter.redact's heuristic rules also blank anything shaped like
@@ -207,6 +209,12 @@ class FlexConfig:
             self.port = (home.DEFAULT_PORT if self.dashboard_port is None
                          else self.dashboard_port)
         self.dashboard_port = self.port
+
+    @property
+    def experimental_model_discovery(self) -> bool:
+        """Old name for `auto_add_models` (PLAN-V2.3.md Session 5). Kept so
+        code written before the rename keeps reading the right value."""
+        return self.auto_add_models
 
 
 def _line_of(text: str, needle: str) -> int | None:
@@ -593,7 +601,8 @@ def load_config(path: Path | str | None = None) -> FlexConfig:
         probe_timeout_seconds=_number(settings, "probe_timeout_seconds", 15.0, float),
         error_max_length=_number(settings, "error_max_length", 300, int),
         unscored_fallback_score=_number(settings, "unscored_fallback_score", 50, int),
-        experimental_model_discovery=_bool(settings, "experimental_model_discovery", False),
+        auto_add_models=_bool(settings, "auto_add_models",
+                              _bool(settings, "experimental_model_discovery", False)),
         redact_errors=_bool(settings, "redact_errors", False),
         retry=retry,
         decider=decider,

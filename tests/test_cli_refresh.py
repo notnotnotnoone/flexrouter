@@ -34,5 +34,5 @@ def test_refresh_is_a_no_op_when_discovery_is_off(monkeypatch, tmp_path):
     result = CliRunner().invoke(cli.cli, ["refresh"])
     assert result.exit_code == 0
     assert not called
-    assert "Model discovery is off" in result.output
-    assert "experimental_model_discovery" in result.output
+    assert "Adding models automatically is off" in result.output
+    assert "Add new models automatically" in result.output

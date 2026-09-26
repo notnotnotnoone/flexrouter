@@ -142,7 +142,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 **Starter prompt:**
 > Do Session 4 of PLAN-V2.3.md. Read that block and grill-decisions.md §7 and §13.
 
-### ☐ Session 5 — Always read the real model list ⚡
+### ☑ Session 5 — Always read the real model list ⚡
 **Model:** Sonnet
 **Decisions:** §12, §6 (validation). **US:** 63–65, 81.
 - Split discovery:
@@ -153,8 +153,8 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 - Files: `catalogue.py`, `refresh.py`, `config.py`, the `_router.py` startup refresh, and the gates added in commit `3e0abbc`.
 
 **Done when:**
-- [ ] With discovery off, startup still reads the lists and adds nothing.
-- [ ] The did-you-mean test uses the real Google IDs in `evidence/google-live-model-ids-2026-09-25.txt`.
+- [x] With discovery off, startup still reads the lists and adds nothing.
+- [x] The did-you-mean test uses the real Google IDs in `evidence/google-live-model-ids-2026-09-25.txt`.
 
 **Starter prompt:**
 > Do Session 5 of PLAN-V2.3.md. Read that block and grill-decisions.md §6 and §12.

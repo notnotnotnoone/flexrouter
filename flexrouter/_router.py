@@ -30,7 +30,7 @@ from flexrouter.rate_limits import RateLimitStore
 from flexrouter.reasoning import ReasoningStreamSplitter
 from flexrouter.recovery import PenaltyBox
 from flexrouter.redact import scrub
-from flexrouter.refresh import refresh_config
+from flexrouter.refresh import refresh_config, refresh_known_model_ids
 from flexrouter.sampler import PassiveSampler
 from flexrouter.scheduler import RoundRobinCounters, key_quota_ok, pick_key
 from flexrouter.traces import TraceWriter, new_trace_id
@@ -1487,16 +1487,34 @@ class LocalRouter:
         thread with no event loop of its own can call `asyncio.run()`
         freely regardless of what the calling thread is doing.
 
-        Skipped entirely unless `experimental_model_discovery` is on
-        (default off, 2026-09-23): the owner now adds models by hand, and
-        calling every configured provider's real /models endpoint on every
-        single startup is not something that should happen without being
-        asked for.
+        grill-decisions.md §12 splits discovery in two. *Reading* each
+        provider's real model list always runs here, regardless of
+        `auto_add_models` - it only caches IDs for `catalogue.is_real`/
+        `did_you_mean` and flags configured IDs the provider no longer
+        lists (`state/unknown_configured_models.json`, for Session 8). It
+        writes nothing to a bucket. *Auto-add* - the full catalogue refresh
+        that stages new models into `catalog_pending.json` for the owner to
+        accept - stays behind `auto_add_models` (default off, renamed from
+        `experimental_model_discovery` 2026-09-23): the owner adds models by
+        hand, and staging every configured provider's entire catalogue on
+        every single startup is not something that should happen without
+        being asked for.
         """
-        if not self._cfg.experimental_model_discovery:
-            return
-
         import concurrent.futures
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                executor.submit(
+                    refresh_known_model_ids,
+                    str(self._config_path), self._cfg.state_dir,
+                ).result()
+        except Exception as e:
+            logger.error(
+                "Startup model-ID read failed; continuing without it: %s",
+                f"{type(e).__name__}: {e}")
+
+        if not self._cfg.auto_add_models:
+            return
 
         from flexrouter import service_keys
 

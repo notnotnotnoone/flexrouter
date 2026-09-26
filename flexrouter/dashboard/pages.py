@@ -23,7 +23,9 @@ from flexrouter import log_setup
 from flexrouter import overrides as ov
 from flexrouter import parked_models
 from flexrouter import presets
+from flexrouter import catalogue
 from flexrouter import rate_limit_facts
+from flexrouter.refresh import refresh_known_model_ids
 from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.probe import probe_key
 from flexrouter import score_facts
@@ -663,7 +665,7 @@ def _models_body(router, banner: str = "") -> str:
     table = tag("table", tag("thead", header) + tag("tbody", "".join(rows)),
                 cls="models-table", **{"data-sortable": ""})
 
-    discovery_on = router._cfg.experimental_model_discovery
+    discovery_on = router._cfg.auto_add_models
     pending = facts.pending_catalogue(router) if discovery_on else {}
     bucket_names = list(router._cfg.tiers)
 
@@ -980,7 +982,8 @@ def _add_with_ai_body(providers: list[str], provider: str, notes: str, prompt: s
     return "".join(parts)
 
 
-def _add_with_ai_row_html(i: int, row, bucket_names: list, is_update: bool, old) -> str:
+def _add_with_ai_row_html(i: int, row, bucket_names: list, is_update: bool, old,
+                          state_dir: str) -> str:
     """One editable review row. `old` is the existing `ModelRow` (chat) or
     parked-models entry (anything else) when `is_update`, else None."""
     def _txt(field: str, value) -> str:
@@ -1021,6 +1024,13 @@ def _add_with_ai_row_html(i: int, row, bucket_names: list, is_update: bool, old)
                       f"quotas {old.get('quotas', {})}")
         status += tag("div", esc(detail), cls="dim")
 
+    if row.kind == "chat" and not catalogue.is_real(row.provider, row.model, state_dir):
+        suggestions = catalogue.did_you_mean(row.provider, row.model, state_dir)
+        note = "not a real ID"
+        if suggestions:
+            note += " - did you mean " + " or ".join(suggestions) + "?"
+        status += tag("div", esc(note), cls="state-bad")
+
     cells = [
         tag("td", _chk("apply", True)),
         tag("td", _txt("score", row.score)),
@@ -1045,7 +1055,8 @@ def _add_with_ai_row_html(i: int, row, bucket_names: list, is_update: bool, old)
     return tag("tr", "".join(cells))
 
 
-def _add_with_ai_review_body(rows_info: list, issues: list, bucket_names: list) -> str:
+def _add_with_ai_review_body(rows_info: list, issues: list, bucket_names: list,
+                             state_dir: str) -> str:
     parts = [
         tag("h1", "Review what to add", cls="page-title"),
         tag("p", "Nothing here is applied until you press the button below. Every cell "
@@ -1059,7 +1070,7 @@ def _add_with_ai_review_body(rows_info: list, issues: list, bucket_names: list) 
             "Vision", "Free", "Status", "Bucket",
         ]))
         body_rows = "".join(
-            _add_with_ai_row_html(i, row, bucket_names, is_update, old)
+            _add_with_ai_row_html(i, row, bucket_names, is_update, old, state_dir)
             for i, row, is_update, old in rows_info)
         table = tag("div", tag("table", header + body_rows, cls="matrix"), cls="scroll")
         parts.append(tag(
@@ -1120,7 +1131,7 @@ _INT_SETTINGS = frozenset({
 })
 _FLOAT_SETTINGS = frozenset({"backoff_seconds"})
 _JSON_SETTINGS = frozenset({"provider_budget", "hooks"})
-_BOOL_SETTINGS = frozenset({"experimental_model_discovery", "redact_errors"})
+_BOOL_SETTINGS = frozenset({"auto_add_models", "experimental_model_discovery", "redact_errors"})
 
 
 def _cast_setting(field: str, raw_value: str):
@@ -1592,11 +1603,11 @@ async def models_import_all(request: Request) -> RedirectResponse:
     if not bucket:
         return _redirect_with_message("/models_catalog", ok=False, message="Pick a bucket to import into")
     router = _live_router()
-    if not router._cfg.experimental_model_discovery:
+    if not router._cfg.auto_add_models:
         return _redirect_with_message(
             "/models_catalog", ok=False,
-            message="Model discovery is off. Turn on experimental_model_discovery "
-                    "in Settings to use it.")
+            message="Adding models automatically is off. Turn on "
+                    "'Add new models automatically' in Settings to use it.")
     state_dir = router._cfg.state_dir
     try:
         await asyncio.to_thread(run_refresh, state_dir)
@@ -1640,7 +1651,14 @@ def models_add_with_ai_page(provider: str = "", notes: str = "") -> HTMLResponse
             error = f"{provider!r} has no key configured here, so there is nothing to ask about."
         else:
             existing = sorted({r.model for r in facts.models(router) if r.provider == provider})
-            prompt = add_models.build_prompt(provider, existing, notes)
+            known_ids = None
+            try:
+                cache = refresh_known_model_ids(
+                    str(router._config_path), router._cfg.state_dir, providers=[provider])
+                known_ids = (cache.get(provider) or {}).get("ids")
+            except Exception:
+                pass  # a stale or missing list is not a reason to block the page
+            prompt = add_models.build_prompt(provider, existing, notes, known_ids=known_ids)
     return HTMLResponse(page("Add models with AI", "models",
                              _add_with_ai_body(providers, provider, notes, prompt, error)))
 
@@ -1666,7 +1684,8 @@ async def models_add_with_ai_review(request: Request) -> HTMLResponse:
         rows_info.append((i, row, old is not None, old))
 
     return HTMLResponse(page("Add models with AI", "models",
-                             _add_with_ai_review_body(rows_info, result.issues, bucket_names)))
+                             _add_with_ai_review_body(rows_info, result.issues, bucket_names,
+                                                     state_dir)))
 
 
 @pages.post("/models_catalog/add-with-ai/apply", include_in_schema=False)
@@ -2044,7 +2063,7 @@ async def provider_add_from_preset(request: Request) -> RedirectResponse:
         except (ValueError, OSError) as e:
             return _redirect_with_message(
                 dest, ok=False, message=f"{name} added, but its key failed: {e}")
-    if router._cfg.experimental_model_discovery and preset.models_path and secret:
+    if router._cfg.auto_add_models and preset.models_path and secret:
         return RedirectResponse(url=f"{dest}/discover", status_code=303)
     return _redirect_with_message(dest, ok=True, message=f"{name} added")
 
@@ -2185,14 +2204,15 @@ async def provider_discover(provider: str) -> HTMLResponse:
             page("Providers & keys", "providers",
                  tag("h1", "No such provider", cls="page-title") + tag("p", esc(provider))),
             status_code=404)
-    if not router._cfg.experimental_model_discovery:
-        # No network call to the provider: discovery is experimental and off
-        # by default (see FlexConfig.experimental_model_discovery).
+    if not router._cfg.auto_add_models:
+        # No network call to the provider: auto-add is off by default (see
+        # FlexConfig.auto_add_models). Reading the real ID list for
+        # validation still happens elsewhere regardless of this setting.
         return HTMLResponse(
             page(f"{provider} - Providers & keys", "providers",
                  tag("h1", esc(provider), cls="page-title")
-                 + tag("p", "Model discovery is off. Turn on Experimental: automatic "
-                            "model discovery (experimental_model_discovery) in Settings "
+                 + tag("p", "Adding models automatically is off. Turn on 'Add new "
+                            "models automatically' (auto_add_models) in Settings "
                             "to ask this provider what it offers.", cls="note")
                  + tag("p", tag("a", "Back to the provider",
                                 href=f"/providers/{quote(provider, safe=':')}",
@@ -2500,11 +2520,11 @@ async def settings_refresh_models() -> RedirectResponse:
     import asyncio
     from flexrouter.dashboard.api import run_refresh
     router = _live_router()
-    if not router._cfg.experimental_model_discovery:
+    if not router._cfg.auto_add_models:
         return _redirect_with_message(
             "/settings", ok=False,
-            message="Model discovery is off. Turn on experimental_model_discovery "
-                    "in Settings to use it.")
+            message="Adding models automatically is off. Turn on "
+                    "'Add new models automatically' in Settings to use it.")
     try:
         await asyncio.to_thread(run_refresh, router._cfg.state_dir)
     except Exception as e:  # noqa: BLE001 - report, don't 500

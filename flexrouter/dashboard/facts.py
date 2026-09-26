@@ -663,6 +663,7 @@ _SETTINGS_ATTR = {
     "probe_timeout_seconds": "probe_timeout_seconds",
     "error_max_length": "error_max_length",
     "unscored_fallback_score": "unscored_fallback_score",
+    "auto_add_models": "auto_add_models",
     "experimental_model_discovery": "experimental_model_discovery",
     "redact_errors": "redact_errors",
 }

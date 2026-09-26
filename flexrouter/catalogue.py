@@ -9,6 +9,7 @@ helper. Nothing in this module writes anything.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 import logging
 import re
@@ -148,12 +149,13 @@ def _load_providers() -> list[ProviderDef]:
 PROVIDERS: list[ProviderDef] = _load_providers()
 
 
-async def discover_models(provider: ProviderDef, api_key: str) -> list[dict]:
-    """GET /v1/models for a provider, return free-filtered model dicts.
+async def _fetch_model_dicts(provider: ProviderDef, api_key: str) -> list[dict]:
+    """GET /v1/models for a provider, unfiltered.
 
     Raises DiscoveryError rather than returning [] when the list cannot be
     read: an empty list is indistinguishable from "the provider dropped every
-    model", and refresh would report them all as vanished.
+    model", and a caller comparing against an old list would report them all
+    as vanished.
     """
     from flexrouter.errors import extract_error_message
 
@@ -174,7 +176,24 @@ async def discover_models(provider: ProviderDef, api_key: str) -> list[dict]:
     models = data.get("data", data) if isinstance(data, dict) else data
     if not isinstance(models, list):
         raise DiscoveryError(f"{url} did not answer with a model list")
-    return [m for m in models if isinstance(m, dict) and provider.free_filter(m)]
+    return [m for m in models if isinstance(m, dict)]
+
+
+async def discover_models(provider: ProviderDef, api_key: str) -> list[dict]:
+    """GET /v1/models for a provider, return free-filtered model dicts."""
+    models = await _fetch_model_dicts(provider, api_key)
+    return [m for m in models if provider.free_filter(m)]
+
+
+async def list_model_ids(provider: ProviderDef, api_key: str) -> list[str]:
+    """Every ID a provider's /v1/models lists, free or paid.
+
+    Unlike `discover_models`, nothing is filtered out - the model-list
+    checker (`is_real`/`did_you_mean`) needs to recognise a paid model as
+    real too, not just the ones a preset would offer for auto-import.
+    """
+    models = await _fetch_model_dicts(provider, api_key)
+    return sorted({m["id"] for m in models if m.get("id")})
 
 
 async def discover_ollama() -> list[dict]:
@@ -293,3 +312,47 @@ async def score_with_aa(models: list[dict], aa_key: str | None,
     all_scores = [s for scores in aa_lookup.values() for s in scores]
     fallback = statistics.median_low(all_scores) if all_scores else unscored_fallback
     return [{**m, "score": _best_score(m.get("id", ""), aa_lookup, fallback)} for m in models]
+
+
+KNOWN_MODEL_IDS_FILENAME = "known_model_ids.json"
+
+
+def _known_ids(provider: str, state_dir: str) -> list[str] | None:
+    """The cached real IDs for `provider`, or None if it has never been
+    checked (no key configured, or every check so far has failed) - which
+    is not the same as "checked and found empty"."""
+    from flexrouter.store import read_json
+    cache = read_json(Path(state_dir) / KNOWN_MODEL_IDS_FILENAME, default={}) or {}
+    entry = cache.get(provider)
+    return entry.get("ids") if entry else None
+
+
+def is_real(provider: str, model_id: str, state_dir: str) -> bool:
+    """Whether `model_id` is on `provider`'s real, currently-live list.
+
+    A provider that has never been checked gets the benefit of the doubt -
+    "unknown" must never read as "not a real ID" (grill-decisions.md §6).
+    """
+    ids = _known_ids(provider, state_dir)
+    return True if ids is None else model_id in ids
+
+
+def did_you_mean(provider: str, model_id: str, state_dir: str, limit: int = 3) -> list[str]:
+    """Close matches for `model_id` among `provider`'s real IDs, best first.
+
+    e.g. `gemini-3-flash` -> `["gemini-3-flash-preview"]`: the provider
+    versioned the model and the pasted/typed ID is the stale, unsuffixed
+    name. A real ID that simply continues where the typed one stops is a
+    stronger signal than plain character-overlap - difflib's ratio alone
+    prefers a shorter, coincidentally-similar ID (`gemini-3.8-flash`) over
+    the actual rename, so a prefix match wins outright when one exists,
+    shortest (closest) first.
+    """
+    import difflib
+    ids = _known_ids(provider, state_dir) or []
+    if not ids:
+        return []
+    prefix_matches = sorted((i for i in ids if i.startswith(model_id)), key=len)
+    if prefix_matches:
+        return prefix_matches[:limit]
+    return difflib.get_close_matches(model_id, ids, n=limit, cutoff=0.6)

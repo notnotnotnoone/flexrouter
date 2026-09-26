@@ -6,7 +6,10 @@ from pathlib import Path
 
 import yaml
 
-from flexrouter.catalogue import PROVIDERS, discover_models, score_with_aa, _context_window
+from flexrouter.catalogue import (
+    KNOWN_MODEL_IDS_FILENAME, PROVIDERS, discover_models, list_model_ids,
+    score_with_aa, _context_window,
+)
 from flexrouter.config import is_probably_chat_model, resolve_keys
 from flexrouter.keys import load_keys, mask
 from flexrouter.overrides import apply_overrides, load_overrides
@@ -139,6 +142,63 @@ async def _discover_all(provider_keys: dict, store: RateLimitStore):
 
 def _new_pending_bucket(ts: str) -> dict:
     return {"checked_at": ts, "appeared": [], "vanished": [], "changed": []}
+
+
+async def _discover_ids_all(provider_keys: dict) -> dict[str, list[str]]:
+    pmap = {p.name: p for p in PROVIDERS}
+    out: dict[str, list[str]] = {}
+    for name, key in provider_keys.items():
+        pdef = pmap.get(name)
+        if pdef is None:
+            continue
+        try:
+            out[name] = await list_model_ids(pdef, key)
+        except Exception:
+            # Leave this provider's cache exactly as an earlier run left it -
+            # a provider that failed to answer was not checked, and reporting
+            # its old IDs as gone would make every one of its models look
+            # unreal (the same rule refresh_config applies to `removed`).
+            continue
+    return out
+
+
+def refresh_known_model_ids(config_path: str, state_dir: str,
+                           providers: list[str] | None = None) -> dict:
+    """Cache every provider's real model IDs for `catalogue.is_real` /
+    `did_you_mean`, and flag configured IDs the provider no longer lists.
+
+    grill-decisions.md §12: this is the *always-on* half of discovery. It
+    only reads and caches - it never touches config.yaml, overrides.json,
+    or catalog_pending.json, so it is safe to run on every startup and every
+    time "Add models with AI" opens regardless of `auto_add_models`.
+
+    `providers`, when given, narrows the read to just those names - "Add
+    models with AI" only needs one provider's list fresh, not every
+    provider's, every time the page opens.
+    """
+    cfg_path = Path(config_path)
+    raw = _existing(cfg_path)
+    provider_keys = _provider_keys(raw, cfg_path)
+    if providers is not None:
+        provider_keys = {k: v for k, v in provider_keys.items() if k in providers}
+
+    fetched = asyncio.run(_discover_ids_all(provider_keys))
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    cache_path = Path(state_dir) / KNOWN_MODEL_IDS_FILENAME
+    cache: dict = read_json(cache_path, default={}) or {}
+    for provider, ids in fetched.items():
+        cache[provider] = {"checked_at": ts, "ids": sorted(ids)}
+    write_json(cache_path, cache)
+
+    unknown = sorted(
+        ident for ident in _old_models(raw)
+        if (known := cache.get(ident.split("/", 1)[0])) is not None
+        and ident.split("/", 1)[1] not in known["ids"]
+    )
+    write_json(Path(state_dir) / "unknown_configured_models.json",
+              {"checked_at": ts, "models": unknown})
+    return cache
 
 
 def refresh_config(config_path: str, state_dir: str, aa_key: str | None = None) -> RefreshResult:

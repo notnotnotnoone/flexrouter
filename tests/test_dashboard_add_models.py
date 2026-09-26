@@ -67,6 +67,41 @@ def test_an_unknown_or_keyless_provider_is_rejected(client):
     assert "JSON array" not in body
 
 
+def _seed_known_ids(config_file, provider: str, ids: list[str]) -> None:
+    import yaml
+    from flexrouter.catalogue import KNOWN_MODEL_IDS_FILENAME
+    from flexrouter.store import write_json
+    state_dir = yaml.safe_load(config_file.read_text())["settings"]["state_dir"]
+    write_json(f"{state_dir}/{KNOWN_MODEL_IDS_FILENAME}",
+              {provider: {"checked_at": "2026-09-25T00:00:00Z", "ids": ids}})
+
+
+def test_step1_grounds_the_prompt_in_the_providers_real_ids(client, config_file):
+    # A live re-read is attempted and fails (no network in tests), leaving
+    # this seeded cache in place - proving the prompt used what's cached
+    # rather than needing the network call to succeed.
+    _seed_known_ids(config_file, "groq", ["llama-3.1-8b-instant", "some-other-real-model"])
+    body = client.get("/models_catalog/add-with-ai", params={"provider": "groq"}).text
+    assert "some-other-real-model" in body
+
+
+def test_review_flags_a_model_id_the_provider_never_listed(client, config_file):
+    _seed_known_ids(config_file, "groq", ["llama-3.1-8b-instant"])
+    body = client.post("/models_catalog/add-with-ai/review", data={
+        "provider": "groq",
+        "answer": json.dumps([_row(model="totally-made-up-model")]),
+    }).text
+    assert "not a real id" in body.lower()
+
+
+def test_review_does_not_flag_a_model_id_that_is_on_the_real_list(client, config_file):
+    _seed_known_ids(config_file, "groq", ["new-chat-model"])
+    body = client.post("/models_catalog/add-with-ai/review", data={
+        "provider": "groq", "answer": ANSWER_ONE_NEW_CHAT_MODEL,
+    }).text
+    assert "not a real id" not in body.lower()
+
+
 def test_review_shows_a_parsed_row(client):
     body = client.post("/models_catalog/add-with-ai/review", data={
         "provider": "groq", "answer": ANSWER_ONE_NEW_CHAT_MODEL,

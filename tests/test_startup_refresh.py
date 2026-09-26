@@ -4,23 +4,24 @@ from flexrouter._router import LocalRouter
 from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig
 
 
-def _cfg(tmp_path, experimental_model_discovery=True):
-    # Automatic discovery is opt-in (experimental_model_discovery, off by
-    # default) - every test in this module is specifically about the startup
-    # refresh, so it turns discovery on unless it is testing the off switch
-    # itself.
+def _cfg(tmp_path, auto_add_models=True):
+    # Auto-add is opt-in (auto_add_models, off by default) - every test in
+    # this module is specifically about the startup *auto-add* refresh, so
+    # it turns auto-add on unless it is testing the off switch itself.
+    # Reading the real ID list (refresh_known_model_ids) always runs
+    # regardless, and is covered separately below.
     return FlexConfig(
         tiers={"smart": [ModelConfig(provider="alpha", model="big", score=99,
                                      rpm=60, tpm=60000, context_window=100_000)]},
         providers={"alpha": ProviderConfig(base_url="https://alpha.test/v1", api_keys=["k"])},
         state_dir=str(tmp_path / "state"),
-        experimental_model_discovery=experimental_model_discovery,
+        auto_add_models=auto_add_models,
     )
 
 
-def test_startup_skips_refresh_when_discovery_is_off(tmp_path, monkeypatch):
+def test_startup_skips_auto_add_refresh_when_it_is_off(tmp_path, monkeypatch):
     monkeypatch.setattr("flexrouter._router.load_config",
-                        lambda _p: _cfg(tmp_path, experimental_model_discovery=False))
+                        lambda _p: _cfg(tmp_path, auto_add_models=False))
 
     calls = []
 
@@ -35,6 +36,25 @@ def test_startup_skips_refresh_when_discovery_is_off(tmp_path, monkeypatch):
     router.close()
 
     assert calls == []
+
+
+def test_startup_still_reads_the_real_model_list_when_auto_add_is_off(tmp_path, monkeypatch):
+    monkeypatch.setattr("flexrouter._router.load_config",
+                        lambda _p: _cfg(tmp_path, auto_add_models=False))
+
+    calls = []
+
+    def fake_refresh_known_model_ids(config_path, state_dir):
+        calls.append((config_path, state_dir))
+        return {}
+
+    monkeypatch.setattr("flexrouter._router.refresh_known_model_ids",
+                        fake_refresh_known_model_ids)
+    router = LocalRouter(str(tmp_path / "config.yaml"))
+    router.close()
+
+    assert len(calls) == 1
+    assert calls[0][1] == str(tmp_path / "state")
 
 
 def test_startup_calls_refresh_and_writes_catalog_pending(tmp_path, monkeypatch):

@@ -36,7 +36,7 @@ def items(router) -> list[dict]:
          "download": True},
         {"kind": "action", "label": "Rank models with an AI", "href": "/models_catalog/rank"},
     ]
-    if router._cfg.experimental_model_discovery:
+    if router._cfg.auto_add_models:
         out.append({"kind": "action", "label": "Check for new models",
                     "href": "/settings#g-about"})
     return out

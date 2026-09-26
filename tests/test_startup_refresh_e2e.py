@@ -6,14 +6,14 @@ from flexrouter.config import FlexConfig, ModelConfig, ProviderConfig
 
 
 def _cfg(tmp_path):
-    # Discovery is opt-in and off by default; this test is specifically
-    # about the startup refresh actually running, so it turns it on.
+    # Auto-add is opt-in and off by default; this test is specifically
+    # about the startup auto-add refresh actually running, so it turns it on.
     return FlexConfig(
         tiers={"smart": [ModelConfig(provider="alpha", model="big", score=99,
                                      rpm=60, tpm=60000, context_window=100_000)]},
         providers={"alpha": ProviderConfig(base_url="https://alpha.test/v1", api_keys=["k"])},
         state_dir=str(tmp_path / "state"),
-        experimental_model_discovery=True,
+        auto_add_models=True,
     )
 
 

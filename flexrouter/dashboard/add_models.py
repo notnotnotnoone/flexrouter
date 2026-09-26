@@ -92,7 +92,8 @@ def providers_with_keys(router) -> list[str]:
     )
 
 
-def build_prompt(provider: str, existing_models: list[str], notes: str) -> str:
+def build_prompt(provider: str, existing_models: list[str], notes: str,
+                 known_ids: list[str] | None = None) -> str:
     example = {
         "provider": provider, "model": "exact-model-id", "kind": "chat",
         "context": 128000, "rpm": 30, "tpm": 6000, "rph": None, "rpd": 14400,
@@ -114,6 +115,19 @@ def build_prompt(provider: str, existing_models: list[str], notes: str) -> str:
 
     if notes.strip():
         lines += ["", "Docs / model list I pasted:", notes.strip()]
+
+    if known_ids:
+        # grill-decisions.md §6: ground the AI in the provider's real, live
+        # ID list rather than whatever it remembers from training - the
+        # review screen still checks this itself, but a model that matches
+        # the list up front means fewer "not a real ID" rows to fix by hand.
+        lines += [
+            "",
+            f"{provider}'s real model IDs right now (from its own /models "
+            "endpoint) - match every row's \"model\" field to exactly one "
+            "of these, or leave the model out if none of these fit:",
+            ", ".join(sorted(known_ids)),
+        ]
 
     lines += [
         "",

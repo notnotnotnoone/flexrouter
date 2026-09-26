@@ -75,9 +75,10 @@ META: dict[str, tuple[str, str, str, str, bool]] = {
                                 "Used to rank a model nobody has scored yet.", False),
     "dashboard_port": ("Advanced", "Dashboard port (old)", "",
                        "A leftover from when the dashboard had its own port; same as Port.", True),
-    "experimental_model_discovery": (
-        "Advanced", "Experimental: automatic model discovery", "",
-        "Asks each provider's /models endpoint for new models.", False),
+    "auto_add_models": (
+        "Advanced", "Add new models automatically", "",
+        "Reading each provider's model list is always on; this controls "
+        "whether new models get staged for you to accept.", False),
 }
 
 
@@ -247,13 +248,13 @@ def _about(router) -> str:
             ("Data", str(router._cfg.state_dir))]
     table = "".join(tag("div", tag("span", esc(k), cls="stat-label") + tag("code", esc(v)),
                         cls="about-row") for k, v in rows)
-    if router._cfg.experimental_model_discovery:
+    if router._cfg.auto_add_models:
         check = tag("form", tag("button", "Check for new models now", type="submit"),
                     method="post", action="/settings/refresh-models",
                     **{"data-busy": "Checking every provider with a valid key..."})
         sub = "new models found go to the Models page to accept"
     else:
-        check = tag("p", "Turn on Experimental: automatic model discovery above to check "
+        check = tag("p", "Turn on Add new models automatically above to check "
                          "providers for new models.", cls="set-help")
         sub = ""
     test_limits = tag("form",
