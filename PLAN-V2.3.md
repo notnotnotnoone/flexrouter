@@ -240,7 +240,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 **Starter prompt:**
 > Do Session 8 of PLAN-V2.3.md. Read that block, the approved mockup in grill-log.md, and .scratch/polish/showcase/PORTING.md. Show me in the browser pane before finishing.
 
-### ☐ Session 9 — Fastest = time to first word ⚡
+### ☑ Session 9 — Fastest = time to first word ⚡
 **Model:** Sonnet
 **Decisions:** §14. **US:** 66–68. **P:** 17, 18.
 - A speed tracker: median time to first token over the last ~20 **successful** requests per model (non-stream: fall back to total time, or only measure streams; decide and note it).
@@ -248,6 +248,13 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 - The Buckets page shows "ranked by: first word, your last 20 requests", with seconds per model and "not measured yet, will try".
 - "How fast" shows sample counts.
 - Files: `engine.py` (`_pick`, the fastest strategy), `buckets_page.py`.
+
+**Done 26 Sep 2026.** Choices left open by the plan:
+- New `flexrouter/speed.py` (`SpeedTracker`, in-memory like `SlidingWindow` — reset on restart, not persisted): a per-model deque capped at 20 samples, median on read.
+- Fell back to total latency on the non-stream path (no separate first-token moment there); the stream path uses the existing `first_token_at` timing.
+- `engine._rank_value("fastest")`: a model's own measured median wins once it has samples; the typed `tokens_per_second` only applies with zero samples; a model with neither ranks with the fastest known (unchanged "tried, not skipped" behavior), via a new `_fastest_unmeasured()` shared by `_score_candidates` and `explain_unavailable` so the dashboard can't disagree with what `select()` would do.
+- `explain_unavailable()` now reports `fastest_rank`, `ttft_ms`, `ttft_samples` per model; `facts.BucketModelRow` and the ladder's threshold/sort use `fastest_rank` instead of the raw typed value.
+- Buckets page: a "ranked by: first word, your last 20 requests" caption on fastest-strategy buckets; each row shows "Ns (N samples)", "~N tok/s (guess)", or "not measured yet, will try".
 
 **Starter prompt:**
 > Do Session 9 of PLAN-V2.3.md. Read that block and grill-decisions.md §14.
