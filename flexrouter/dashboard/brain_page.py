@@ -50,7 +50,7 @@ def _correct_form(fp: str, current: str) -> str:
         for v in VERDICTS)
     return tag("form",
                f'<select name="verdict" aria-label="What this error means">{opts}</select>'
-               + tag("button", "Set", type="submit"),
+               + ui.submit("Set", **{"data-working": "Saving", "data-done": "Saved"}),
                method="post", action=f"/brain/{quote(fp, safe='')}/verdict", cls="correct-form")
 
 

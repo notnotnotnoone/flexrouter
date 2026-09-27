@@ -39,6 +39,23 @@ ICONS: dict[str, str] = {
                '<path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
     "arrow-right": '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
     "plus": '<path d="M5 12h14"/><path d="M12 5v14"/>',
+    # The showcase's icons (PORTING.md). loader, check and x must exist:
+    # flex.press swaps a button's icon to them.
+    "loader": '<path d="M21 12a9 9 0 1 1-6.219-8.56"/>',
+    "dot": '<circle cx="12" cy="12" r="3"/>',
+    "save": '<path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/>'
+            '<path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/>',
+    "wrench": '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 '
+              '7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+    "zap": '<path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 '
+           '10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/>',
+    "copy": '<rect width="14" height="14" x="8" y="8"/><path d="M4 16V4h12"/>',
+    "trash": '<path d="M3 6h18"/><path d="M19 6v15H5V6"/><path d="M8 6V3h8v3"/>',
+    "reset": '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+    "chevron": '<path d="m9 18 6-6-6-6"/>',
+    "grip": "".join(f'<rect x="{x}" y="{y}" width="3" height="3" fill="currentColor" stroke="none"/>'
+                    for y in (4, 10.5, 17) for x in (8, 13)),
+    "external": '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v8H3V6h8"/>',
 }
 
 _STATUS = {
@@ -150,6 +167,36 @@ def button(label: str, *, href: str | None = None, kind: str = "",
     if href is not None:
         return f'<a class="{cls}" href="{esc(href)}"{attrs(kw)}>{body}</a>'
     return f'<button type="button" class="{cls}"{attrs(kw)}>{body}</button>'
+
+
+def submit(label: str, *, kind: str = "", icon_name: str = "", **kw) -> str:
+    """A form's submit button: the same shape as `button()`, so app.js can
+    show working → done / failed on it (`data-working`, `data-done` name
+    the words)."""
+    body = (icon(icon_name) if icon_name else "") + tag("span", esc(label))
+    return f'<button type="submit" class="{f"btn {kind}".strip()}"{attrs(kw)}>{body}</button>'
+
+
+_PILLS = {"ready": ("●", "Ready"), "busy": ("◐", "Busy"), "struggling": ("◆", "Struggling"),
+          "needs": ("▲", "Needs you"), "off": ("○", "Off")}
+
+
+def pill(status: str, countdown_at: float | None = None) -> str:
+    """A status as glyph + word (the showcase's pill). Busy can carry the
+    moment it comes back, which app.js counts down."""
+    glyph, word = _PILLS.get(status, _PILLS["off"])
+    return tag("span", tag("span", glyph, cls="pill-dot", **{"aria-hidden": "true"})
+               + tag("span", word, cls="pill-word")
+               + (countdown(countdown_at, prefix="back in") if countdown_at else ""),
+               cls="pill", **{"data-status": status})
+
+
+def switch(label: str, on: bool, **kw) -> str:
+    """An on/off toggle. It flips at once; whoever saves it listens for
+    app.js's `flex:switch` event."""
+    return (f'<button type="button" class="switch" role="switch" '
+            f'aria-checked="{"true" if on else "false"}"{attrs(kw)}>'
+            '<span class="switch-track"><i></i></span>' + tag("span", esc(label)) + "</button>")
 
 
 def sheet(title: str, body: str, *, close_href: str, sub: str = "") -> str:

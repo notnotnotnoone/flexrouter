@@ -206,7 +206,10 @@ def test_buckets_shows_why_a_model_is_skipped(client):
 def test_buckets_offers_a_draggable_card_for_every_configured_model(client):
     body = client.get("/buckets").text
     assert 'class="model-card"' in body
-    assert 'draggable="true"' in body
+    # Pointer-event drag (and tap, and Enter), not HTML5 drag-and-drop,
+    # which never worked with a finger (showcase PORTING.md).
+    assert 'draggable="true"' not in body
+    assert 'role="button"' in body
     assert 'data-provider="groq"' in body
     assert 'data-model="llama-3.1-8b-instant"' in body
 

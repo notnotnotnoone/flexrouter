@@ -45,8 +45,18 @@ def test_every_custom_property_used_is_defined():
     assert sorted(used - defined) == []
 
 
-def test_dark_only():
-    assert "prefers-color-scheme" not in CSS
+def test_light_theme_redefines_every_colour_token():
+    """Dark by default; light follows the OS or html[data-theme="light"].
+    Both light blocks must redefine every colour the dark :root sets, or a
+    light page ends up with dark-only ink on a light ground."""
+    root = re.search(r":root\s*\{(.*?)\n\}", CSS, re.S).group(1)
+    colours = {name for name, value in re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", root)
+               if value.strip().startswith(("#", "rgba(")) and not name.startswith("--s")}
+    assert colours
+    light_os = re.search(r'@media \(prefers-color-scheme: light\)\s*\{\s*:root:not\(\[data-theme="dark"\]\)\s*\{(.*?)\}', CSS, re.S).group(1)
+    light_pinned = re.search(r':root\[data-theme="light"\]\s*\{(.*?)\}', CSS, re.S).group(1)
+    for block in (light_os, light_pinned):
+        assert sorted(c for c in colours if c + ":" not in block.replace(" :", ":")) == []
 
 
 def test_brand_tokens_match_the_spec():

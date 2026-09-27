@@ -152,33 +152,443 @@
   document.addEventListener("htmx:responseError", onFail);
   document.addEventListener("htmx:sendError", onFail);
 
-  /* ── toasts ──────────────────────────────────────────────── */
+  /* ── the showcase's parts (.scratch/polish/showcase/port.js) ─ */
+  /* Movement here uses the browser's own element.animate(), so it runs
+     with or without Motion. */
 
-  function toast(message, kind) {
-    var box = document.getElementById("toasts");
-    if (!box || !message) return;
-    var t = document.createElement("div");
-    t.className = "toast " + (kind || "ok");
-    t.setAttribute("role", kind === "bad" ? "alert" : "status");
-    t.textContent = message;
-    box.appendChild(t);
-    var animate = M && motion() !== "off";
-    if (animate) {
-      M.animate(t, { opacity: [0, 1], transform: ["translateX(24px)", "none"] },
-        { duration: 0.28, ease: EASE });
-    }
-    setTimeout(function () {
-      if (!animate) { t.remove(); return; }
-      M.animate(t, { opacity: 0, transform: "translateX(24px)" }, { duration: 0.2 })
-        .finished.then(function () { t.remove(); });
-    }, kind === "bad" ? 7000 : 4200);
+  var MOVE = "cubic-bezier(.25, 1, .5, 1)";
+  var ENTER = "cubic-bezier(.22, 1, .36, 1)";
+  var flex = window.flex = window.flex || {};
+
+  function restart(el, cls) {
+    el.classList.remove(cls);
+    void el.offsetWidth;
+    el.classList.add(cls);
   }
+
+  function shake(el) {
+    if (motion() !== "full") return;
+    restart(el, "is-shake");
+    setTimeout(function () { el.classList.remove("is-shake"); }, 340);
+  }
+
+  /* Move the other rows into their new places after `change` adds or
+     removes one (FLIP): they slide, they don't jump. */
+  function flip(container, change) {
+    var rows = container.querySelectorAll("[data-row]"), was = new Map();
+    each(rows, function (r) { was.set(r, r.getBoundingClientRect().top); });
+    change();
+    if (motion() !== "full") return;
+    was.forEach(function (top, r) {
+      if (!r.isConnected) return;
+      var dy = top - r.getBoundingClientRect().top;
+      if (dy) r.animate([{ transform: "translateY(" + dy + "px)" }, { transform: "none" }],
+        { duration: 240, easing: MOVE });
+    });
+  }
+  flex.flip = flip;
+
+  /* ── toasts ──────────────────────────────────────────────── */
+  /* flex.toast(message, kind, {action: "Undo", onAction: fn, ms}) - kind
+     is ok | warn | bad. The thin bar shows how long it stays; hovering or
+     focusing it holds it there. At most three at a time. */
+
+  function toast(message, kind, opts) {
+    opts = opts || {};
+    var box = document.getElementById("toasts");
+    if (!box || !message) return null;
+    kind = kind || "ok";
+    var ms = opts.ms || (opts.action ? 6000 : kind === "bad" ? 7000 : 4200);
+    var t = document.createElement("div");
+    t.className = "toast " + kind;
+    t.setAttribute("role", kind === "bad" ? "alert" : "status");
+    var msg = document.createElement("span");
+    msg.className = "toast-msg";
+    msg.textContent = message;
+    t.appendChild(msg);
+    if (opts.action) {
+      var act = document.createElement("button");
+      act.type = "button";
+      act.className = "toast-act";
+      act.textContent = opts.action;
+      act.addEventListener("click", function () { close(); if (opts.onAction) opts.onAction(); });
+      t.appendChild(act);
+    }
+    var x = document.createElement("button");
+    x.type = "button";
+    x.className = "toast-x";
+    x.setAttribute("aria-label", "Dismiss");
+    x.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>';
+    x.addEventListener("click", function () { close(); });
+    t.appendChild(x);
+    var bar = document.createElement("i");
+    bar.className = "toast-timer";
+    t.appendChild(bar);
+    box.appendChild(t);
+
+    var m = motion();
+    if (m !== "off") {
+      t.animate(m === "full"
+        ? [{ opacity: 0, transform: "translateY(10px) scale(.97)" }, { opacity: 1, transform: "none" }]
+        : [{ opacity: 0 }, { opacity: 1 }], { duration: 240, easing: ENTER });
+    }
+    var timerAnim = m !== "off"
+      ? bar.animate([{ transform: "scaleX(1)" }, { transform: "scaleX(0)" }], { duration: ms, easing: "linear", fill: "forwards" })
+      : null;
+    if (!timerAnim) bar.style.display = "none";
+
+    var left = ms, started = Date.now(), timer = setTimeout(close, ms), closed = false;
+    function hold() {
+      if (closed || !timer) return;
+      clearTimeout(timer);
+      timer = null;
+      left -= Date.now() - started;
+      if (timerAnim) timerAnim.pause();
+    }
+    function resume() {
+      if (closed || timer) return;
+      started = Date.now();
+      timer = setTimeout(close, Math.max(left, 800));
+      if (timerAnim) timerAnim.play();
+    }
+    t.addEventListener("mouseenter", hold);
+    t.addEventListener("mouseleave", resume);
+    t.addEventListener("focusin", hold);
+    t.addEventListener("focusout", resume);
+
+    function close() {
+      if (closed) return;
+      closed = true;
+      clearTimeout(timer);
+      if (motion() === "off") { t.remove(); return; }
+      t.animate([{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateX(16px)" }],
+        { duration: 160, easing: ENTER, fill: "forwards" }).finished.then(function () { t.remove(); });
+    }
+
+    var live = box.querySelectorAll(".toast");
+    if (live.length > 3 && live[0].__close) live[0].__close();
+    t.__close = close;
+    return { close: close };
+  }
+  flex.toast = toast;
 
   document.addEventListener("toast", function (e) {
     var d = e.detail || {};
     toast(d.message, d.kind);
   });
-  window.flex = { toast: toast };
+
+  /* ── buttons: working → done / failed ────────────────────── */
+  /* Labels come from data-working / data-done / data-failed on the button;
+     opts.label overrides one call. The reason for a failure goes in a
+     .btn-note right after the button. */
+
+  var GLYPH = { working: "loader", done: "check", failed: "x" };
+
+  function labelEl(btn) { return btn.querySelector(":scope > span:not(.btn-note)"); }
+
+  function glyphEl(btn) {
+    var g = btn.querySelector(":scope > svg.icon");
+    if (!g) {
+      g = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      g.setAttribute("class", "icon btn-glyph is-added");
+      g.setAttribute("aria-hidden", "true");
+      g.innerHTML = '<use href=""/>';
+      btn.insertBefore(g, btn.firstChild);
+    }
+    g.classList.add("btn-glyph");
+    return g;
+  }
+
+  function noteEl(btn, make) {
+    var n = btn.nextElementSibling;
+    if (n && n.classList.contains("btn-note")) return n;
+    if (!make) return null;
+    n = document.createElement("span");
+    n.className = "btn-note";
+    n.setAttribute("role", "status");
+    btn.insertAdjacentElement("afterend", n);
+    return n;
+  }
+
+  function press(btn, state, opts) {
+    opts = opts || {};
+    var label = labelEl(btn);
+    if (!btn.hasAttribute("data-label") && label) btn.setAttribute("data-label", label.textContent);
+    clearTimeout(btn.__hold);
+
+    if (state === "idle") {
+      btn.removeAttribute("data-state");
+      btn.removeAttribute("aria-busy");
+      btn.style.minWidth = "";
+      if (label) label.textContent = btn.getAttribute("data-label");
+      var g = btn.querySelector(":scope > svg.btn-glyph");
+      if (g && g.classList.contains("is-added")) g.remove();
+      else if (g && btn.__icon) g.querySelector("use").setAttribute("href", btn.__icon);
+      if (opts.clearNote !== false) { var n0 = noteEl(btn); if (n0) n0.textContent = ""; }
+      return;
+    }
+
+    if (!btn.getAttribute("data-state")) btn.style.minWidth = btn.offsetWidth + "px";
+    var glyph = glyphEl(btn), use = glyph.querySelector("use");
+    if (!btn.__icon) btn.__icon = use.getAttribute("href");
+    use.setAttribute("href", "#i-" + GLYPH[state]);
+    btn.setAttribute("data-state", state);
+    if (label) {
+      label.textContent = opts.label || btn.getAttribute("data-" + state) ||
+        (state === "done" ? "Done" : btn.getAttribute("data-label"));
+    }
+
+    var note = noteEl(btn, !!opts.note);
+    if (state === "working") {
+      btn.setAttribute("aria-busy", "true");
+      if (note && !opts.note) note.textContent = "";
+    } else {
+      btn.removeAttribute("aria-busy");
+    }
+    if (opts.note && note) {
+      note.textContent = opts.note;
+      note.classList.toggle("ok", state === "done");
+      note.classList.toggle("wait", state === "working");
+      if (motion() === "full") restart(note, "is-in");
+    }
+    if (state === "failed") shake(btn);
+    if (state === "done" && !opts.stay) {
+      btn.__hold = setTimeout(function () { press(btn, "idle", { clearNote: false }); }, opts.hold || 1600);
+    }
+  }
+  flex.press = press;
+
+  /* Run the server work behind a button. `work` returns a promise that
+     resolves to {label, note} (both optional) or rejects with an Error
+     whose message is the reason, in plain words. */
+  flex.run = function (btn, work, opts) {
+    opts = opts || {};
+    if (btn.getAttribute("data-state") === "working") return Promise.resolve(null);
+    press(btn, "working", { label: opts.working });
+    return Promise.resolve().then(work).then(function (r) {
+      r = r || {};
+      press(btn, "done", { label: r.label, note: r.note, stay: opts.stay, hold: opts.hold });
+      return r;
+    }, function (err) {
+      press(btn, "failed", { label: opts.failed, note: err && err.message });
+      return null;
+    });
+  };
+
+  /* ── writes: every form that POSTs ───────────────────────── */
+  /* Forms are boosted by htmx. While the server works, the button says so
+     (a form's data-busy sentence goes beside it). A write that failed -
+     the redirect carries ok=0 and the reason - stays on this page: the
+     button shows the reason and what was typed is kept. A write that
+     worked swaps the page in as before, and its toast offers Undo when
+     the server left an undo token. */
+
+  var pendingUndo = null;
+
+  function writeForm(detail) {
+    var elt = detail && detail.requestConfig ? detail.requestConfig.elt : detail && detail.elt;
+    if (!elt || elt.tagName !== "FORM" || (elt.getAttribute("method") || "").toLowerCase() !== "post") return null;
+    return elt;
+  }
+
+  document.addEventListener("htmx:beforeRequest", function (e) {
+    var form = writeForm(e.detail);
+    if (!form) return;
+    var ev = e.detail.requestConfig && e.detail.requestConfig.triggeringEvent;
+    var btn = (ev && ev.submitter) || form.querySelector("button[type=submit], button:not([type])");
+    form.__btn = btn || null;
+    if (btn) press(btn, "working", { note: form.getAttribute("data-busy") || undefined });
+  });
+
+  function failWrite(form, reason) {
+    var btn = form.__btn;
+    form.__btn = null;
+    if (btn) press(btn, "failed", { note: reason });
+    else toast(reason, "bad");
+  }
+
+  document.addEventListener("htmx:beforeSwap", function (e) {
+    var form = writeForm(e.detail);
+    if (!form || !form.__btn) return;
+    var xhr = e.detail.xhr, url = null;
+    try { url = new URL(xhr.responseURL); } catch (err) { url = null; }
+    if (xhr.status >= 400 || (url && url.searchParams.get("ok") === "0")) {
+      e.detail.shouldSwap = false;
+      failWrite(form, (url && url.searchParams.get("message")) ||
+        "flexrouter answered " + xhr.status + ". Nothing was saved.");
+      return;
+    }
+    pendingUndo = url && url.searchParams.get("undo");
+    press(form.__btn, "done");
+    form.__btn = null;
+  });
+
+  document.addEventListener("htmx:sendError", function (e) {
+    var form = writeForm(e.detail);
+    if (form && form.__btn) failWrite(form, "Couldn't reach flexrouter. Is it still running?");
+  });
+
+  function offerUndo(token) {
+    return {
+      action: "Undo",
+      onAction: function () {
+        fetch("/undo/" + encodeURIComponent(token), { method: "POST" })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (!d.ok) { toast(d.message || "Too late to undo that", "bad"); return; }
+            go({ href: location.pathname, toast: d.message || "Put back" });
+          }, function () { toast("Couldn't reach flexrouter to undo", "bad"); });
+      }
+    };
+  }
+
+  /* ── toggle ──────────────────────────────────────────────── */
+  /* Flips at once. Whoever saves it listens for "flex:switch" and calls
+     detail.done(true) or detail.done(false, reason); a failure flips it
+     back. Nobody listening means it just flips. "Working" only shows if
+     the save takes longer than 150 ms, so fast saves never flicker. A
+     switch with data-post saves itself: it POSTs value=true|false there. */
+
+  document.addEventListener("click", function (e) {
+    var sw = e.target.closest && e.target.closest(".switch");
+    if (!sw || sw.disabled || sw.getAttribute("data-state") === "working") return;
+    var on = sw.getAttribute("aria-checked") !== "true";
+    sw.setAttribute("aria-checked", on ? "true" : "false");
+    sw.removeAttribute("data-state");
+    var slow = setTimeout(function () { sw.setAttribute("data-state", "working"); }, 150);
+    var settled = false;
+    function done(ok, reason) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(slow);
+      sw.removeAttribute("data-state");
+      if (ok) return;
+      sw.setAttribute("aria-checked", on ? "false" : "true");
+      sw.setAttribute("data-state", "failed");
+      shake(sw);
+      toast(reason || "Not saved", "bad");
+      setTimeout(function () { sw.removeAttribute("data-state"); }, 1600);
+    }
+    var ev = new CustomEvent("flex:switch", { bubbles: true, cancelable: true, detail: { on: on, done: done } });
+    sw.dispatchEvent(ev);
+    if (!ev.defaultPrevented) done(true);
+  });
+
+  document.addEventListener("flex:switch", function (e) {
+    var sw = e.target, url = sw.getAttribute && sw.getAttribute("data-post");
+    if (!url) return;
+    e.preventDefault();
+    var body = new URLSearchParams();
+    body.set("value", e.detail.on ? "true" : "false");
+    fetch(url, { method: "POST", body: body }).then(function (r) {
+      var u = null;
+      try { u = new URL(r.url); } catch (err) { u = null; }
+      if (!r.ok || (u && u.searchParams.get("ok") === "0")) {
+        e.detail.done(false, (u && u.searchParams.get("message")) || "Not saved");
+      } else {
+        e.detail.done(true);
+      }
+    }, function () { e.detail.done(false, "Couldn't reach flexrouter. Not saved."); });
+  });
+
+  /* ── copy ────────────────────────────────────────────────── */
+  /* data-copy="#selector" copies that element's text; data-copy-text
+     copies the attribute itself. The button says "Copied" in place. */
+
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+    return new Promise(function (ok, fail) {
+      var t = document.createElement("textarea");
+      t.value = text;
+      t.setAttribute("readonly", "");
+      t.style.position = "fixed";
+      t.style.opacity = "0";
+      document.body.appendChild(t);
+      t.select();
+      var worked = false;
+      try { worked = document.execCommand("copy"); } catch (err) { worked = false; }
+      t.remove();
+      if (worked) ok(); else fail(new Error("The browser blocked copying. Select the text instead."));
+    });
+  }
+  flex.copyText = copyText;
+
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest && e.target.closest("[data-copy], [data-copy-text]");
+    if (!btn || btn.disabled) return;
+    var text = btn.getAttribute("data-copy-text");
+    if (text === null) {
+      var src = document.querySelector(btn.getAttribute("data-copy"));
+      text = src ? src.textContent.trim() : "";
+    }
+    copyText(text).then(function () {
+      if (btn.classList.contains("btn")) press(btn, "done", { label: btn.getAttribute("data-done") || "Copied", hold: 1400 });
+      else toast("Copied", "ok");
+    }, function (err) {
+      if (btn.classList.contains("btn")) press(btn, "failed", { note: err.message });
+      else toast(err.message, "bad");
+    });
+  });
+
+  /* ── statuses ────────────────────────────────────────────── */
+
+  var GLYPHS = { ready: "●", busy: "◐", struggling: "◆", needs: "▲", off: "○" };
+  var WORDS = { ready: "Ready", busy: "Busy", struggling: "Struggling", needs: "Needs you", off: "Off" };
+  flex.GLYPHS = GLYPHS;
+
+  /* Turn a .pill (or a .st-row's dot) into another status, with a pop. */
+  function setStatus(el, status) {
+    el.setAttribute("data-status", status);
+    var dot = el.querySelector(":scope > .pill-dot");
+    if (dot) dot.textContent = GLYPHS[status];
+    var word = el.querySelector(":scope > .pill-word");
+    if (word) word.textContent = WORDS[status];
+    if (status !== "busy") {
+      var cd = el.querySelector(":scope > .countdown");
+      if (cd) cd.remove();
+    }
+    if (el.classList.contains("pill") && motion() === "full") restart(el, "is-pop");
+  }
+  flex.setStatus = setStatus;
+
+  /* ── countdowns ──────────────────────────────────────────── */
+  /* Server renders "Resets in 2h 13m" with the target time attached; this
+     keeps it true between refreshes. At zero a Busy pill turns Ready by
+     itself and tells the page ("flex:back"); anything else says so and
+     stops. */
+
+  function duration(s) {
+    var d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600),
+        m = Math.floor(s % 3600 / 60), sec = s % 60;
+    if (d) return d + "d " + h + "h";
+    if (h) return h + "h " + m + "m";
+    if (m) return m + "m " + (sec < 10 ? "0" : "") + sec + "s";
+    return sec + "s";
+  }
+  flex.duration = duration;
+
+  function tick() {
+    var now = Date.now() / 1000;
+    each(document.querySelectorAll("[data-countdown]"), function (el) {
+      var left = Math.max(0, Math.round(parseFloat(el.getAttribute("data-countdown")) - now));
+      if (left > 0) {
+        el.textContent = (el.getAttribute("data-prefix") || "Resets in") + " " + duration(left);
+        return;
+      }
+      if (el.classList.contains("is-done")) return;
+      el.classList.add("is-done");
+      var pill = el.closest(".pill[data-status='busy'], .st-row[data-status='busy']");
+      if (pill) {
+        pill.dispatchEvent(new CustomEvent("flex:back", { bubbles: true }));
+        if (pill.classList.contains("pill")) setStatus(pill, "ready");
+        return;
+      }
+      el.textContent = "Back now";
+      el.classList.add("status-ok");
+    });
+  }
+  setInterval(tick, 1000);
+  flex.tick = tick;
 
   /* ── the menu marker ─────────────────────────────────────── */
 
@@ -196,39 +606,11 @@
      where the new page renders it. Remember where it was so it can slide. */
   var lastMarker = null;
   document.addEventListener("htmx:beforeSwap", function (e) {
-    if (!boosted(e.detail)) return;
+    if (!boosted(e.detail) || !e.detail.shouldSwap) return;
     html.classList.remove("entered");   /* the next page gets its own entrance */
     var mk = document.querySelector(".nav-marker");
     lastMarker = mk ? mk.style.transform : null;
   });
-
-  /* ── countdowns ──────────────────────────────────────────── */
-  /* Server renders "Resets in 2h 13m" with the target time attached; this
-     keeps it true between refreshes. At zero it says so and stops. */
-
-  function duration(s) {
-    var d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600),
-        m = Math.floor(s % 3600 / 60), sec = s % 60;
-    if (d) return d + "d " + h + "h";
-    if (h) return h + "h " + m + "m";
-    if (m) return m + "m " + (sec < 10 ? "0" : "") + sec + "s";
-    return sec + "s";
-  }
-
-  setInterval(function () {
-    var now = Date.now() / 1000;
-    each(document.querySelectorAll("[data-countdown]"), function (el) {
-      var left = Math.max(0, Math.round(parseFloat(el.getAttribute("data-countdown")) - now));
-      if (left === 0) {
-        if (!el.classList.contains("is-done")) {
-          el.textContent = "Back now";
-          el.classList.add("is-done", "status-ok");
-        }
-        return;
-      }
-      el.textContent = (el.getAttribute("data-prefix") || "Resets in") + " " + duration(left);
-    });
-  }, 1000);
 
   /* ── filter-as-you-type (Settings) ───────────────────────── */
 
@@ -300,32 +682,6 @@
       M.animate(detail.querySelector(".m-detail-inner"),
         { opacity: [0, 1], transform: ["translateY(-6px)", "none"] }, { duration: 0.2, ease: EASE });
     }
-  });
-
-  /* ── busy forms ──────────────────────────────────────────── */
-  /* A form marked data-busy says what it is doing while the server works
-     (testing a key can take a few seconds) instead of looking frozen. */
-
-  document.addEventListener("submit", function (e) {
-    var form = e.target, msg = form.getAttribute && form.getAttribute("data-busy");
-    if (!msg) return;
-    var btn = form.querySelector("button[type=submit]");
-    if (!btn) return;
-    btn.classList.add("shimmer");
-    btn.textContent = msg;
-    setTimeout(function () { btn.disabled = true; }, 0);   /* after the submit is sent */
-  });
-
-  /* ── copy buttons ────────────────────────────────────────── */
-
-  document.addEventListener("click", function (e) {
-    var btn = e.target.closest && e.target.closest("[data-copy]");
-    if (!btn) return;
-    var src = document.querySelector(btn.getAttribute("data-copy"));
-    if (!src || !navigator.clipboard) return;
-    navigator.clipboard.writeText(src.textContent.trim()).then(function () {
-      toast("Copied", "ok");
-    });
   });
 
   /* ── Add models with AI: real IDs only (§6, §18) ─────────── */
@@ -706,88 +1062,392 @@
     btn.disabled = false;
   });
 
-  /* ── Buckets: drag a model card onto a bucket to add it there ──── */
-  /* Everything the card needs is already in its own data-* attributes
-     (facts.models() carried them from the model's live config), so a drop
-     just replays the same POST the manual "add a model" form makes -
-     nothing is looked up again, and there is no new endpoint. */
+  /* ── drag a model onto a bucket ──────────────────────────── */
+  /* Pointer events, so it works with a finger too. Three ways in, one
+     outcome:
+       drag it          - the card follows the pointer; drop on a bucket
+       tap, then tap    - tap a card to pick it up, tap a bucket to drop
+       keyboard         - Enter on a card, Tab to a bucket, Enter
+     Dropping fires "flex:drop" on the bucket; the listener below does the
+     POST and calls detail.done(true) or detail.done(false, reason). */
 
-  var draggedCard = null;
+  var drag = null, picked = null, justDragged = false;
 
-  document.addEventListener("dragstart", function (e) {
-    var card = e.target.closest && e.target.closest(".model-card");
-    if (!card) return;
-    draggedCard = card;
-    card.classList.add("is-dragging");
-    e.dataTransfer.effectAllowed = "copy";
-    e.dataTransfer.setData("text/plain", card.getAttribute("data-provider") + "/" +
-      card.getAttribute("data-model"));
-  });
+  function zones() { return document.querySelectorAll("[data-dropzone]"); }
 
-  document.addEventListener("dragend", function (e) {
-    var card = e.target.closest && e.target.closest(".model-card");
-    if (card) card.classList.remove("is-dragging");
-    draggedCard = null;
-  });
+  function pick(card) {
+    unpick();
+    picked = card;
+    card.setAttribute("aria-pressed", "true");
+    each(zones(), function (z) { z.classList.add("drop-ready"); z.setAttribute("tabindex", "0"); });
+  }
+  function unpick() {
+    if (picked) picked.setAttribute("aria-pressed", "false");
+    picked = null;
+    each(zones(), function (z) { z.classList.remove("drop-ready", "drag-over"); z.removeAttribute("tabindex"); });
+  }
 
-  document.addEventListener("dragover", function (e) {
-    var zone = e.target.closest && e.target.closest("[data-dropzone]");
-    if (!zone || !draggedCard) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "copy";
-    zone.classList.add("drag-over");
-  });
-
-  document.addEventListener("dragleave", function (e) {
-    var zone = e.target.closest && e.target.closest("[data-dropzone]");
-    if (zone && !zone.contains(e.relatedTarget)) zone.classList.remove("drag-over");
-  });
-
-  document.addEventListener("drop", async function (e) {
-    var zone = e.target.closest && e.target.closest("[data-dropzone]");
-    if (!zone || !draggedCard) return;
-    e.preventDefault();
-    zone.classList.remove("drag-over");
-    var card = draggedCard;
+  function dropOn(zone, card) {
     var bucket = zone.getAttribute("data-dropzone");
-    var provider = card.getAttribute("data-provider");
-    var model = card.getAttribute("data-model");
-    var already = zone.querySelector('[data-row="' + provider + "/" + model + '"]');
-    if (already) {
-      window.flex.toast(provider + "/" + model + " is already in " + bucket, "bad");
+    var id = card.getAttribute("data-provider") + "/" + card.getAttribute("data-model");
+    if (zone.querySelector('[data-row="' + id + '"]')) {
+      shake(zone);
+      toast(id + " is already in " + bucket, "warn");
       return;
     }
+    zone.dispatchEvent(new CustomEvent("flex:drop", { bubbles: true, detail: {
+      bucket: bucket, id: id, card: card,
+      done: function (ok, reason) {
+        if (ok) return;
+        shake(zone);
+        toast("Couldn't add " + id + " to " + bucket + ": " + (reason || "the server said no"), "bad");
+      }
+    } }));
+  }
+
+  document.addEventListener("pointerdown", function (e) {
+    var card = e.target.closest && e.target.closest(".model-card");
+    if (!card || e.button !== 0) return;
+    drag = { card: card, x: e.clientX, y: e.clientY, id: e.pointerId, ghost: null, zone: null };
+  });
+
+  document.addEventListener("pointermove", function (e) {
+    if (!drag || e.pointerId !== drag.id) return;
+    var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (!drag.ghost) {
+      if (Math.abs(dx) + Math.abs(dy) < 6) return;
+      unpick();
+      var r = drag.card.getBoundingClientRect(), g = drag.card.cloneNode(true);
+      g.classList.add("drag-ghost");
+      g.removeAttribute("tabindex");
+      g.setAttribute("aria-hidden", "true");
+      g.style.left = r.left + "px";
+      g.style.top = r.top + "px";
+      g.style.width = r.width + "px";
+      document.body.appendChild(g);
+      drag.ghost = g;
+      drag.card.classList.add("is-dragging");
+      each(zones(), function (z) { z.classList.add("drop-ready"); });
+    }
+    var tilt = motion() === "full" ? " rotate(-1.5deg) scale(1.03)" : "";
+    drag.ghost.style.transform = "translate(" + dx + "px, " + dy + "px)" + tilt;
+    var under = document.elementFromPoint(e.clientX, e.clientY);
+    var zone = under && under.closest("[data-dropzone]");
+    if (zone !== drag.zone) {
+      if (drag.zone) drag.zone.classList.remove("drag-over");
+      if (zone) zone.classList.add("drag-over");
+      drag.zone = zone;
+    }
+  });
+
+  function endDrag(e, cancelled) {
+    if (!drag || e.pointerId !== drag.id) return;
+    var d = drag;
+    drag = null;
+    if (!d.ghost) return;             /* a tap: the click handler picks it up */
+    justDragged = true;
+    setTimeout(function () { justDragged = false; }, 0);
+    d.card.classList.remove("is-dragging");
+    each(zones(), function (z) { z.classList.remove("drop-ready", "drag-over"); });
+    var m = motion(), g = d.ghost;
+    if (d.zone && !cancelled) {
+      dropOn(d.zone, d.card);
+      if (m === "off") g.remove();
+      else g.animate([{ opacity: 1 }, { opacity: 0, transform: g.style.transform + " scale(.9)" }],
+        { duration: 140, easing: ENTER, fill: "forwards" }).finished.then(function () { g.remove(); });
+    } else if (m === "off") {
+      g.remove();
+    } else {
+      g.animate([{ transform: g.style.transform }, { transform: "none" }],
+        { duration: 240, easing: MOVE, fill: "forwards" }).finished.then(function () { g.remove(); });
+    }
+  }
+  document.addEventListener("pointerup", function (e) { endDrag(e, false); });
+  document.addEventListener("pointercancel", function (e) { endDrag(e, true); });
+
+  document.addEventListener("click", function (e) {
+    if (justDragged) return;
+    var card = e.target.closest && e.target.closest(".model-card");
+    if (card) { if (picked === card) unpick(); else pick(card); return; }
+    var zone = picked && e.target.closest && e.target.closest("[data-dropzone]");
+    if (zone) { var c = picked; unpick(); dropOn(zone, c); return; }
+    if (picked) unpick();
+  });
+
+  document.addEventListener("keydown", function (e) {
+    var card = e.target.closest && e.target.closest(".model-card");
+    if (card && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      if (picked === card) { unpick(); return; }
+      pick(card);
+      var first = document.querySelector("[data-dropzone]");
+      if (first) first.focus();
+      return;
+    }
+    var zone = picked && e.target.closest && e.target.closest("[data-dropzone]");
+    if (zone && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      var c = picked;
+      unpick();
+      dropOn(zone, c);
+      c.focus();
+      return;
+    }
+    if (picked && e.key === "Escape") { var back = picked; unpick(); back.focus(); }
+  });
+
+  /* The drop's server side: everything the card needs is already in its
+     own data-* attributes (facts.models() carried them from the model's
+     live config), so a drop replays the same POST the manual "add a
+     model" form makes - nothing is looked up again, no new endpoint. */
+  document.addEventListener("flex:drop", function (e) {
+    var d = e.detail, card = d.card;
     var quotas = {};
     try { quotas = JSON.parse(card.getAttribute("data-quotas") || "{}"); } catch (err) { quotas = {}; }
     var body = new URLSearchParams();
-    body.set("provider", provider);
-    body.set("model", model);
+    body.set("provider", card.getAttribute("data-provider"));
+    body.set("model", card.getAttribute("data-model"));
     body.set("score", card.getAttribute("data-score") || "");
     body.set("rpm", card.getAttribute("data-rpm") || "");
     body.set("tpm", card.getAttribute("data-tpm") || "");
-    if (card.getAttribute("data-context-window")) {
-      body.set("context_window", card.getAttribute("data-context-window"));
-    }
-    if (card.getAttribute("data-tokens-per-second")) {
-      body.set("tokens_per_second", card.getAttribute("data-tokens-per-second"));
-    }
+    if (card.getAttribute("data-context-window")) body.set("context_window", card.getAttribute("data-context-window"));
+    if (card.getAttribute("data-tokens-per-second")) body.set("tokens_per_second", card.getAttribute("data-tokens-per-second"));
     if (card.getAttribute("data-vision") === "1") body.set("vision", "on");
     Object.keys(quotas).forEach(function (k) { body.set(k, quotas[k]); });
-    try {
-      var r = await fetch("/buckets/" + encodeURIComponent(bucket) + "/models", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
-      });
-      if (r.ok || r.redirected) {
-        window.location.reload();
-      } else {
-        window.flex.toast("Could not add " + provider + "/" + model + " to " + bucket, "bad");
+    fetch("/buckets/" + encodeURIComponent(d.bucket) + "/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString()
+    }).then(function (r) {
+      var u = null;
+      try { u = new URL(r.url); } catch (err) { u = null; }
+      if (!r.ok || (u && u.searchParams.get("ok") === "0")) {
+        d.done(false, u && u.searchParams.get("message"));
+        return;
       }
-    } catch (err) {
-      window.flex.toast("Could not add " + provider + "/" + model + " to " + bucket, "bad");
-    }
+      d.done(true);
+      go({ href: location.pathname, toast: "Added " + d.id + " to " + d.bucket });
+    }, function () { d.done(false, "couldn't reach flexrouter"); });
   });
+
+  /* ── the status list ─────────────────────────────────────── */
+
+  /* Open a row's detail from anywhere on the row; the chevron button is
+     the keyboard way in (a row can't be a button: it holds one). */
+  document.addEventListener("click", function (e) {
+    var row = e.target.closest && e.target.closest(".st-row");
+    if (!row) return;
+    var chevron = row.querySelector(".st-open");
+    if (!chevron || (e.target.closest(".btn, a, input, select") && !e.target.closest(".st-open"))) return;
+    var detail = document.getElementById(chevron.getAttribute("aria-controls"));
+    if (!detail) return;
+    var opening = detail.hidden;
+    detail.hidden = !opening;
+    row.classList.toggle("is-open", opening);
+    chevron.setAttribute("aria-expanded", opening ? "true" : "false");
+  });
+
+  /* The summary strip filters: press "2 need you" to see only those. */
+  document.addEventListener("click", function (e) {
+    var chip = e.target.closest && e.target.closest(".st-count");
+    if (!chip) return;
+    var list = chip.closest(".st");
+    var on = chip.getAttribute("aria-pressed") !== "true";
+    each(list.querySelectorAll(".st-count"), function (c) { c.setAttribute("aria-pressed", "false"); });
+    chip.setAttribute("aria-pressed", on ? "true" : "false");
+    var want = on ? chip.getAttribute("data-status") : null;
+    each(list.querySelectorAll(".st-group"), function (g) {
+      /* Ready and Off stay folded away unless asked for (data-quiet). */
+      g.hidden = want ? g.getAttribute("data-group") !== want : g.hasAttribute("data-quiet");
+    });
+  });
+
+  function bump(list, status, by) {
+    var chip = list.querySelector('.st-count[data-status="' + status + '"]');
+    if (!chip) return;
+    var b = chip.querySelector("b"), n = Math.max(0, parseInt(b.textContent, 10) + by);
+    b.textContent = n;
+    b.setAttribute("data-value", n);
+    if (motion() !== "off") restart(chip, by > 0 ? "flash-up" : "flash-down");
+  }
+
+  /* Good news flies to where it's counted: a small green square goes from
+     the row to the "ready" chip, which pops as the number goes up. */
+  function fly(from, to, then) {
+    var a = from.getBoundingClientRect(), b = to.getBoundingClientRect();
+    var dot = document.createElement("span");
+    dot.className = "fly-dot";
+    dot.style.left = (a.left + a.width / 2 - 4) + "px";
+    dot.style.top = (a.top + a.height / 2 - 4) + "px";
+    document.body.appendChild(dot);
+    var dx = b.left + 18 - (a.left + a.width / 2), dy = b.top + b.height / 2 - (a.top + a.height / 2);
+    var anim = dot.animate([
+      { transform: "translate(0, 0) scale(1)" },
+      { transform: "translate(" + dx * 0.45 + "px, " + (dy * 0.45 - 48) + "px) scale(1.3)", offset: 0.5 },
+      { transform: "translate(" + dx + "px, " + dy + "px) scale(.6)" }
+    ], { duration: 560, easing: "cubic-bezier(.45, 0, .25, 1)" });
+    var landed = false;
+    function land() { if (landed) return; landed = true; dot.remove(); then(); }
+    anim.finished.then(land);
+    setTimeout(land, 700);   /* a paused tab never finishes animations */
+  }
+
+  /* The last problem in a group is gone: say so, and let it glow once. */
+  function cleared(group) {
+    var empty = group.querySelector(".st-empty");
+    if (!empty) return;
+    empty.hidden = false;
+    if (group.getAttribute("data-group") !== "needs") return;
+    empty.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>' +
+      empty.textContent + "</span>";
+    restart(empty, "is-clear");
+  }
+
+  /* A row's model changed status (a fix worked, a countdown ran out): the
+     glyph turns, the row leaves its group, the rows below slide up, and
+     the counts follow. A live refresh does the same through morphing;
+     this runs for the click that caused it. */
+  flex.settle = function (row, status) {
+    var list = row.closest(".st"), group = row.closest(".st-group");
+    var from = row.getAttribute("data-status");
+    var dot = row.querySelector(":scope > .pill-dot");
+    var chip = list.querySelector('.st-count[data-status="' + status + '"]');
+    var detail = document.getElementById(row.querySelector(".st-open").getAttribute("aria-controls"));
+    var full = motion() === "full", good = status === "ready";
+    if (full && good) {
+      restart(dot, "is-morph");
+      setTimeout(function () { setStatus(row, status); }, 150);
+    } else {
+      setStatus(row, status);
+    }
+    setTimeout(function () {
+      bump(list, from, -1);
+      if (full && good && chip) {
+        fly(dot, chip, function () { bump(list, status, 1); restart(chip, "is-pop"); });
+      } else {
+        bump(list, status, 1);
+      }
+      row.classList.add("is-leaving");
+      setTimeout(function () {
+        flip(group, function () {
+          row.remove();
+          if (detail) detail.remove();
+        });
+        if (!group.querySelector(".st-row")) cleared(group);
+      }, full ? 190 : 0);
+    }, full ? 650 : 500);
+  };
+
+  /* ── test all ────────────────────────────────────────────── */
+  /* flex.testAll(button, list, test) - `test(row)` returns a promise that
+     resolves to a short result ("0.4s") or rejects with the reason. Two
+     run at once; each row and each meter cell says how it went. */
+
+  flex.testAll = function (btn, list, test, opts) {
+    opts = opts || {};
+    var rows = Array.prototype.slice.call(list.querySelectorAll(".test-row"));
+    var meter = document.getElementById(btn.getAttribute("data-meter"));
+    var cells = meter ? meter.querySelectorAll("i") : [];
+    var total = rows.length, finished = 0, failed = 0, next = 0;
+    each(rows, function (r) {
+      r.setAttribute("data-state", "waiting");
+      r.querySelector(".test-mark use").setAttribute("href", "#i-dot");
+      r.querySelector(".test-out").textContent = "waiting";
+    });
+    each(cells, function (c) { c.className = ""; });
+    press(btn, "working", { label: "Testing 0 of " + total });
+
+    return new Promise(function (resolve) {
+      if (!total) { press(btn, "idle"); resolve({ total: 0, failed: 0 }); return; }
+      function start() {
+        if (next >= total) return;
+        var i = next++, r = rows[i];
+        r.setAttribute("data-state", "working");
+        r.querySelector(".test-mark use").setAttribute("href", "#i-loader");
+        r.querySelector(".test-out").textContent = "saying hi…";
+        if (cells[i]) cells[i].className = "run";
+        Promise.resolve().then(function () { return test(r); }).then(function (out) {
+          r.setAttribute("data-state", "done");
+          r.querySelector(".test-mark use").setAttribute("href", "#i-check");
+          r.querySelector(".test-out").textContent = out || "works";
+          if (cells[i]) cells[i].className = "on";
+        }, function (err) {
+          failed += 1;
+          r.setAttribute("data-state", "failed");
+          r.querySelector(".test-mark use").setAttribute("href", "#i-x");
+          r.querySelector(".test-out").textContent = err.message;
+          if (cells[i]) cells[i].className = "bad";
+        }).then(function () {
+          finished += 1;
+          var label = labelEl(btn);
+          if (label && finished < total) label.textContent = "Testing " + finished + " of " + total;
+          if (finished === total) {
+            if (failed) {
+              press(btn, "failed", { label: (total - failed) + " of " + total + " work",
+                note: failed === 1 ? "1 didn't answer. See why below." : failed + " didn't answer. See why below." });
+            } else {
+              /* Everything answered: the meter lights up in a wave, then
+                 the button pops its news. */
+              var wave = motion() === "full" && meter;
+              if (wave) {
+                each(cells, function (c, n) { c.style.setProperty("--i", n); });
+                restart(meter, "is-wave");
+              }
+              setTimeout(function () {
+                press(btn, "done", { label: "All " + total + " work", stay: opts.stay });
+                if (wave) restart(btn, "is-pop");
+              }, wave ? cells.length * 40 + 260 : 0);
+            }
+            resolve({ total: total, failed: failed });
+          } else {
+            start();
+          }
+        });
+      }
+      start();
+      start();
+    });
+  };
+
+  /* ── quickstart ──────────────────────────────────────────── */
+  /* A step ticks itself when the thing it asks for has happened; the
+     card never writes anything (ADR 0022). */
+
+  flex.tickStep = function (step) {
+    var card = step.closest(".qs");
+    if (step.getAttribute("data-step") === "done") return;
+    step.setAttribute("data-step", "done");
+    step.querySelector(".qs-mark").innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>';
+    if (motion() === "full") restart(step, "is-ticked");
+    var steps = card.querySelectorAll(".qs-step"), done = card.querySelectorAll('.qs-step[data-step="done"]').length;
+    var nextStep = card.querySelector('.qs-step:not([data-step="done"])');
+    each(steps, function (s) {
+      if (s.getAttribute("data-step") !== "done") s.setAttribute("data-step", s === nextStep ? "now" : "todo");
+      var mk = s.querySelector(".qs-mark");
+      if (s.getAttribute("data-step") === "now") mk.textContent = "▶";
+      else if (s.getAttribute("data-step") === "todo") mk.textContent = s.getAttribute("data-n");
+    });
+    each(card.querySelectorAll(".qs-bar i"), function (c, i) { c.classList.toggle("on", i < done); });
+    var sub = card.querySelector(".box-sub");
+    if (sub) sub.textContent = done + " of " + steps.length + " done";
+    if (done === steps.length) {
+      var line = card.querySelector(".qs-done-line");
+      if (line) line.hidden = false;
+      card.classList.add("is-complete");
+      /* Once, ever: a green sweep across the card and the ticks rippling
+         in order. */
+      if (motion() === "full") {
+        each(card.querySelectorAll(".qs-mark"), function (mk, n) { mk.style.setProperty("--i", n); });
+        restart(card, "is-celebrating");
+        var sweep = document.createElement("span");
+        sweep.className = "qs-sweep";
+        sweep.setAttribute("aria-hidden", "true");
+        sweep.innerHTML = "<i></i>";
+        card.appendChild(sweep);
+        setTimeout(function () { sweep.remove(); card.classList.remove("is-celebrating"); }, 1400);
+      }
+    }
+  };
 
   /* ── Ctrl+K command bar ──────────────────────────────────── */
 
@@ -886,6 +1546,7 @@
       htmx.ajax("GET", item.href, { target: "body", swap: "innerHTML" }).then(function () {
         history.pushState({}, "", item.href);
         boot(document, true);
+        if (item.toast) toast(item.toast, "ok");
       });
     } else {
       location.href = item.href;
@@ -1027,46 +1688,15 @@
   document.addEventListener("focusout", hideTip);
   document.addEventListener("scroll", hideTip, true);
 
-  /* ── confirm ─────────────────────────────────────────────── */
-  /* form[data-confirm] asks first in a themed box, not window.confirm(). */
-
-  document.addEventListener("submit", function (e) {
-    var form = e.target;
-    var question = form.getAttribute && form.getAttribute("data-confirm");
-    if (!question || form.__confirmed) return;
-    e.preventDefault();
-    e.stopImmediatePropagation();
-    var box = document.getElementById("confirm");
-    if (!box) {
-      box = document.createElement("div");
-      box.className = "palette";
-      box.id = "confirm";
-      box.setAttribute("role", "alertdialog");
-      box.setAttribute("aria-modal", "true");
-      box.innerHTML = '<div class="palette-box confirm-box"><p></p><div class="confirm-actions">'
-        + '<button type="button" data-no>Cancel</button>'
-        + '<button type="button" class="danger" data-yes>Yes, do it</button></div></div>';
-      box.addEventListener("click", function (ev) { if (ev.target === box || ev.target.closest("[data-no]")) closeDialogs(); });
-      document.body.appendChild(box);
-    }
-    box.querySelector("p").textContent = question;
-    box.querySelector("[data-yes]").onclick = function () {
-      closeDialogs();
-      form.__confirmed = true;
-      if (form.requestSubmit) form.requestSubmit(); else form.submit();
-      form.__confirmed = false;
-    };
-    openDialog("confirm");
-    box.querySelector("[data-no]").focus();
-  }, true);
-
   /* ── boot ────────────────────────────────────────────────── */
 
   function boot(root, navigated) {
     each(document.querySelectorAll(".toast-seed"), function (s) {
-      toast(s.textContent, s.getAttribute("data-kind"));
+      var kind = s.getAttribute("data-kind");
+      toast(s.textContent, kind, kind === "ok" && pendingUndo ? offerUndo(pendingUndo) : undefined);
       s.remove();
     });
+    pendingUndo = null;
     var mk = document.querySelector(".nav-marker");
     if (navigated && mk && lastMarker) {
       mk.style.transition = "none";

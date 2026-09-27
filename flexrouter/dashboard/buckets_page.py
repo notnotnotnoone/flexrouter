@@ -71,7 +71,7 @@ def _strategy_form(bucket: str, strategy: str) -> str:
     select = f"<select{attrs({'name': 'strategy'})}>{opts}</select>"
     return tag(
         "form",
-        select + tag("button", "Set", type="submit", cls="ghost"),
+        select + ui.submit("Set", **{"data-working": "Saving", "data-done": "Saved"}),
         method="post", action=f"/buckets/{quote(bucket, safe=':')}/strategy", cls="inline-form",
     )
 
@@ -104,17 +104,19 @@ def _bucket(b, add_model_form: str) -> str:
 
 
 def _model_card(row) -> str:
-    """One draggable card, carrying everything `add_model()` needs to file
+    """One card to drag (or tap, or Enter) onto a bucket, carrying everything `add_model()` needs to file
     this already-configured model into another bucket - so dropping it
     never has to ask the owner to retype a score or a rate limit it
     already knows.
     """
     return tag(
         "div",
-        tag("span", esc(f"{row.provider}/{row.model}"), cls="model-card-name")
+        ui.icon("grip")
+        + tag("span", esc(f"{row.provider}/{row.model}"), cls="model-card-name")
         + tag("span", esc(row.score), cls="model-card-score"),
-        cls="model-card", draggable="true", tabindex="0",
+        cls="model-card", tabindex="0", role="button",
         **{
+            "aria-pressed": "false",
             "data-provider": row.provider, "data-model": row.model,
             "data-score": row.score, "data-rpm": row.rpm, "data-tpm": row.tpm,
             "data-context-window": row.context_window or "",
