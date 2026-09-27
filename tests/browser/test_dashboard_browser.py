@@ -129,7 +129,7 @@ def test_add_with_ai_builds_a_prompt_and_the_copy_button_works(page, server, err
     page.click("button:has-text('Build prompt')")
     expect(page.locator("#add-ai-prompt")).to_be_visible()
     page.click("[data-copy='#add-ai-prompt']")
-    expect(page.locator(".toast")).to_contain_text("Copied")
+    expect(page.locator("[data-copy='#add-ai-prompt']")).to_contain_text("Copied")
     copied = page.evaluate("navigator.clipboard.readText()")
     assert "groq" in copied
     assert errors == []

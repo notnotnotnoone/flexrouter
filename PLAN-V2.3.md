@@ -377,7 +377,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 
 ## Phase 4 · Polish, first run, docs
 
-### ☐ Session 15 — Port the showcase everywhere (after 1)
+### ☑ Session 15 — Port the showcase everywhere (after 1)
 **Model:** Sonnet
 **US:** 86–87. **P:** 20 (button parts), 36.
 - Replace every remaining button and form control on every page with the showcase kinds, following `showcase/PORTING.md`:
@@ -385,6 +385,19 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
   - undo on dangerous actions
   - Danger zone moved off Providers
 - Keep `tests/test_dashboard_css.py` green: add rules, don't loosen it.
+- *Done 2026-09-26:*
+  - Every form button is `ui.submit()` (kind + `data-working`/`data-done`).
+  - Forms stay htmx-boosted: `app.js` hooks `htmx:beforeRequest`/`beforeSwap`, so a write that failed (the redirect's `ok=0`) stays on the page and shows its reason beside the button, keeping what was typed. A write that worked swaps the page in as before.
+  - Undo:
+    - `dashboard/undo.py` keeps the exact bytes of the files a dangerous write is about to change, in memory for 60s.
+    - The redirect carries `undo=<token>`, the success toast offers Undo, and `POST /undo/<token>` puts the files back.
+    - It covers: key remove, service-key remove, disable/put back a model, a provider's "Put it all back", "Reset everything I changed" (its confirm dialog is gone) and the model resets.
+    - The typed-phrase guard on model resets stays: it's a typed guard, not a dialog.
+  - The reset-all Danger zone is on Settings. A provider's own reset is folded shut at the bottom of its page.
+  - Settings' on/off rows are `.switch`es that save themselves (`data-post`).
+  - Drag is pointer-based: drag, tap then tap, or Enter then Enter.
+  - The light theme is ported (it follows the OS). `test_dark_only` became a test that both light blocks redefine every colour token.
+  - The status list, Test all and quickstart JS is ported ahead of Sessions 8 and 18.
 
 **Starter prompt:**
 > Do Session 15 of PLAN-V2.3.md. Read that block and .scratch/polish/showcase/PORTING.md.

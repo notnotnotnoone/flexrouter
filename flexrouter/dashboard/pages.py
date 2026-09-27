@@ -988,7 +988,7 @@ def _add_with_ai_body(providers: list[str], provider: str, notes: str, prompt: s
     if prompt:
         parts.append(tag("h3", "2. The prompt - copy this"))
         parts.append(_textarea(esc(prompt), rows="16", readonly=True, id="add-ai-prompt"))
-        parts.append(ui.button("Copy prompt", icon_name="check", **{"data-copy": "#add-ai-prompt"}))
+        parts.append(ui.button("Copy prompt", kind="copy", icon_name="copy", **{"data-copy": "#add-ai-prompt"}))
         parts.append(tag("h3", "3. Paste the answer back"))
         parts.append(tag(
             "form",
@@ -1188,14 +1188,22 @@ _BOOL_SETTINGS = frozenset({
 
 
 def _cast_setting(field: str, raw_value: str):
-    if field in _INT_SETTINGS:
-        return int(raw_value)
-    if field in _FLOAT_SETTINGS:
-        return float(raw_value)
-    if field in _JSON_SETTINGS:
-        if not raw_value.strip():
-            return {} if field == "provider_budget" else []
-        return json.loads(raw_value)
+    """The typed value, or a ValueError whose message is the plain reason
+    shown beside the Save button."""
+    try:
+        if field in _INT_SETTINGS:
+            return int(raw_value)
+        if field in _FLOAT_SETTINGS:
+            return float(raw_value)
+        if field in _JSON_SETTINGS:
+            if not raw_value.strip():
+                return {} if field == "provider_budget" else []
+            return json.loads(raw_value)
+    except json.JSONDecodeError:
+        raise ValueError(f"Not saved: {raw_value!r} isn't valid JSON") from None
+    except ValueError:
+        kind = "a whole number" if field in _INT_SETTINGS else "a number"
+        raise ValueError(f"Not saved: this needs {kind}, not {raw_value!r}") from None
     if field in _BOOL_SETTINGS:
         return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
     return raw_value

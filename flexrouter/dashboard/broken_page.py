@@ -24,7 +24,7 @@ def _explain_button(prompt: str, label: str, ident: str, small: bool = False) ->
     if not prompt:
         return ""
     src = tag("pre", esc(prompt), id=ident, hidden="")
-    return src + ui.button(label, kind="copy" if not small else "ghost",
+    return src + ui.button(label, kind="copy", icon_name="" if small else "copy",
                            **{"data-copy": f"#{ident}",
                               "title": "Copy a prompt that explains this to a chatbot"})
 

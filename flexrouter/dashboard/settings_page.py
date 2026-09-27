@@ -157,7 +157,7 @@ def _app_password(router, shown: str = "") -> str:
         body = (tag("p", "Your new app password. Copy it now; it will not be shown again.",
                     cls="set-help")
                 + tag("div", tag("code", esc(shown), cls="secret", id="new-secret")
-                      + ui.button("Copy", icon_name="check",
+                      + ui.button("Copy", kind="copy", icon_name="copy",
                                   **{"data-copy": "#new-secret"}), cls="secret-row")
                 + tag("p", "Apps send it as: Authorization: Bearer <password>. Any app still "
                            "using an older password gets a 401 from now on.", cls="note"))
