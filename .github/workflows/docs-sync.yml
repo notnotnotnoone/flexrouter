@@ -27,7 +27,6 @@ concurrency:
 
 permissions:
   contents: write
-  id-token: write
 
 env:
   EVERY: 10
@@ -75,18 +74,23 @@ jobs:
             > .docs-sync/changes.diff
           wc -l .docs-sync/*
 
+      # The Claude Code CLI runs directly: anthropics/claude-code-action
+      # rejects `push` events, and push is what this workflow runs on.
+      - name: Install Claude Code
+        if: steps.count.outputs.run == 'true'
+        run: npm install -g @anthropic-ai/claude-code
+
       - name: Update the docs
         if: steps.count.outputs.run == 'true'
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          # `sonnet` is Claude Code's alias for the newest Sonnet model.
-          claude_args: >-
-            --model sonnet
-            --max-turns 40
+        # `sonnet` is Claude Code's alias for the newest Sonnet model.
+        run: |
+          claude -p "$PROMPT" \
+            --model sonnet \
+            --max-turns 40 \
             --allowedTools Read,Edit,Write,Glob,Grep
-          prompt: |
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          PROMPT: |
             You keep flexrouter's user documentation in step with its code.
 
             `.docs-sync/commits.txt` lists the commits since the docs were
