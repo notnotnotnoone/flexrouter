@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from flexrouter.dashboard import charts, facts, prefs, stats, ui
+from flexrouter.dashboard import charts, facts, prefs, quickstart, stats, ui
 from flexrouter.dashboard.render import esc, tag
 
 # (key, label, hours, bucket_hours, label_format)
@@ -483,8 +483,11 @@ def inner(router, range_key: str) -> str:
     window = stats.recent_window(router._cfg.state_dir, hours=hours,
                                  bucket_hours=bucket_hours, label_format=fmt)
     said = label.lower()
+    port = router._cfg.port or router._cfg.dashboard_port or 4891
     return (
-        _verdict(data, window, said)
+        quickstart.card(router, f"http://localhost:{port}/v1",
+                        model_works=data["models"]["available"] > 0)
+        + _verdict(data, window, said)
         + _stats(data, window, said)
         + tag("div", _chart(window) + tag("div", _needs_you(broken_data), cls="ov-stack"),
               cls="ov-row")

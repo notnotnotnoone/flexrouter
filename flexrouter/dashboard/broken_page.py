@@ -60,7 +60,25 @@ def _column(title: str, items: list, empty: str, pile: str, prompts: dict) -> st
                cls=f"col col-{pile}", **{"data-enter": ""})
 
 
+def _test_all_box(router) -> str:
+    """[Test all] lives here too (§13): say hi to every model on demand."""
+    from flexrouter.dashboard import quickstart
+    models = quickstart._models(router)
+    if not models:
+        return ""
+    results = (quickstart.load(router._cfg.state_dir).get("tested") or {})
+    return ui.box("Say hi to every model",
+                  quickstart.test_all(models, {m: results[m] for m in models if m in results},
+                                      "broken"),
+                  sub="one tiny request each, only when you press it",
+                  **{"data-enter": "", "data-box": "test-all"})
+
+
 def inner(router) -> str:
+    return _problems(router) + _test_all_box(router)
+
+
+def _problems(router) -> str:
     data = facts.broken(router)
     you, service = data["needs_you"], data["handling_itself"]
     if not you and not service:

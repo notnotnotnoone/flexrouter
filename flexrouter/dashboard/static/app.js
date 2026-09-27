@@ -154,8 +154,10 @@
   document.addEventListener("pointercancel", function () { pressing = false; }, true);
 
   function inUse(root) {
+    /* ... or while a button in it is still working (Test all). */
     return pressing || !!root.querySelector(
-      "[data-row]:hover, tr:hover, .st-row:hover, input:focus, select:focus, textarea:focus");
+      "[data-row]:hover, tr:hover, .st-row:hover, input:focus, select:focus, textarea:focus, " +
+      "[aria-busy='true'], .qs-step.is-ticked");
   }
 
   document.addEventListener("htmx:beforeRequest", function (e) {
@@ -1113,6 +1115,66 @@
       out.textContent = "Not sent: " + (error || "no answer");
     }
     btn.disabled = false;
+  });
+
+  /* ── Test all, for real ──────────────────────────────────── */
+  /* [data-test-all="#list"]: say hi to every row's model, two at a time,
+     through POST /test-model/<provider>/<model>. Only on a click. */
+
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest && e.target.closest("[data-test-all]");
+    if (!btn || btn.getAttribute("data-state") === "working") return;
+    var list = document.querySelector(btn.getAttribute("data-test-all"));
+    if (!list) return;
+    var fold = list.closest("details");
+    if (fold) fold.open = true;
+    flex.testAll(btn, list, function (row) {
+      return fetch("/test-model/" + encodeURIComponent(row.getAttribute("data-provider")) + "/" +
+                   row.getAttribute("data-model").split("/").map(encodeURIComponent).join("/"),
+                   { method: "POST" })
+        .then(function (r) { return r.json(); }, function () { throw new Error("couldn't reach flexrouter"); })
+        .then(function (d) { if (!d.ok) throw new Error(d.message || "no answer"); return d.message; });
+    }, { stay: true }).then(function (r) {
+      var step = btn.closest(".qs-step");
+      if (!step || !r || !r.total) return;
+      var sub = step.querySelector(".qs-sub"), none = r.failed === r.total;
+      if (sub) {
+        sub.textContent = none ? "None of the " + r.total + " answered. What's broken says why."
+          : (r.total - r.failed) + " of " + r.total + " answered" +
+            (r.failed ? " · " + r.failed + " didn't, see What's broken" : "");
+        sub.classList.toggle("ok", !r.failed);
+      }
+      if (!none) flex.tickStep(step);
+    });
+  });
+
+  /* ── the quickstart's Hide ───────────────────────────────── */
+  /* Turns "Show quickstart" off (the same setting Settings shows), with
+     Undo. It comes back by itself if no model works. */
+
+  function showQuickstart(on) {
+    var body = new URLSearchParams();
+    body.set("value", on ? "true" : "false");
+    return fetch("/settings/show_quickstart", { method: "POST", body: body });
+  }
+
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest && e.target.closest("[data-qs-hide]");
+    if (!btn) return;
+    var card = btn.closest(".qs");
+    flex.run(btn, function () {
+      return showQuickstart(false).then(function (r) { if (!r.ok) throw new Error("Not hidden"); });
+    }).then(function (r) {
+      if (!r || !card) return;
+      var gone = function () { card.hidden = true; };
+      if (motion() === "full") {
+        card.animate([{ opacity: 1 }, { opacity: 0, transform: "translateY(-6px)" }], { duration: 160 })
+          .finished.then(gone);
+      } else gone();
+      toast("Get started is hidden. Settings can bring it back.", "ok", { action: "Undo", onAction: function () {
+        showQuickstart(true).then(function () { card.hidden = false; });
+      } });
+    });
   });
 
   /* ── drag a model onto a bucket ──────────────────────────── */

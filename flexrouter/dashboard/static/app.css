@@ -1027,6 +1027,15 @@ table.matrix th { padding: 9px 14px; }
 .qs-done-line { display: flex; align-items: center; gap: 10px; padding: 4px 0 12px; color: var(--green); font: 500 13px var(--mono); }
 .qs-done-line[hidden] { display: none; }
 
+.qs-preset { white-space: nowrap; }
+.qs-preset a + a { font-size: 11px; }
+.qs-sub b { font-weight: 500; color: var(--ink-2); }
+.qs-sub code { font-size: 11px; }
+.qs-progress > .fold, .qs-progress > .ta-head { flex-basis: 100%; }
+.qs-progress > .fold { margin-top: 4px; }
+.ta-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ta-head .meter { flex: 1; min-width: 120px; }
+
 /* ── test-all progress ─────────────────────────────────── */
 /* The meter lights one cell per model as its test finishes; a failed
    test lights red. Each row says what happened. */
@@ -1036,7 +1045,7 @@ table.matrix th { padding: 9px 14px; }
 .tests { list-style: none; margin: 12px 0 0; padding: 0; }
 .test-row {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
+  grid-template-columns: 16px minmax(0, 1fr) minmax(0, max-content);
   gap: 10px;
   align-items: center;
   padding: 6px 0;
@@ -1049,7 +1058,8 @@ table.matrix th { padding: 9px 14px; }
 .test-row[data-state="done"] .test-mark { color: var(--green); }
 .test-row[data-state="failed"] .test-mark { color: var(--bad); }
 .test-row[data-state="done"] .test-mark .icon, .test-row[data-state="failed"] .test-mark .icon { stroke-dasharray: 24; animation: draw 240ms var(--ease) both; }
-.test-out { color: var(--ink-3); text-align: right; }
+.test-out { color: var(--ink-3); text-align: right; min-width: 0; overflow-wrap: anywhere; }
+.test-row > span:nth-child(2) { min-width: 0; overflow-wrap: anywhere; }
 .test-row[data-state="done"] .test-out { color: var(--green); }
 .test-row[data-state="failed"] .test-out { color: var(--bad); }
 
@@ -2253,6 +2263,8 @@ main > form.table-form > .scroll {
   .allow-group .lim-note { grid-row: 3; }
   .rq-msg { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .btn-note { display: block; margin: 6px 0 0; }
+  .test-row { grid-template-columns: 16px minmax(0, 1fr); gap: 2px 10px; }
+  .test-out { grid-column: 2; text-align: left; }
   .toasts { left: 16px; right: 16px; bottom: 16px; }
   .toast { min-width: 0; max-width: none; width: 100%; }
 }

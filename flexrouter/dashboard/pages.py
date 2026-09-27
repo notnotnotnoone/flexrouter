@@ -31,7 +31,7 @@ from flexrouter.probe import probe_key
 from flexrouter import score_facts
 from flexrouter import service_keys
 from flexrouter.dashboard import (add_models, facts, keytest, overview,
-                                  pending_actions, ranking, settings_write, ui, undo)
+                                  pending_actions, quickstart, ranking, settings_write, ui, undo)
 from flexrouter.dashboard import allowance_page as allowance_page_mod
 from dataclasses import asdict
 
@@ -1382,7 +1382,8 @@ async def playground_chat(request: Request):
         return {"target": pin, "ok": False, "outcome": "failed", "answered_by": None}
 
     async def stream_single():
-        async for piece in _stream_chat(router, messages, tier, target, kwargs, new_trace_id()):
+        async for piece in _stream_chat(router, messages, tier, target, kwargs, new_trace_id(),
+                                        {"client": "playground"}):
             yield piece
         last = facts.recent_requests(router, limit=1)
         if last:
@@ -1398,7 +1399,8 @@ async def playground_chat(request: Request):
         queue: asyncio.Queue = asyncio.Queue()
 
         async def run_one(pin: str) -> None:
-            async for piece in _stream_chat(router, messages, pin, pin, kwargs, new_trace_id()):
+            async for piece in _stream_chat(router, messages, pin, pin, kwargs, new_trace_id(),
+                                            {"client": "playground"}):
                 await queue.put(piece)
             info = await one_target_trace(pin)
             await queue.put(f"event: flexrouter\ndata: {json.dumps(info)}\n\n")
@@ -2415,7 +2417,10 @@ async def provider_clear(provider: str) -> RedirectResponse:
 
 @pages.post("/providers/{provider}/keys/{key_id}/test", include_in_schema=False)
 async def provider_key_test(provider: str, key_id: str) -> RedirectResponse:
-    result = await keytest.test_key(_live_router(), provider, key_id)
+    router = _live_router()
+    result = await keytest.test_key(router, provider, key_id)
+    if result.ok:
+        quickstart.record_key_ok(router._cfg.state_dir, provider)
     qs = (
         f"tested={quote(key_id)}"
         f"&ok={'1' if result.ok else '0'}"
@@ -2540,6 +2545,16 @@ async def settings_app_password() -> HTMLResponse:
                                   danger=reset_all_zone(router))
     return HTMLResponse(page("Settings", "settings", body),
                         headers={"Cache-Control": "no-store"})
+
+
+@pages.post("/test-model/{provider}/{model:path}", include_in_schema=False)
+async def test_one_model(provider: str, model: str) -> JSONResponse:
+    """Test all's one request: say hi to this model, remember the answer
+    for the quickstart, and hand the row its result (§13)."""
+    router = _live_router()
+    result = await keytest.test_model(router, provider, model)
+    quickstart.record_test(router._cfg.state_dir, f"{provider}/{model}", result.ok, result.message)
+    return JSONResponse({"ok": result.ok, "message": result.message})
 
 
 @pages.post("/undo/{token}", include_in_schema=False)
@@ -2710,7 +2725,7 @@ async def settings_test_rate_limits() -> RedirectResponse:
             # 512, not 1: see keytest.py - a reasoning model needs room to
             # finish thinking before it can answer at all (§13).
             await router.agenerate([{"role": "user", "content": "hi"}], pin,
-                                   wait=False, max_tokens=512)
+                                   wait=False, client="dashboard-test", max_tokens=512)
         except (RouterBusy, RouterError):
             return "failed"
         return "learned" if store.has_limits(provider, model) else "silent"
