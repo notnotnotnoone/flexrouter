@@ -428,7 +428,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 **Starter prompt:**
 > Do Session 16 of PLAN-V2.3.md. Read that block and papercuts.md items 26–30. Measure before and after in the browser pane.
 
-### ☐ Session 17 — Words and numbers ⚡ 🪶
+### ☑ Session 17 — Words and numbers ⚡ 🪶
 **Model:** Haiku or Sonnet
 **US:** 91–95, 100. **P:** 15, 16, 20, 21, 22, 24.
 - Timestamps in local time, one format (no more `+00:00Z`).
@@ -438,6 +438,17 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 - One name pattern for the three "…with AI" features.
 - Readable "Can do" chips.
 - The Logs page says "Logging is off. Start with `--log`" when it is (§10).
+- *Done 2026-09-27:*
+  - **Times.** The `+00:00Z` came from `_router.py` appending "Z" to an offset timestamp. The reader then failed to parse it and printed the raw text. Both ends are fixed, and `overview.parse_utc` still reads old traces. `overview.clock()` is the one format: local 24-hour, with the day only when it isn't today. Allowance and a key's "Last used" use it too.
+  - **Named models.** A pinned request is logged under `provider/model`. It now shows as "named model" on Requests and the request sheet. Overview's Buckets box sums these into one "Plus N requests that named one model" line.
+  - **Words.**
+    - "outranked" → "a better one goes first".
+    - The Error brain "overturned the rule" → "disagreed with the quick check".
+    - "resting", "parked" keys and "Sideline" were already gone.
+  - **Plurals.** A new `ui.plural()`.
+  - **Names.** The three features are "Add models with AI", "Rank models with AI" and "Find rate limits with AI", and all three are in Ctrl+K.
+  - **Chips.** Two rule sets fought: the later one put white text on the green "published" fill. The duplicate is gone, and each chip names its source with a mark: ✓ seen, ~ guessed, ✎ yours.
+  - **Logs off.** A full page, still a 404.
 
 **Starter prompt:**
 > Do Session 17 of PLAN-V2.3.md. Read that block and the listed papercuts.md items.
