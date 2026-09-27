@@ -1,0 +1,145 @@
+name: Docs sync
+
+# Every 10 commits on master, Claude reads the diffs since the last sync and
+# updates the user docs to match, then commits straight to master.
+#
+# The `docs-synced` tag marks the last commit whose changes are reflected in
+# the docs. Commits this workflow makes start with "docs(auto):" and are not
+# counted toward the 10.
+#
+# Needs the repo secret CLAUDE_CODE_OAUTH_TOKEN (run `claude setup-token`
+# locally, signed in to the Claude plan).
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Sync now, even if fewer than 10 commits have landed
+        type: boolean
+        default: false
+
+# One sync at a time; a push that lands mid-sync waits instead of racing it.
+concurrency:
+  group: docs-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  EVERY: 10
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Count commits since last sync
+        id: count
+        run: |
+          if git rev-parse -q --verify refs/tags/docs-synced >/dev/null; then
+            base=$(git rev-parse docs-synced)
+          else
+            # First run: treat the last $EVERY commits as unsynced.
+            base=$(git rev-parse "HEAD~$EVERY")
+          fi
+          n=$(git rev-list --count --invert-grep --grep='^docs(auto):' "$base..HEAD")
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          if [ "$n" -ge "$EVERY" ] || [ "${{ inputs.force }}" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "$n commits since last sync -- syncing docs."
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "$n of $EVERY commits since last sync -- nothing to do yet."
+          fi
+
+      - name: Collect the diffs
+        if: steps.count.outputs.run == 'true'
+        run: |
+          mkdir -p .docs-sync
+          base=${{ steps.count.outputs.base }}
+          git log --no-merges --invert-grep --grep='^docs(auto):' \
+            --format='%h %s%n%n%b' "$base..HEAD" > .docs-sync/commits.txt
+          # The docs themselves and lock files are left out: Claude should see
+          # what the code did, not its own earlier edits.
+          git diff "$base..HEAD" -- . \
+            ':!docs' ':!README.md' ':!uv.lock' ':!*.lock' ':!.scratch' \
+            > .docs-sync/changes.diff
+          wc -l .docs-sync/*
+
+      - name: Update the docs
+        if: steps.count.outputs.run == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: >-
+            --max-turns 40
+            --allowedTools Read,Edit,Write,Glob,Grep
+          prompt: |
+            You keep flexrouter's user documentation in step with its code.
+
+            `.docs-sync/commits.txt` lists the commits since the docs were
+            last synced. `.docs-sync/changes.diff` is their combined diff.
+            Read both (the diff may be long; read it in pieces).
+
+            Then update these files where the changes make them wrong,
+            incomplete, or out of date:
+              - README.md
+              - docs/1-Getting-Started.md
+              - docs/2-Configuration-Guide.md
+              - docs/3-Concepts.md
+              - docs/4-Advanced-Usage.md
+              - docs/5-API-Reference.md
+
+            Rules:
+              - Edit only those six files. Never touch docs/adr, docs/agents,
+                docs/archive, docs/superpowers, CHANGELOG.md, CONTEXT.md, or
+                any code.
+              - Change only what the diff actually affects. Do not rewrite,
+                restyle, or reorganise text that is still correct.
+              - Match each page's existing voice, headings, and formatting.
+              - Check the source before documenting it; describe what the code
+                does, not what a commit message hopes it does.
+              - Internal refactors, tests, and tooling changes usually need no
+                doc change. If nothing user-facing changed, change nothing.
+
+            When done, write a short plain-text summary of what you changed
+            and why to `.docs-sync/summary.txt` (or "No doc changes needed.").
+
+      - name: Commit and push
+        if: steps.count.outputs.run == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Only the six doc files are ever committed, whatever else changed.
+          git add README.md docs/[1-5]-*.md
+          if git diff --cached --quiet; then
+            echo "Claude made no doc changes."
+          else
+            {
+              echo "docs(auto): sync with ${{ steps.count.outputs.count }} commits"
+              echo
+              cat .docs-sync/summary.txt 2>/dev/null || true
+              echo
+              echo "Range: ${{ steps.count.outputs.base }}..${{ steps.count.outputs.head }}"
+            } > "$RUNNER_TEMP/msg.txt"
+            git commit -F "$RUNNER_TEMP/msg.txt"
+            git stash --include-untracked  # drop anything else Claude left behind
+            git pull --rebase origin master
+            git push origin HEAD:master
+          fi
+
+          # Mark the last commit Claude read, so the count starts over. Commits
+          # pushed while this ran stay after the tag and count toward next time.
+          git tag -f docs-synced ${{ steps.count.outputs.head }}
+          git push -f origin refs/tags/docs-synced
