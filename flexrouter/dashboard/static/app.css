@@ -113,7 +113,6 @@ html { background: var(--ground); color-scheme: dark; }
 
 body {
   margin: 0;
-  min-width: 1100px;
   background:
     radial-gradient(var(--rule) 1px, transparent 1.2px) 0 0 / 24px 24px,
     var(--ground);
@@ -268,6 +267,9 @@ html:not(.js) .nav a.nav-link[aria-current]::before {
   padding: 26px 32px 72px;
   max-width: 1480px;
 }
+
+/* Only a narrow screen needs it (see "narrow screens"). */
+.nav .nav-toggle { display: none; }
 
 /* ── page head ─────────────────────────────────────────── */
 
@@ -880,8 +882,10 @@ button:active { transform: scale(.97); }
 
 /* chart */
 .plot { padding: 4px 0 0; }
-.chart { display: block; width: 100%; height: auto; }
-.chart-tick { font: 400 10px var(--mono); fill: var(--ink-4); }
+.chart { display: block; width: 100%; height: auto; --tick: 12px; }
+/* app.js sets --tick so a label is 11 screen pixels however far the
+   chart is scaled; 12 viewBox units without it. */
+.chart-tick { font: 400 var(--tick) var(--mono); fill: var(--ink-3); }
 .chart-axis { stroke: var(--rule-2); stroke-width: 1; }
 .chart-grid { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 2 3; }
 .chart-sep { fill: none; stroke: var(--panel); stroke-width: 1.5; }
@@ -2185,6 +2189,63 @@ main > form.table-form > .scroll {
 .qs-done-line:not([hidden]) { animation: enter 320ms 500ms var(--ease) both; }
 
 /* ── narrow screens ────────────────────────────────────── */
+/* No page is wider than the window (papercuts 28-29). Under 760px the
+   sidebar becomes a bar across the top whose links fold behind Menu. */
+
+@media (max-width: 1100px) {
+  .main { padding: 22px 20px 64px; }
+  .ov-row { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Grids of cards never ask for more than the screen has. */
+.allow-grid { grid-template-columns: repeat(auto-fill, minmax(min(460px, 100%), 1fr)); }
+.bucket-grid { grid-template-columns: repeat(auto-fill, minmax(min(480px, 100%), 1fr)); }
+.key-head { flex-wrap: wrap; }
+
+@media (max-width: 760px) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .nav {
+    position: sticky;
+    z-index: 40;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 10px 16px;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+    overflow: visible;
+  }
+  .nav-brand { padding: 0; }
+  .nav .nav-toggle { display: inline-flex; margin-left: auto; }
+  .nav-links, .nav-foot, .nav-marker { display: none; }
+  .nav.is-open .nav-links {
+    display: flex;
+    flex-basis: 100%;
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+    padding: 8px 0 4px;
+  }
+  .nav.is-open .nav-group:first-child { margin-top: 6px; }
+  .main { padding: 18px 16px 56px; }
+
+  /* Everything side by side goes one above the other. */
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ov-duo, .cols, .pg-layout, .set-layout, .set-row { grid-template-columns: minmax(0, 1fr); }
+  .set-layout .toc { display: none; }
+  .page-actions { margin-left: 0; flex-wrap: wrap; }
+  .bucket-row { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; }
+  .bucket-row .meter { grid-column: 1 / -1; grid-row: 2; }
+  .bucket-row .spacer { display: none; }
+  .ladder-row { grid-template-columns: 22px minmax(0, 1fr) auto; }
+  .ladder-row > :nth-child(n+4) { grid-column: 2 / -1; }
+  .log-row { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  main > form:not(.table-form), .grouped-form { grid-template-columns: minmax(0, 1fr); }
+  main > form:not(.table-form) > button, .grouped-form > button { grid-column: 1; }
+  .btn { white-space: normal; text-align: left; }
+  .set-keys table { display: block; overflow-x: auto; }
+}
+
 
 @media (max-width: 560px) {
   .st-row { grid-template-columns: 14px minmax(0, 1fr) 26px; }

@@ -141,6 +141,33 @@
     el.classList.add(cls);
   }
 
+  /* ── a live refresh waits for you (papercut 27) ──────────── */
+  /* A poll that would morph rows while the pointer rests on one, or while
+     a click is on its way, is skipped; the next tick tries again. Nothing
+     ever moves under the cursor. */
+
+  var pressing = false;
+  document.addEventListener("pointerdown", function () { pressing = true; }, true);
+  document.addEventListener("pointerup", function () {
+    setTimeout(function () { pressing = false; }, 400);
+  }, true);
+  document.addEventListener("pointercancel", function () { pressing = false; }, true);
+
+  function inUse(root) {
+    return pressing || !!root.querySelector(
+      "[data-row]:hover, tr:hover, .st-row:hover, input:focus, select:focus, textarea:focus");
+  }
+
+  document.addEventListener("htmx:beforeRequest", function (e) {
+    if (isPoll(e.detail) && inUse(e.detail.requestConfig.elt)) {
+      e.preventDefault();
+      e.detail.requestConfig.elt.setAttribute("data-held", "");
+    }
+  });
+  document.addEventListener("htmx:afterRequest", function (e) {
+    if (isPoll(e.detail)) e.detail.requestConfig.elt.removeAttribute("data-held");
+  });
+
   /* ── stale marking for anything that polls ───────────────── */
 
   var failures = 0;
@@ -589,6 +616,32 @@
   }
   setInterval(tick, 1000);
   flex.tick = tick;
+
+  /* ── chart labels stay readable ──────────────────────────── */
+  /* A chart is an SVG scaled to its box, so its 11-unit labels shrink
+     with it (to ~6px in a narrow column). Size them in screen pixels. */
+
+  function sizeTicks(root) {
+    each((root || document).querySelectorAll("svg.chart"), function (svg) {
+      var vb = svg.viewBox && svg.viewBox.baseVal, w = svg.getBoundingClientRect().width;
+      if (!vb || !vb.width || !w) return;
+      svg.style.setProperty("--tick", (11 * vb.width / w).toFixed(2) + "px");
+    });
+  }
+  if (window.ResizeObserver) {
+    new ResizeObserver(function () { sizeTicks(); }).observe(document.documentElement);
+  }
+  document.addEventListener("htmx:afterSettle", function (e) { sizeTicks(e.detail.target); });
+  flex.sizeTicks = sizeTicks;
+
+  /* ── the menu on a narrow screen ─────────────────────────── */
+
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest && e.target.closest(".nav-toggle");
+    if (!btn) return;
+    var open = btn.closest(".nav").classList.toggle("is-open");
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+  });
 
   /* ── the menu marker ─────────────────────────────────────── */
 

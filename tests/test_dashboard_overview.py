@@ -298,3 +298,21 @@ def test_provider_state_is_a_word_not_only_a_colour(client, state_dir):
     _seed(state_dir, [_row(1)])
     body = client.get("/").text
     assert any(w in body for w in ("● OK", "◆ ATTENTION", "▲ BROKEN"))
+
+
+# ── papercut 30: traffic isn't squeezed into the last bar ───────────────
+
+def test_the_chart_starts_where_traffic_starts():
+    from flexrouter.dashboard.overview import MIN_CHART_BARS, _trimmed
+    values = [0] * 20 + [3, 0, 5, 9]
+    series = [{"name": "groq", "values": values, "requests": 17}]
+    shown, labels, fails, start = _trimmed(series, [str(i) for i in range(24)], [0] * 24)
+    assert start == 24 - MIN_CHART_BARS          # never fewer than six bars
+    assert shown[0]["values"] == values[start:]
+    assert labels[0] == str(start) and len(fails) == MIN_CHART_BARS
+
+
+def test_a_busy_day_keeps_every_bar():
+    from flexrouter.dashboard.overview import _trimmed
+    series = [{"name": "groq", "values": [1] * 24, "requests": 24}]
+    assert _trimmed(series, [str(i) for i in range(24)], [0] * 24)[3] == 0

@@ -248,6 +248,23 @@ def _chart_table(window: dict, series: list[dict]) -> str:
                cls="table-view")
 
 
+MIN_CHART_BARS = 6
+
+
+def _trimmed(series: list[dict], labels: list[str], fails: list[int]):
+    """Drop the empty stretch before the first request (papercut 30).
+
+    A new install's day is 23 empty hours and one full one; drawn as is,
+    all its traffic is squeezed into the last bar. The chart starts where
+    traffic starts instead, but never with fewer than MIN_CHART_BARS bars.
+    """
+    n = len(labels)
+    busy = [i for i in range(n) if any(s["values"][i] for s in series) or fails[i]]
+    start = min(busy[0] if busy else 0, max(n - MIN_CHART_BARS, 0))
+    return ([{**s, "values": s["values"][start:]} for s in series],
+            labels[start:], fails[start:], start)
+
+
 def _chart(window: dict) -> str:
     title = "Who answered, " + ("hour by hour" if window["bucket_hours"] == 1
                                 else f"{bucket_word(window)} by {bucket_word(window)}"
@@ -261,7 +278,10 @@ def _chart(window: dict) -> str:
         tag("span", _swatch(colors[s["name"]]) + tag("span", esc(s["name"]))
             + tag("span", num(s["requests"]), cls="n"), cls="legend-item")
         for s in series)
-    svg = charts.stacked_hours(series, window["labels"], window["fails_by_hour"])
+    shown, labels, fails, start = _trimmed(series, window["labels"], window["fails_by_hour"])
+    svg = charts.stacked_hours(shown, labels, fails)
+    if start:
+        title += ", since the first request"
     return ui.box(title, tag("div", svg, cls="plot") + _chart_table(window, series),
                   action=tag("div", legend, cls="legend"),
                   **{"data-enter": "", "data-box": "chart"})

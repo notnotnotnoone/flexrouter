@@ -53,6 +53,7 @@ ICONS: dict[str, str] = {
     "trash": '<path d="M3 6h18"/><path d="M19 6v15H5V6"/><path d="M8 6V3h8v3"/>',
     "reset": '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
     "chevron": '<path d="m9 18 6-6-6-6"/>',
+    "menu": '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
     "grip": "".join(f'<rect x="{x}" y="{y}" width="3" height="3" fill="currentColor" stroke="none"/>'
                     for y in (4, 10.5, 17) for x in (8, 13)),
     "external": '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v8H3V6h8"/>',
