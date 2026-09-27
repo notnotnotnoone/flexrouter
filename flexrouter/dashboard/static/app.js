@@ -328,6 +328,52 @@
     });
   });
 
+  /* ── Add models with AI: real IDs only (§6, §18) ─────────── */
+  /* Every checked row's model must be on its provider's real list (sent as
+     #known-ids) before Apply works; [use] swaps in a suggested ID. A
+     provider missing from the list was never checked and gets the benefit
+     of the doubt, same as the server. */
+
+  function checkIds(form) {
+    var known = {};
+    try { known = JSON.parse((document.getElementById("known-ids") || {}).textContent || "{}"); }
+    catch (e) { /* no list: nothing to check */ }
+    var bad = 0;
+    form.querySelectorAll("[data-bad-row]").forEach(function (note) {
+      var i = note.getAttribute("data-bad-row");
+      var model = form.querySelector('[name="model:' + i + '"]');
+      var provider = form.querySelector('[name="provider:' + i + '"]');
+      var apply = form.querySelector('[name="apply:' + i + '"]');
+      var ids = known[provider && provider.value.trim()];
+      var ok = !ids || ids.indexOf(model.value.trim()) !== -1;
+      note.hidden = ok;
+      if (!ok && apply && apply.checked) bad++;
+    });
+    var btn = document.getElementById("apply-rows"), why = document.getElementById("apply-block");
+    if (btn) btn.disabled = bad > 0;
+    if (why) why.textContent = bad ? " Fix " + bad + " ID" + (bad === 1 ? "" : "s") + " first, or uncheck " + (bad === 1 ? "it" : "them") + "." : "";
+  }
+
+  document.addEventListener("click", function (e) {
+    var use = e.target.closest && e.target.closest("[data-use-id]");
+    if (!use) return;
+    var form = use.closest("form");
+    var model = form.querySelector('[name="model:' + use.getAttribute("data-row") + '"]');
+    if (model) model.value = use.getAttribute("data-use-id");
+    checkIds(form);
+  });
+  document.addEventListener("input", function (e) {
+    var form = e.target.closest && e.target.closest("form[data-id-check]");
+    if (form) checkIds(form);
+  });
+  document.addEventListener("change", function (e) {
+    var form = e.target.closest && e.target.closest("form[data-id-check]");
+    if (form) checkIds(form);
+  });
+  function bootIdCheck() {
+    document.querySelectorAll("form[data-id-check]").forEach(checkIds);
+  }
+
   /* ── section list follows the scroll (Settings) ──────────── */
 
   function watchToc() {
@@ -1034,6 +1080,7 @@
     enter(root);
     watchToc();
     bootPlayground();
+    bootIdCheck();
     var sr = document.getElementById("sheet-root");
     if (sr && sr.firstChild) sheetOpened(sr);
   }

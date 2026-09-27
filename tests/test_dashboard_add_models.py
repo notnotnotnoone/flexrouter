@@ -266,7 +266,7 @@ def test_apply_parks_a_non_chat_model_instead_of_bucketing_it(client):
     assert entry["kind"] == "speech_to_text"
     # never put in a bucket
     body = client.get("/models_catalog").text
-    assert "whisper-ish" not in body.split("Saved, not routable yet")[0]
+    assert "whisper-ish" not in body.split("Not chat models yet")[0]
 
 
 def test_models_page_shows_parked_models_section(client):
@@ -277,7 +277,8 @@ def test_models_page_shows_parked_models_section(client):
         "vision:0": "", "free:0": "on", "score:0": "none",
     })
     body = client.get("/models_catalog").text
-    assert "Saved, not routable yet" in body
+    assert "Not chat models yet (1)" in body
+    assert "Saved for later. flexrouter only routes chat models today." in body
     assert "whisper-ish" in body
     assert "speech_to_text" in body
 
@@ -292,3 +293,68 @@ def test_apply_redirects_with_a_summary_banner(client):
     r = _apply_one_row(client)
     body = client.get(r.headers["location"]).text
     assert "1" in body
+
+
+
+# ── PLAN-V2.3.md Session 13: real IDs only, honest limits ───────────────
+
+def _known(ids, provider="groq"):
+    from flexrouter import catalogue
+    from flexrouter.store import write_json
+    from pathlib import Path
+    router = app_module.get_router()
+    write_json(Path(router._cfg.state_dir) / catalogue.KNOWN_MODEL_IDS_FILENAME,
+               {provider: {"ids": ids}})
+
+
+def _new_model(model="new-chat-model"):
+    router = app_module.get_router()
+    router._maybe_hot_reload()
+    return next((m for tier in router._cfg.tiers.values() for m in tier if m.model == model),
+                None)
+
+
+def test_a_guessed_id_cannot_be_saved(client):
+    _known(["new-chat-model-v2"])
+    r = _apply_one_row(client)
+    assert r.status_code == 303
+    assert _new_model() is None
+
+
+def test_the_review_offers_the_real_id(client):
+    _known(["new-chat-model-v2"])
+    body = client.post("/models_catalog/add-with-ai/review", data={"answer": json.dumps([{
+        "provider": "groq", "model": "new-chat-model", "kind": "chat", "context": 8192,
+        "rpm": None, "tpm": None, "rph": None, "rpd": None, "rps": None, "tph": None,
+        "tpd": None, "tps": None, "vision": False, "free": True, "score": 70}])}).text
+    assert "not a real ID" in body and 'data-use-id="new-chat-model-v2"' in body
+    assert 'id="known-ids"' in body
+    assert "rpm: unknown, learning" in body
+    assert "✓ 1 chat model ready" in body
+
+
+def test_parked_ids_are_checked_too(client):
+    _known(["whisper-large-v3"])
+    r = client.post("/models_catalog/add-with-ai/apply", data={
+        "row_count": "1", "apply:0": "on", "provider:0": "groq",
+        "model:0": "whisper-ish", "kind:0": "speech_to_text",
+        "context:0": "none", "rpm:0": "none", "tpm:0": "none",
+        "vision:0": "", "free:0": "on", "score:0": "none",
+    }, follow_redirects=False)
+    from flexrouter import parked_models
+    assert parked_models.get(app_module.get_router()._cfg.state_dir, "groq", "whisper-ish") is None
+    assert "not a real ID" in r.headers["location"] or r.status_code == 303
+
+
+def test_unknown_limits_stay_unknown(client):
+    _apply_one_row(client, **{"rpm:0": "none", "tpm:0": "none"})
+    mc = _new_model()
+    assert mc is not None and mc.rpm is None and mc.tpm is None
+
+
+def test_a_zero_limit_adds_the_model_switched_off(client):
+    _apply_one_row(client, **{"rpm:0": "0"})
+    assert _new_model() is None       # added, but off: not routed
+    from flexrouter import overrides as ov
+    fields = ov.load_overrides().get("models", {}).get("groq/new-chat-model", {})
+    assert fields.get("enabled") is False

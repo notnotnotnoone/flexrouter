@@ -47,8 +47,10 @@ class ModelConfig:
     provider: str
     model: str
     score: int
-    rpm: int
-    tpm: int
+    # None = unknown: no limit enforced yet, learned from the provider's
+    # headers and 429s (grill-decisions.md §6). 0 = "Not on your plan".
+    rpm: Optional[int]
+    tpm: Optional[int]
     context_window: int = 200000
     vision: bool = False
     quotas: dict[str, int] = field(default_factory=dict)
@@ -700,10 +702,13 @@ def validate_config(raw: dict) -> dict:
             if not model:
                 errors.append(f"{where}.model: missing")
             for field_name in ("score", "rpm", "tpm"):
-                val = m.get(field_name)
-                if val is None:
+                if field_name not in m:
                     errors.append(f"{where}.{field_name}: missing")
-                elif not isinstance(val, (int, float)) or val <= 0:
+                    continue
+                val = m.get(field_name)
+                if val is None and field_name != "score":
+                    continue  # unknown, learned from the provider (§6)
+                if not isinstance(val, (int, float)) or val < 0 or                         (val == 0 and field_name == "score"):
                     errors.append(f"{where}.{field_name}: must be a positive number, got {val!r}")
             ctx = m.get("context_window")
             if isinstance(ctx, (int, float)) and ctx < 1000:

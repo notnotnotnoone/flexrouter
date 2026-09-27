@@ -1,5 +1,6 @@
 from collections import deque
 import time
+from typing import Optional
 
 
 class SlidingWindow:
@@ -24,15 +25,19 @@ class SlidingWindow:
         self._clean(time.monotonic())
         return sum(t for _, t in self._tokens)
 
-    def available(self, rpm_limit: int, tpm_limit: int) -> bool:
-        return self.current_rpm() < rpm_limit and self.current_tpm() < tpm_limit
+    def available(self, rpm_limit: Optional[int], tpm_limit: Optional[int]) -> bool:
+        """None is an unknown limit (grill-decisions.md §6): nothing is
+        enforced until the provider's headers or a 429 teach it."""
+        return ((rpm_limit is None or self.current_rpm() < rpm_limit)
+                and (tpm_limit is None or self.current_tpm() < tpm_limit))
 
-    def seconds_until_available(self, rpm_limit: int, tpm_limit: int) -> float:
+    def seconds_until_available(self, rpm_limit: Optional[int],
+                                tpm_limit: Optional[int]) -> float:
         now = time.monotonic()
         self._clean(now)
         rpm = len(self._requests)
         tpm = sum(t for _, t in self._tokens)
-        if rpm < rpm_limit and tpm < tpm_limit:
+        if (rpm_limit is None or rpm < rpm_limit) and (tpm_limit is None or tpm < tpm_limit):
             return 0.0
         if self._requests:
             return max(0.0, self._requests[0] + self.window_seconds - now)

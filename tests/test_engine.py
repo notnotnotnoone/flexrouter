@@ -298,3 +298,15 @@ def test_a_model_whose_provider_is_not_set_up_needs_you():
     assert out[0]["reason"] == "needs_you"
     assert "No zhipu provider set up" in out[0]["detail"]
     assert engine.select("low", estimated_tokens=0, vision=False) is None
+
+
+def test_an_unknown_limit_is_not_enforced():
+    """grill-decisions.md §6: rpm/tpm None = unknown, learning - the local
+    window lets requests through until the provider teaches a real limit."""
+    from flexrouter.window import SlidingWindow
+    w = SlidingWindow(60)
+    for _ in range(500):
+        w.record(1000)
+    assert w.available(None, None)
+    assert w.seconds_until_available(None, None) == 0.0
+    assert not w.available(10, None)

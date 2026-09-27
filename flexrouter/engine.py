@@ -13,6 +13,10 @@ from flexrouter.budget import DailyBudget
 from flexrouter.speed import SpeedTracker
 
 
+
+def _left(limit: Optional[int], used: int) -> Optional[int]:
+    return None if limit is None else max(0, limit - used)
+
 @dataclass
 class RouteResult:
     provider: str
@@ -175,8 +179,10 @@ class RoutingEngine:
             used_rpm = w.current_rpm() if w else 0
             used_tpm = w.current_tpm() if w else 0
             result[key] = {
-                "rpm_remaining": max(0, self._model_rpm(m) - used_rpm),
-                "tpm_remaining": max(0, self._model_tpm(m) - used_tpm),
+                # An unknown limit (None) has no remaining figure to rank
+                # by; None says so rather than inventing one.
+                "rpm_remaining": _left(self._model_rpm(m), used_rpm),
+                "tpm_remaining": _left(self._model_tpm(m), used_tpm),
             }
         return result
 
@@ -358,12 +364,12 @@ class RoutingEngine:
             header_parser=provider_cfg.header_parser,
         )
 
-    def _model_rpm(self, m: ModelConfig) -> int:
+    def _model_rpm(self, m: ModelConfig) -> Optional[int]:
         if self._rate_limit_store is not None:
             return self._rate_limit_store.get_rpm(m.provider, m.model, m.rpm)
         return m.rpm
 
-    def _model_tpm(self, m: ModelConfig) -> int:
+    def _model_tpm(self, m: ModelConfig) -> Optional[int]:
         if self._rate_limit_store is not None:
             return self._rate_limit_store.get_tpm(m.provider, m.model, m.tpm)
         return m.tpm

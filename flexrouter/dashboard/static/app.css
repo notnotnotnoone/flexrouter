@@ -1712,3 +1712,9 @@ html[data-motion="reduced"] [data-enter] { opacity: 1 !important; transform: non
 .danger-zone { margin-top: 24px; }
 .danger-zone > * { border-color: rgba(248, 113, 113, .4); }
 .danger-count { color: var(--bad); }
+
+/* ── Models: parked list, AI-paste ID check (PLAN-V2.3.md Session 13) ── */
+.parked { margin-top: 18px; }
+.id-check { white-space: normal; }
+.id-check .btn { padding: 1px 8px; min-height: 0; font-size: 11px; }
+#apply-rows:disabled { opacity: .5; cursor: not-allowed; }
