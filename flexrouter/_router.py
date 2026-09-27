@@ -266,12 +266,14 @@ class LocalRouter:
         §4: "bad key -> Needs you on the key only" - a `bad_key` verdict on
         a 400 is the same fact `_handle_auth_failure` already handles for a
         401/403, so it goes there instead of being recorded against the
-        model's own status.
+        model's own status. Only on a 400: a 403 that reaches here is a
+        refusal of this one model (ADR 0016), even though its status-code
+        rule reads `bad_key`.
 
         Scrubbed at the write site for the same reason as
         _handle_auth_failure: the provider's text is persisted and served.
         """
-        if verdict == "bad_key":
+        if verdict == "bad_key" and getattr(exc, "status_code", None) == 400:
             self._handle_auth_failure(route, exc, key_id)
             return
         detail = scrub(str(exc))

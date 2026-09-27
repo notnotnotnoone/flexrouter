@@ -994,6 +994,7 @@ table.log td { padding: 8px 12px; }
 .set-search { gap: 8px; }
 .set-search .icon { color: var(--ink-4); }
 .set-search input { width: 260px; }
+.set-retired { color: var(--warn); }
 
 .set-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 24px; align-items: start; }
 .toc { position: sticky; top: 24px; display: flex; flex-direction: column; gap: 2px; border-left: 1px solid var(--rule); }
