@@ -81,7 +81,9 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # `sonnet` is Claude Code's alias for the newest Sonnet model.
           claude_args: >-
+            --model sonnet
             --max-turns 40
             --allowedTools Read,Edit,Write,Glob,Grep
           prompt: |
