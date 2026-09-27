@@ -775,8 +775,8 @@ tiers:
     - provider: <provider_key>
       model: <model_name>
       score: <1-100>
-      rpm: <int>
-      tpm: <int>
+      rpm: <int or null>                 # null = unknown, learned from the provider
+      tpm: <int or null>                 # null = unknown, learned from the provider
       context_window: <int>
       vision: <bool>  # optional, default false
 
@@ -794,17 +794,14 @@ providers:
 settings:
   state_dir: <path>                    # default: .flexrouter/
   window_seconds: <int>                # default: 60
-  penalty_base_seconds: <int>          # default: 30
-  penalty_max_seconds: <int>           # default: 1800
+  failover_budget_seconds: <float>     # default: 30
   session_ttl_minutes: <int>           # default: 30
   port: <int>                          # default: 4891 (dashboard_port also works, as an older alias)
-  
-  # Retry policy
-  retry_policy: conservative|balanced|aggressive  # default: balanced
-  # OR manual override:
-  # retries: <int>
-  # backoff_seconds: <float>
-  
+
+  # Saved conversations (prompt, reply, reasoning), read back on the request sheet
+  save_conversations: <bool>           # default: true
+  save_conversations_days: <int>       # default: 7
+
   # Cost budgets
   provider_budget:
     <provider_key>: <float>            # max USD per day
@@ -976,7 +973,7 @@ guessing on its own.
 
 **Q: What if a provider is down?**
 
-A: The model goes into penalty box. flexrouter retries other models in the tier. If all fail, raises `RouterError`.
+A: The model is marked Busy and flexrouter tries the next-best model in the tier. If nothing answers before `failover_budget_seconds` (30s by default) runs out, it raises `RouterBusy`.
 
 **Q: Can I cache responses?**
 

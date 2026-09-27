@@ -72,7 +72,7 @@ response = router.generate(
 
 ### Fallback on Unavailability
 
-If the pinned model becomes unavailable (rate-limited, penalized, over budget), flexrouter falls back to the next-best model for that call only:
+If the pinned model becomes unavailable (Busy, Needs you, over budget), flexrouter falls back to the next-best model for that call only:
 
 ```python
 # Pinned to model A
@@ -123,7 +123,7 @@ providers:
       - env: GROQ_KEY_3
 ```
 
-Each request uses the next key in the list. If a key hits a 429 (rate limit), that key is penalized and the next key is used immediately.
+Each request uses the next key in the list. If a key hits a 429 (rate limit), that key is marked Busy and the next key is used immediately.
 
 ### Why Multiple Keys?
 
@@ -131,59 +131,42 @@ Each request uses the next key in the list. If a key hits a 429 (rate limit), th
 - **Burst handling** if one key is rate-limited
 - **Credential rotation** for security (periodically add/remove keys)
 
-### Key Penalty Box
+### Key Busy State
 
-Each key has its own penalty box, separate from model penalties:
+Each key has its own status, separate from the model's:
 
 ```
-Key 1: hits 429 → penalized 30s, skipped
+Key 1: hits 429 → marked Busy (for as long as the provider said, or 60s otherwise), skipped
 Key 2: next in rotation, gets the request
 Key 3: ...
 ```
 
-After the penalty expires, Key 1 is available again.
+Once Key 1's Busy window ends, it's available again.
 
 ---
 
-## Retry Policies
+## Failover Budget
 
-Configure how many times flexrouter retries after a failure.
-
-### Presets
+flexrouter doesn't retry a fixed number of times — a request tries every model in the tier, in score order, until one answers or it has spent `failover_budget_seconds` waiting, whichever comes first:
 
 ```yaml
 settings:
-  retry_policy: balanced  # conservative | balanced | aggressive
+  failover_budget_seconds: 30   # default
 ```
-
-| Preset | Retries | Backoff | Best For |
-|--------|---------|---------|----------|
-| `conservative` | 2 | 5s | Stability > speed |
-| `balanced` | 3 | 2s | Most apps |
-| `aggressive` | 5 | 1s | Real-time, exhaustive |
-
-### Manual Override
-
-```yaml
-settings:
-  retries: 4
-  backoff_seconds: 1.5
-```
-
-This overrides the preset. Retry logic:
 
 1. Try model A
-2. If it fails, wait `backoff_seconds`, try model B
-3. If it fails, wait `backoff_seconds`, try model C
-4. ... up to `retries` attempts
-5. If all fail, raise `RouterError`
+2. If it fails, its status is set (Busy, Struggling, or Needs you) and flexrouter tries model B
+3. If it fails too, try model C
+4. ... until one answers, or the budget runs out
+5. If the budget runs out with nothing answering, raise `RouterBusy`
 
-### Example: Aggressive Retry
+### Example: A Longer Budget
 
 ```python
-router = FlexRouter()  # The service applies the retry policy from your settings
+router = FlexRouter()  # The service applies failover_budget_seconds from your settings
 
-# This will retry up to 5 times with 1s backoff between retries
+# With failover_budget_seconds: 90, this keeps trying other models in the
+# tier for up to a minute and a half before giving up.
 response = router.generate(
     messages=[{"role": "user", "content": "test"}],
     tier="low",
@@ -375,7 +358,7 @@ Per-provider cost tracking:
 View and edit config:
 
 - Full parsed YAML
-- Retry policy and manual overrides
+- Failover budget
 - Provider budgets
 - Hooks and session TTL
 

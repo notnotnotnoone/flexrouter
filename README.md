@@ -249,14 +249,9 @@ settings:
   port: 4891                       # the one port everything runs on
 
   window_seconds: 60               # sliding window duration
-  penalty_base_seconds: 30         # first-failure wait time
-  penalty_max_seconds: 1800        # cap (30s → 60s → 120s → ... → 1800s)
   session_ttl_minutes: 30          # sticky session expiry
 
-  retry_policy: balanced           # conservative | balanced | aggressive
-  # Or manual:
-  # retries: 3
-  # backoff_seconds: 2
+  failover_budget_seconds: 30      # give up after this long trying other models
 
   provider_budget:                 # optional daily USD cap per provider
     openai: 5.00
@@ -267,11 +262,7 @@ settings:
     - estimate_tokens              # pre-checks context window fit
 ```
 
-| Preset | Retries | Wait between tries |
-|---|---|---|
-| `conservative` | 2 | 5s |
-| `balanced` | 3 | 2s |
-| `aggressive` | 5 | 1s |
+A model whose `rpm`/`tpm` you don't know yet can take `null` instead of a number — flexrouter leaves it unenforced until it learns the real limit from the provider's own headers or a 429.
 
 ## Using it directly from Python
 

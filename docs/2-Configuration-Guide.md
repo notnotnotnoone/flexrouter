@@ -105,8 +105,8 @@ tiers:
 | `provider` | string | Yes | Key matching a provider in the `providers` section |
 | `model` | string | Yes | Model identifier (e.g., `gpt-4o`, `claude-sonnet-4-5`) |
 | `score` | int (1–100) | Yes | Priority within tier. Higher = preferred. Random selection among top 20% to avoid thundering herd. |
-| `rpm` | int | Yes | Requests per minute limit *you enforce locally* |
-| `tpm` | int | Yes | Tokens per minute limit *you enforce locally* |
+| `rpm` | int or `null` | Yes (key must be present) | Requests per minute limit *you enforce locally*. `null` means "unknown" — nothing is enforced until flexrouter learns the real limit from the provider's own headers or a 429. |
+| `tpm` | int or `null` | Yes (key must be present) | Tokens per minute limit *you enforce locally*. Same `null` behavior as `rpm`. |
 | `context_window` | int | Yes | Max tokens this model can handle. Used for overflow detection. |
 | `vision` | bool | No (default: false) | Set `true` if model supports images |
 
@@ -223,9 +223,8 @@ settings:
   # Rate limiting windows
   window_seconds: 60
 
-  # Penalty box (exponential backoff for failures)
-  penalty_base_seconds: 30
-  penalty_max_seconds: 1800
+  # How long a request keeps trying other models in its tier before giving up
+  failover_budget_seconds: 30
 
   # Session behavior
   session_ttl_minutes: 30
@@ -233,11 +232,9 @@ settings:
   # Port for the service (API + dashboard, one port)
   port: 4891
 
-  # Retry policy (preset or manual)
-  retry_policy: balanced
-  # OR manual override:
-  # retries: 3
-  # backoff_seconds: 2
+  # Saved conversations (prompt, reply, reasoning) for the request sheet
+  save_conversations: true
+  save_conversations_days: 7
 
   # Cost tracking
   provider_budget:
@@ -257,31 +254,24 @@ settings:
 |-------|------|---------|-------------|
 | `state_dir` | string | `.flexrouter/` | Where audit.csv and health.json are written |
 | `window_seconds` | int | 60 | Duration of sliding window for RPM/TPM tracking |
-| `penalty_base_seconds` | int | 30 | Initial penalty duration (doubles on repeated failures) |
-| `penalty_max_seconds` | int | 1800 | Maximum penalty (30 min) |
+| `failover_budget_seconds` | float | 30 | How long a request keeps trying other models in its tier before giving up |
 | `session_ttl_minutes` | int | 30 | Time before sticky session expires |
 | `port` | int | 4891 | Port for the service (API and dashboard together). `dashboard_port` still works as an older name for the same setting. |
-| `retry_policy` | string | `balanced` | One of: `conservative` (2 retries, 5s backoff), `balanced` (3 retries, 2s backoff), `aggressive` (5 retries, 1s backoff) |
-| `retries` | int | — | Manual override (ignores preset) |
-| `backoff_seconds` | int | — | Manual override (ignores preset) |
+| `save_conversations` | bool | `true` | Keeps the prompt, reply and reasoning of every request so you can look back at them (the request sheet on the Requests page) |
+| `save_conversations_days` | int | 7 | How long a saved conversation is kept before it's deleted |
 | `provider_budget` | dict | null | Max USD per provider per day |
 | `hooks` | list | `[]` | Built-in pre-routing hooks to enable |
 
-### Retry Policies
+### Failover Budget
 
-| Policy | Retries | Backoff | Best For |
-|--------|---------|---------|----------|
-| `conservative` | 2 | 5s | Production apps where stability > speed |
-| `balanced` | 3 | 2s | Most applications (default) |
-| `aggressive` | 5 | 1s | Real-time apps that need to exhaust all options |
-
-To override:
+flexrouter doesn't retry a fixed number of times — a request tries every model in the tier, in score order, until one answers or it has spent `failover_budget_seconds` waiting, whichever comes first:
 
 ```yaml
 settings:
-  retries: 4
-  backoff_seconds: 1.5
+  failover_budget_seconds: 60   # give it longer before giving up
 ```
+
+If the budget runs out with nothing answering, `generate()`/`agenerate()` raise `RouterBusy`.
 
 ### Cost Budgets
 
@@ -339,7 +329,7 @@ Watching only the settings file would mean watching the one file nothing is allo
 - ✅ Adds and removes buckets and models
 - ✅ Updates provider addresses
 - ✅ Picks up a newly added or removed key
-- ✅ Changes settings (retry policy, budgets, and so on)
+- ✅ Changes settings (failover budget, budgets, and so on)
 - ❌ Does NOT reset what it has learned so far — rate-limit counts, rest periods and session pins all carry over
 
 **If the change can't be read**, flexrouter keeps running on the last settings it read successfully rather than failing the request you were in the middle of. Correct the file and the next request picks up the fix. Nothing announces this yet, so if a change appears to have done nothing, check the file for a mistake.
@@ -402,7 +392,7 @@ providers:
 
 settings:
   state_dir: .flexrouter/
-  retry_policy: aggressive
+  failover_budget_seconds: 10   # fail over fast, don't sit around waiting
 ```
 
 ### Production (Quality + Fallback)
@@ -439,7 +429,7 @@ settings:
   state_dir: .flexrouter/
   provider_budget:
     openai: 50.00
-  retry_policy: balanced
+  failover_budget_seconds: 30
 ```
 
 ### Vision Tasks
