@@ -584,13 +584,15 @@ One request's journey, in order: models passed over before anything was tried, e
     {"kind": "skipped", "provider": "cerebras", "model": "qwen-3-32b", "reason": "excluded",
      "detail": "the request asked to leave it out"},
     {"kind": "failed", "provider": "mistral", "model": "large", "status": 429,
-     "message": "Too many requests", "verdict": "too_fast", "ms": 88},
+     "message": "Too many requests", "verdict": "too_fast", "ms": 88, "waited_ms": 0},
     {"kind": "answered", "provider": "groq", "model": "llama-3.3-70b-versatile", "ms": 1430}
-  ]
+  ],
+  "conversation": {"messages": [{"role": "user", "content": "hi"}],
+                   "reply": "Hello!", "reasoning": ""}
 }
 ```
 
-A failed request ends with `{"kind": "gave_up"}` instead of `answered`.
+A failed request ends with `{"kind": "gave_up"}` instead of `answered`. `waited_ms` is time spent waiting for a free slot before that attempt. `conversation` is `null` when saving is off (`save_conversations: false`) or the request is older than `save_conversations_days` (7). Each message is cut at about 20 KB, and keys flexrouter holds are masked. The dashboard shows the same request at `/requests/{id}`.
 
 ---
 

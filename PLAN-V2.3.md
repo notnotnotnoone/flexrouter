@@ -298,7 +298,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 
 ## Phase 3 · See everything
 
-### ☐ Session 11 — Saved conversations + the request sheet
+### ☑ Session 11 — Saved conversations + the request sheet
 **Model:** Sonnet
 **Decisions:** §7. **US:** 48–53. **P:** 9, 13, 14.
 - A conversation store: prompt, reply and reasoning per request ID, in `state/`. Long messages cut at ~20 KB, auto-deleted after 7 days, with the Settings off switch. Keys flexrouter holds are masked by exact match. Separate from the scrubbed trace.

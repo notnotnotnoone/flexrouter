@@ -173,10 +173,10 @@ class FlexConfig:
     owner turn off. A key flexrouter itself holds is masked either way
     (redact.set_known_secrets, an exact match, never a heuristic)."""
     save_conversations: bool = True
-    """Placeholder (PLAN-V2.3.md Session 10); real behaviour lands in Session
-    11 (grill-decisions.md §21). Prompt, reply and reasoning are saved as
-    sent for `save_conversations_days`, off switch included because anything
-    a caller pastes into a prompt would otherwise sit in state/ untouched."""
+    """Prompt, reply and reasoning per request, in state/conversations/
+    (flexrouter/conversations.py, grill-decisions.md §7), kept for
+    `save_conversations_days`. The off switch exists because anything a
+    caller pastes into a prompt would otherwise sit in state/ untouched."""
     save_conversations_days: int = 7
     show_quickstart: bool = True
     """On until the owner dismisses the quickstart checklist (Session 18)."""

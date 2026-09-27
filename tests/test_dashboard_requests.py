@@ -134,3 +134,43 @@ def test_the_log_polls_for_new_rows(client):
 def test_sheet_helper_has_a_close_link():
     html = ui.sheet("Title", "<p>x</p>", close_href="/requests")
     assert 'href="/requests"' in html and 'aria-label="Close"' in html
+
+
+# ── saved conversations and the request sheet (PLAN-V2.3.md Session 11) ──
+
+def _save(request_id="req_fo", reply="Hello!", reasoning="thinking hard"):
+    app_module.get_router()._conversations.save(
+        request_id, [{"role": "user", "content": "hi"}], reply, reasoning)
+
+
+def test_the_sheet_shows_you_reply_and_thinking(client):
+    _write(FAILOVER)
+    _save()
+    body = client.get("/requests/req_fo/journey").text
+    assert "rq-you" in body and ">hi<" in body and "Hello!" in body
+    assert "Thinking" in body and "thinking hard" in body
+
+
+def test_tried_first_shows_the_time_spent_waiting(client):
+    fo = dict(FAILOVER, attempts=[dict(FAILOVER["attempts"][0], waited_ms=1912)])
+    _write(fo)
+    body = client.get("/requests/req_fo/journey").text
+    assert "Tried first" in body and "waited 2.0s" in body
+
+
+def test_a_request_is_a_real_page(client):
+    _write(FAILOVER)
+    r = client.get("/requests/req_fo")
+    assert r.status_code == 200 and "<nav" in r.text and 'role="dialog"' in r.text
+
+
+def test_an_unsaved_conversation_says_so(client):
+    _write(FAILOVER)
+    assert "weren't saved" in client.get("/requests/req_fo/journey").text
+
+
+def test_the_journey_api_carries_the_conversation(client):
+    _write(FAILOVER)
+    _save()
+    j = client.get("/api/requests/req_fo").json()
+    assert j["conversation"]["reply"] == "Hello!"

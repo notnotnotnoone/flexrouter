@@ -378,3 +378,19 @@ async def test_final_usage_chunk_populates_done_event_usage(config_file, monkeyp
     events = [e async for e in router.agenerate_stream(MESSAGES, tier="low")]
     done = [e for e in events if isinstance(e, DoneEvent)][0]
     assert done.result["usage"] == {"prompt_tokens": 3, "completion_tokens": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_reply_and_its_thinking_are_saved(config_file, monkeypatch):
+    """PLAN-V2.3.md Session 11: the request sheet reads prompt, reply and
+    reasoning back by request id."""
+    router = _router(config_file)
+    monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE]))
+    monkeypatch.setattr(
+        router._client, "stream_chat",
+        _stream_chat_sequence([_ok_stream(["<think>hm</think>Hel", "lo"])]))
+    async for _ in router.agenerate_stream(MESSAGES, tier="low", trace_id="req_saved"):
+        pass
+    saved = router._conversations.get("req_saved")
+    assert saved["messages"] == MESSAGES
+    assert saved["reply"] == "Hello" and saved["reasoning"] == "hm"

@@ -1897,6 +1897,13 @@ def requests_page(result: str = "", bucket: str = "", provider: str = "", q: str
                              requests_page_mod.body(router, params), sheet=sheet))
 
 
+@pages.get("/requests/{request_id}", response_class=HTMLResponse, include_in_schema=False)
+def request_page(request_id: str) -> HTMLResponse:
+    """One request as a real page: the log with that request's sheet open,
+    so the address can be bookmarked, shared, or opened in a new tab."""
+    return requests_page(id=request_id)
+
+
 @pages.get("/requests/{request_id}/journey", response_class=HTMLResponse,
            include_in_schema=False)
 def request_journey(request_id: str) -> HTMLResponse:

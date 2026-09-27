@@ -33,6 +33,7 @@ from flexrouter.sampler import PassiveSampler
 from flexrouter import status as st
 from flexrouter.status import StatusStore
 from flexrouter.scheduler import RoundRobinCounters, key_quota_ok, pick_key
+from flexrouter.conversations import ConversationStore
 from flexrouter.traces import TraceWriter, new_trace_id
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,8 @@ class LocalRouter:
         self._audit = AuditLogger(self._cfg.state_dir)
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
         self._traces = TraceWriter(self._cfg.state_dir)
+        self._conversations = ConversationStore(
+            self._cfg.state_dir, self._cfg.save_conversations, self._cfg.save_conversations_days)
         self._key_states = KeyStateStore(self._cfg.state_dir)
         self._round_robin = RoundRobinCounters()
         # §4 (Session 7): the decider's confidence knobs are internal
@@ -374,9 +377,11 @@ class LocalRouter:
         trace_written = False
 
         def _write_trace(ok: bool, answered_by: Optional[dict] = None,
-                         tokens: Optional[dict] = None) -> None:
+                         tokens: Optional[dict] = None, reply: str = "",
+                         reasoning: str = "") -> None:
             nonlocal trace_written
             trace_written = True
+            self._conversations.save(trace_id, messages, reply, reasoning)
             self._traces.write({
                 "id": trace_id,
                 "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds") + "Z",
@@ -639,6 +644,7 @@ class LocalRouter:
                     ok=True,
                     answered_by={"provider": route.provider, "model": route.model, "key_id": key_id},
                     tokens={"in": prompt_tokens, "out": completion_tokens},
+                    reply=content, reasoning=message.get("reasoning_content") or "",
                 )
                 return result
         finally:
@@ -687,6 +693,7 @@ class LocalRouter:
         excluded = self._caller_exclusions(tier, exclude, is_pinned, skipped)
         attempts: list[dict] = []
         tried_no_status: set[str] = set()  # see agenerate()
+        pending_wait_ms = 0  # see agenerate()
         attempt = 0
         # See agenerate()'s identical field: only deliberate waiting for
         # bucket capacity counts against the ~30s failover budget.
@@ -696,9 +703,11 @@ class LocalRouter:
 
         def _write_trace(ok: bool, answered_by: Optional[dict] = None,
                          tokens: Optional[dict] = None,
-                         ms_to_first_token: Optional[int] = None) -> None:
+                         ms_to_first_token: Optional[int] = None, reply: str = "",
+                         reasoning: str = "") -> None:
             nonlocal trace_written
             trace_written = True
+            self._conversations.save(trace_id, messages, reply, reasoning)
             self._traces.write({
                 "id": trace_id,
                 "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds") + "Z",
@@ -751,9 +760,11 @@ class LocalRouter:
                     secs = self._engine_for(tier).seconds_until_available(tier)
                     wait_for = max(secs, 1.0)
                     await asyncio.sleep(wait_for)
+                    pending_wait_ms += int(wait_for * 1000)
                     total_waited_seconds += wait_for
                     continue
 
+                waited_ms, pending_wait_ms = pending_wait_ms, 0
                 yield AttemptEvent(
                     attempt=attempt + 1, max_attempts=max_attempts,
                     provider=route.provider, model=route.model,
@@ -792,7 +803,7 @@ class LocalRouter:
                                      "model": route.model, "status": None,
                                      "provider_message": "empty stream response",
                                      "key_id": key_id,
-                                     "verdict": verdict.verdict,
+                                     "verdict": verdict.verdict, "waited_ms": waited_ms,
                                      "ms": int((time.monotonic() - start) * 1000)})
                     yield AttemptFailedEvent(
                         attempt=attempt + 1, max_attempts=max_attempts,
@@ -824,7 +835,7 @@ class LocalRouter:
                     attempts.append({"n": attempt + 1, "provider": route.provider,
                                      "model": route.model, "status": 429,
                                      "provider_message": str(exc), "key_id": key_id,
-                                     "verdict": verdict.verdict,
+                                     "verdict": verdict.verdict, "waited_ms": waited_ms,
                                      "ms": int((time.monotonic() - start) * 1000)})
                     yield AttemptFailedEvent(
                         attempt=attempt + 1, max_attempts=max_attempts,
@@ -854,7 +865,7 @@ class LocalRouter:
                     attempts.append({"n": attempt + 1, "provider": route.provider,
                                      "model": route.model, "status": None,
                                      "provider_message": str(exc), "key_id": key_id,
-                                     "verdict": verdict.verdict,
+                                     "verdict": verdict.verdict, "waited_ms": waited_ms,
                                      "ms": int((time.monotonic() - start) * 1000)})
                     yield AttemptFailedEvent(
                         attempt=attempt + 1, max_attempts=max_attempts,
@@ -883,7 +894,7 @@ class LocalRouter:
                     attempts.append({"n": attempt + 1, "provider": route.provider,
                                      "model": route.model, "status": exc.status_code,
                                      "provider_message": str(exc), "key_id": key_id,
-                                     "verdict": verdict.verdict,
+                                     "verdict": verdict.verdict, "waited_ms": waited_ms,
                                      "ms": int((time.monotonic() - start) * 1000)})
                     yield AttemptFailedEvent(
                         attempt=attempt + 1, max_attempts=max_attempts,
@@ -917,6 +928,7 @@ class LocalRouter:
                 # exception out of this generator — no except clause below, so
                 # nothing here can turn it into a retry.
                 accumulated: list[str] = []
+                reasoning_acc: list[str] = []
                 final_usage: dict = {}
                 has_tool_calls = False
                 # key -> {"id": ..., "name": ..., "arguments": ...}. Keyed on the
@@ -953,8 +965,10 @@ class LocalRouter:
                             accumulated.append(content_part)
                             events.append(DeltaEvent(text=content_part))
                         if reasoning_part:
+                            reasoning_acc.append(reasoning_part)
                             events.append(ReasoningDeltaEvent(text=reasoning_part))
                     if sc.reasoning:
+                        reasoning_acc.append(sc.reasoning)
                         events.append(ReasoningDeltaEvent(text=sc.reasoning))
                     if sc.tool_call_delta:
                         has_tool_calls = True
@@ -1021,6 +1035,7 @@ class LocalRouter:
                         any_yielded = True
                         yield DeltaEvent(text=flush_content)
                     if flush_reasoning:
+                        reasoning_acc.append(flush_reasoning)
                         any_yielded = True
                         yield ReasoningDeltaEvent(text=flush_reasoning)
                 except BaseException as exc:
@@ -1033,7 +1048,7 @@ class LocalRouter:
                                      "model": route.model,
                                      "status": getattr(exc, "status_code", None),
                                      "provider_message": str(exc), "key_id": key_id,
-                                     "verdict": verdict.verdict,
+                                     "verdict": verdict.verdict, "waited_ms": waited_ms,
                                      "ms": int((time.monotonic() - start) * 1000)})
                     _write_trace(
                         ok=False,
@@ -1156,7 +1171,7 @@ class LocalRouter:
                                      "model": route.model, "status": None,
                                      "provider_message": empty_detail,
                                      "key_id": key_id,
-                                     "verdict": verdict.verdict,
+                                     "verdict": verdict.verdict, "waited_ms": waited_ms,
                                      "ms": int((time.monotonic() - start) * 1000)})
                     yield AttemptFailedEvent(
                         attempt=attempt + 1, max_attempts=max_attempts,
@@ -1240,6 +1255,7 @@ class LocalRouter:
                     tokens={"in": prompt_tokens, "out": completion_tokens},
                     ms_to_first_token=(
                         int((first_token_at - start) * 1000) if first_token_at else None),
+                    reply=full_text, reasoning="".join(reasoning_acc),
                 )
                 yield DoneEvent(result=result)
                 return
@@ -1405,6 +1421,8 @@ class LocalRouter:
         self._audit = AuditLogger(self._cfg.state_dir)
         self._history = HealthHistory(self._cfg.state_dir, self._cfg.health_history_days)
         self._traces = TraceWriter(self._cfg.state_dir)
+        self._conversations = ConversationStore(
+            self._cfg.state_dir, self._cfg.save_conversations, self._cfg.save_conversations_days)
         self._key_states = KeyStateStore(self._cfg.state_dir)
         self._error_brain = ErrorBrain(self._cfg.state_dir, self._build_decider())
         self._model_facts = ModelFactsStore(self._cfg.state_dir)

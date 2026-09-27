@@ -1293,6 +1293,50 @@ tbody tr.m-detail:hover td { background: var(--ground); }
 .keys-row { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 5px 0; align-items: center; }
 .keys-row span { color: var(--ink-2); }
 
+/* ── expand / collapse ─────────────────────────────────── */
+/* <details class="fold"><summary>Thinking <span class="n">312 tokens</span></summary><div class="fold-body">…</div></details>
+   The chevron is app.css's summary::before. */
+
+.fold > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 4px 0;
+  font: 500 11px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: color 160ms var(--ease);
+}
+.fold > summary::before { margin: 0 2px 2px 1px; }
+.fold > summary:hover, .fold[open] > summary { color: var(--ink); }
+.fold > summary .n { text-transform: none; letter-spacing: 0; }
+.fold-body { padding: 6px 0 4px 16px; border-left: 1px solid var(--rule-2); margin: 4px 0 0 3px; }
+.fold[open] > .fold-body { animation: fold-in 200ms var(--ease); }
+@keyframes fold-in { from { opacity: 0; transform: translateY(-4px); } }
+
+/* ── request sheet ─────────────────────────────────────── */
+/* Lives inside ui.sheet(). */
+
+.rq-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font: 500 12px var(--mono); }
+.rq-line .arrow { color: var(--ink-4); }
+.rq-convo { display: grid; gap: 10px; margin: 14px 0; }
+.rq-msg { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 10px; align-items: start; }
+.rq-who { font: 500 10px/1.9 var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--ink-4); }
+.rq-text { padding: 8px 12px; border: 1px solid var(--rule); background: var(--raise); white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
+.rq-you .rq-text { background: var(--green-wash); border-color: rgba(52, 211, 153, .3); }
+.rq-text.bad { color: var(--bad); }
+.rq-line + .rq-line { margin-top: 4px; }
+.rq-convo + .fold, .fold + .fold { margin-top: 4px; }
+.rq-think { color: var(--ink-3); font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
+.rq-tried { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font: 400 12px var(--mono); }
+.rq-tried li { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.rq-tried .bad { color: var(--bad); }
+.rq-wait { color: var(--warn); }
+.rq-copy { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--rule); }
+
 /* ── the side panel ────────────────────────────────────── */
 
 .sheet-backdrop {

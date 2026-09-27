@@ -451,7 +451,8 @@ def request_journey(router, request_id: str, search_last: int = 5000) -> Optiona
         steps += [{"kind": "failed", "provider": a.get("provider", ""),
                    "model": a.get("model", ""), "status": a.get("status"),
                    "message": a.get("provider_message") or "",
-                   "verdict": a.get("verdict") or "", "ms": a.get("ms")}
+                   "verdict": a.get("verdict") or "", "ms": a.get("ms"),
+                   "waited_ms": a.get("waited_ms") or 0}
                   for a in entry.get("attempts") or []]
         answered = entry.get("answered_by")
         if entry.get("ok") and answered:
@@ -465,7 +466,9 @@ def request_journey(router, request_id: str, search_last: int = 5000) -> Optiona
                 "client": (entry.get("asked") or {}).get("client"),
                 "ok": bool(entry.get("ok")), "outcome": _outcome(entry),
                 "tokens_in": tokens.get("in", 0), "tokens_out": tokens.get("out", 0),
-                "ms_total": entry.get("ms_total", 0), "steps": steps}
+                "ms_total": entry.get("ms_total", 0), "steps": steps,
+                "conversation": router._conversations.get(request_id)
+                if hasattr(router, "_conversations") else None}
     return None
 
 
