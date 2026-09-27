@@ -331,7 +331,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 **Starter prompt:**
 > Do Session 12 of PLAN-V2.3.md. Read that block, grill-decisions.md §8, and the example prompt in grill-log.md.
 
-### ☐ Session 13 — AI paste hardening + parked models (after 5)
+### ☑ Session 13 — AI paste hardening + parked models (after 5)
 **Model:** Sonnet
 **Decisions:** §6, §18. **US:** 57–62.
 - The "Add models with AI" prompt (`dashboard/add_models.py`) includes the provider's **real ID list**: "match each row to one of these or leave it out".
@@ -341,6 +341,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
   - explicit 0 → "Not on your plan", added switched off
   - **delete the invented 60 RPM / 60K TPM default** (in `dashboard/pages.py`, the AI-paste save path)
 - Parked (non-chat) models: keep them, in a collapsed "Not chat models yet (N)" list at the bottom of Models, reading "Saved for later. flexrouter only routes chat models today." Validate their IDs too.
+- *Done 2026-09-26:* the prompt already carried the real ID list (Session 5). `rpm`/`tpm` are now `Optional` end to end (`ModelConfig`, `SlidingWindow`, `validate_config`), so null means no local limit until one is learned. A not-real ID is blocked twice: `app.js` disables Apply while a checked row is wrong, and the apply handler skips it with the reason. "Not on your plan" is any explicit 0 among a row's limits.
 
 **Starter prompt:**
 > Do Session 13 of PLAN-V2.3.md. Read that block and grill-decisions.md §6 and §18.
