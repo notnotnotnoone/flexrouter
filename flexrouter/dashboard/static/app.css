@@ -1472,7 +1472,7 @@ tbody tr.m-detail:hover td { background: var(--ground); }
   padding: 4px 6px;
   border: 1px solid transparent;
 }
-.cap-published { background: var(--green); border-color: var(--green); color: var(--ground); font-style: normal; font-weight: 600; }
+.cap-published { background: var(--green-wash); border-color: var(--green); color: var(--green); font-style: normal; font-weight: 600; }
 .cap-observed { border-color: var(--green); color: var(--green); }
 .cap-guessed { border-color: var(--rule-2); color: var(--ink-4); border-style: dashed; font-style: normal; }
 .cap-manual { border-color: var(--ink-2); color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
@@ -1912,12 +1912,6 @@ p.state-ok, p.state-warn, p.state-bad { padding: 9px 12px; border-left: 3px soli
 p.state-ok { background: var(--green-wash); }
 p.state-warn { background: var(--warn-wash); }
 p.state-bad { background: var(--bad-wash); }
-
-.cap-published { color: var(--ink); font-weight: 500; }
-.cap-observed { color: var(--green); }
-.cap-guessed { color: var(--ink-3); font-style: italic; }
-.cap-manual { text-decoration: underline; text-underline-offset: 3px; }
-.cap-unknown { color: var(--ink-4); }
 
 .button-link {
   display: inline-flex;

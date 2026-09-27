@@ -34,7 +34,9 @@ def items(router) -> list[dict]:
         {"kind": "action", "label": "Make a new app password", "href": "/settings#g-app-password"},
         {"kind": "action", "label": "Download a settings backup", "href": "/settings/backup",
          "download": True},
-        {"kind": "action", "label": "Rank models with an AI", "href": "/models_catalog/rank"},
+        {"kind": "action", "label": "Add models with AI", "href": "/models_catalog/add-with-ai"},
+        {"kind": "action", "label": "Rank models with AI", "href": "/models_catalog/rank"},
+        {"kind": "action", "label": "Find rate limits with AI", "href": "/models_catalog/rate-limits"},
     ]
     if router._cfg.auto_add_models:
         out.append({"kind": "action", "label": "Check for new models",

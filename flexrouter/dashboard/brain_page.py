@@ -98,8 +98,8 @@ def _decision(d: dict) -> str:
         head += f" (it reported {_pct(raw)}, capped)"
     if d.get("rule_said"):
         rule = LABELS.get(d["rule_said"], d["rule_said"])
-        head += (f" - overturned the rule, which said {rule}" if d.get("overturned_rule")
-                 else f" - the rule ({rule}) stood")
+        head += (f" - it disagreed with the quick check, which said {rule}" if d.get("overturned_rule")
+                 else f" - the quick check agreed ({rule})")
     return (tag("p", esc(head), cls="brain-note") + _call_facts(d)
             + (_probabilities(d["probabilities"]) if d.get("probabilities") else ""))
 

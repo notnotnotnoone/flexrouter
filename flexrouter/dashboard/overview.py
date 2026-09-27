@@ -16,7 +16,7 @@ and the refresh - the live view cannot drift from the served one.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from flexrouter.dashboard import charts, facts, prefs, stats, ui
 from flexrouter.dashboard.render import esc, tag
@@ -61,18 +61,42 @@ def num(value: object) -> str:
         return esc(value)
 
 
-def clock(iso: str) -> str:
-    """A stored UTC timestamp as a local wall clock.
+def parse_utc(iso: str) -> datetime | None:
+    """A stored timestamp, aware. Accepts "...Z", "...+00:00", and the
+    "...+00:00Z" that traces written before v2.3 carry."""
+    try:
+        text = iso.strip()
+        if text.endswith("Z"):
+            text = text[:-1] if "+" in text[10:] else text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+    except (ValueError, AttributeError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def clock(when, now: datetime | None = None) -> str:
+    """A stored time (ISO text or epoch seconds) in the one format every
+    page uses (papercut 15): your own local time, 24-hour, with the day
+    only when it isn't today - "14:03:22", "25 Sep 14:03:22",
+    "25 Sep 2025 14:03".
 
     Traces are written in UTC and the chart buckets by local hour
     (`stats.recent_window`). Printing the raw UTC time next to that chart
     would put two different clocks on one screen.
     """
-    try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
-    except (ValueError, AttributeError):
-        return iso or ""
-    return dt.strftime("%H:%M:%S")
+    if isinstance(when, (int, float)):
+        dt = datetime.fromtimestamp(when, tz=timezone.utc)
+    else:
+        dt = parse_utc(when or "")
+        if dt is None:
+            return when or ""
+    dt = dt.astimezone()
+    today = (now or datetime.now(timezone.utc)).astimezone()
+    if dt.date() == today.date():
+        return dt.strftime("%H:%M:%S")
+    if dt.year == today.year:
+        return f"{dt.day} {dt.strftime('%b %H:%M:%S')}"
+    return f"{dt.day} {dt.strftime('%b %Y %H:%M')}"
 
 
 def pct(fraction) -> str:
@@ -180,7 +204,7 @@ def _verdict(data: dict, window: dict, label: str) -> str:
     else:
         headline, state = "Serving normally.", "ok"
 
-    tags = [ui.tag_(f"{p['ok']} of {p['total']} providers fine", "ok")]
+    tags = [ui.tag_(f"{p['ok']} of {ui.plural(p['total'], 'provider')} fine", "ok")]
     if p["warn"]:
         tags.append(ui.tag_(f"{p['warn']} unsettled", "warn"))
     if p["bad"]:
@@ -192,7 +216,7 @@ def _verdict(data: dict, window: dict, label: str) -> str:
     else:
         busiest = window["providers"][0]
         share = busiest["requests"] / window["requests"]
-        story = (f"{window['requests']:,} requests in the last {label}, "
+        story = (f"{ui.plural(window['requests'], 'request')} in the last {label}, "
                  f"{pct(window['answered_rate'])} answered. "
                  f"{busiest['name']} carried {pct(share)} of them.")
         if window["failovers"]:
@@ -217,7 +241,7 @@ def _stats(data: dict, window: dict, label: str) -> str:
         ui.stat("Requests", f"{window['requests']:,}", key="requests",
                 note=f"last {label}", spark=spark),
         ui.stat("Answered", pct(window["answered_rate"]), key="answered",
-                note=f"{data['models']['available']} of {data['models']['total']} models up"),
+                note=f"{data['models']['available']} of {ui.plural(data['models']['total'], 'model')} up"),
         ui.stat("Failovers", f"{window['failovers']:,}", key="failovers", note=failover_note),
         ui.stat("Median reply", f"{lat['p50']:,} ms" if lat["p50"] is not None else "-",
                 key="median",
@@ -311,8 +335,17 @@ def _needs_you(broken_data: dict) -> str:
                   **{"data-enter": "", "data-box": "needs-you"})
 
 
+def is_pinned(bucket: str) -> bool:
+    """A request that named one model ("groq/llama-...") rather than a
+    bucket. It is logged under that name, but it is not a bucket
+    (papercut 16)."""
+    return "/" in (bucket or "")
+
+
 def _buckets(router, window: dict, label: str) -> str:
     counts = {b["bucket"]: b["requests"] for b in window["buckets"]}
+    pinned = sum(n for b, n in counts.items() if is_pinned(b))
+    counts = {b: n for b, n in counts.items() if not is_pinned(b)}
     names = list(router._cfg.tiers)
     for name in counts:
         if name not in names:
@@ -332,6 +365,10 @@ def _buckets(router, window: dict, label: str) -> str:
                     + tag("span", "", cls="spacer")
                     + tag("span", num(n), cls="bucket-n", **{"data-value": n}),
                     cls="bucket-row", **{"data-row": f"bucket:{name}"})
+    if pinned:
+        word = "request" if pinned == 1 else "requests"
+        rows += tag("p", esc(f"Plus {pinned:,} {word} that named one model instead of a bucket."),
+                    cls="note", **{"data-row": "bucket:pinned", "data-value": pinned})
     return ui.box("Buckets", rows,
                   sub=f"requests in the last {label}, against the busiest bucket",
                   action=ui.button("Manage", href="/buckets", kind="ghost"),

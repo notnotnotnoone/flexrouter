@@ -111,3 +111,9 @@ def test_without_the_flag_nothing_is_wired(config_file, monkeypatch):
     assert result.exit_code == 0, result.output
     assert not log_setup.enabled()
     assert "log_config" not in captured
+
+
+def test_logs_off_is_a_whole_page_that_says_how_to_turn_it_on(client):
+    body = client.get("/logs").text
+    assert "Logging is off" in body and "--log" in body
+    assert 'class="nav"' in body

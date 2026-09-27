@@ -44,7 +44,7 @@ def _row(rank: int, row, top: float, cut: float | None, strategy: str) -> str:
     if row.in_the_running:
         state, word = "ok", "would answer"
     elif row.available:
-        state, word = "idle", "outranked"
+        state, word = "idle", "a better one goes first"
     else:
         state, word = "bad", _REASON.get(row.reason, (row.reason or "unavailable").replace("_", " "))
     label = "20% below the fastest: anything left of this line is not picked" if strategy == "fastest" \
@@ -98,7 +98,7 @@ def _bucket(b, add_model_form: str) -> str:
             + tag("details", tag("summary", "Add a model to this bucket") + add_model_form,
                   cls="table-view"))
     return ui.box(b.name, body,
-                  sub=f"{len(b.models)} models · {running} could answer now",
+                  sub=f"{ui.plural(len(b.models), 'model')} · {running} could answer now",
                   action=try_it,
                   **{"data-enter": "", "data-box": f"bucket-{b.name}", "data-dropzone": b.name})
 

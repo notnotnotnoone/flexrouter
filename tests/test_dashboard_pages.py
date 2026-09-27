@@ -157,7 +157,7 @@ def test_models_shows_its_response_rate(client):
     router._audit.log("low", "groq", "llama-3.1-8b-instant", 0, 0, 0.0, 100, "rate_limited")
     router._audit.log("low", "groq", "llama-3.1-8b-instant", 0, 0, 0.0, 100, "rate_limited")
     body = client.get("/models_catalog").text
-    assert "25% (4 reqs)" in body
+    assert "25% (4 requests)" in body
 
 
 def test_pending_catalogue_says_nothing_pending_when_empty(client):

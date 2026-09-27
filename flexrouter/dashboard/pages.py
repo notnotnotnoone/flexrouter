@@ -320,10 +320,7 @@ def _key_row(detail, k) -> str:
     until = f", back in {int(k.until - time.time())}s" if k.until else ""
     status = f"{k.status}{until}"
     status_cls = {"ready": "ok", "busy": "warn", "off": "dim"}.get(k.status, "bad")
-    last_used = (
-        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(k.last_used_at))
-        if k.last_used_at else "never"
-    )
+    last_used = overview.clock(k.last_used_at) if k.last_used_at else "never"
     latency = f"{k.ema_latency_ms:.0f} ms" if k.ema_latency_ms else "-"
     test_form = tag(
         "form",
@@ -525,6 +522,9 @@ _CAP_SOURCE_WORDS = {
 }
 
 
+_CAP_MARKS = {"observed": " ✓", "guessed": " ~", "manual": " ✎"}
+
+
 def _cap_cell(fact, name: str = "") -> str:
     """One capability as a tag. The tag's style says where the fact came
     from (solid published, outlined observed, faded guessed, underlined
@@ -535,7 +535,9 @@ def _cap_cell(fact, name: str = "") -> str:
     if fact.status == "no":
         return ""
     word = name or fact.status
-    mark = "?" if fact.status == "doubted" else ""
+    # Where the fact came from, in the chip itself and not only its style
+    # (papercut 24): ✓ seen working, ~ guessed, ✎ you set it.
+    mark = "?" if fact.status == "doubted" else _CAP_MARKS.get(fact.source, "")
     return tag("span", esc(word + mark), cls=f"cap cap-{fact.source}",
                title=f"{fact.status} - {_CAP_SOURCE_WORDS.get(fact.source, fact.source)}")
 
@@ -651,7 +653,7 @@ def _models_body(router, banner: str = "") -> str:
             tag("td", tag("div", tag("span", "", cls="m-bar",
                                      style=f"width:{r.score / top_score * 100:.0f}%"),
                           cls="m-track") + tag("span", esc(r.score), cls="m-score")),
-            tag("td", esc(f"{r.response_rate:.0%} ({r.requests:,} reqs)")
+            tag("td", esc(f"{r.response_rate:.0%} ({ui.plural(r.requests, 'request')})")
                 if r.response_rate is not None else tag("span", "no data yet", cls="dim")),
             tag("td", tag("div", caps, cls="caps")),
             tag("td", ui.status(state)
@@ -724,27 +726,27 @@ def _models_body(router, banner: str = "") -> str:
 
     n_pending = sum(len(b.get(kind) or []) for b in pending.values() if isinstance(b, dict)
                     for kind in ("appeared", "vanished", "changed"))
-    status = f"{len(rows_data)} models in use · {len(disabled)} disabled"
+    status = f"{ui.plural(len(rows_data), 'model')} in use · {len(disabled)} disabled"
     if n_pending:
         status += f" · {n_pending} catalogue changes waiting"
     head = tag("div",
                tag("div", tag("h1", "Models", cls="page-title")
                    + tag("p", esc(status), cls="page-status"), cls="page-head-text")
-               + tag("div", ui.button("Rank models with an AI", href="/models_catalog/rank",
+               + tag("div", ui.button("Rank models with AI", href="/models_catalog/rank",
                                       icon_name="brain")
-                     + ui.button("Get rate limits with an AI", href="/models_catalog/rate-limits",
+                     + ui.button("Find rate limits with AI", href="/models_catalog/rate-limits",
                                 icon_name="gauge")
                      + ui.button("Add models with AI", href="/models_catalog/add-with-ai",
                                 icon_name="plus"), cls="page-actions"),
                cls="page-head")
-    legend = tag("div", tag("span", "Tag styles say where a fact came from:")
-                 + "".join(tag("span", tag("span", label, cls=f"cap cap-{kind}") + esc(meaning),
+    legend = tag("div", tag("span", "Where a fact came from:")
+                 + "".join(tag("span", tag("span", esc(label), cls=f"cap cap-{kind}") + esc(meaning),
                                cls="cap-item")
                            for label, kind, meaning in [
-                               ("solid", "published", "the provider says so"),
-                               ("outlined", "observed", "seen working"),
-                               ("faded", "guessed", "a guess"),
-                               ("underlined", "manual", "set by you")]),
+                               ("vision", "published", "the provider says so"),
+                               ("vision ✓", "observed", "seen working"),
+                               ("vision ~", "guessed", "a guess"),
+                               ("vision ✎", "manual", "set by you")]),
                  cls="note cap-legend")
     pending_tray = (
         ui.box("Pending catalogue changes",
@@ -799,7 +801,7 @@ def _rank_body(prompt: str, notes: str) -> str:
         method="post", action="/models_catalog/rank/proposal",
     )
     return (
-        tag("h1", "Rank models with an AI", cls="page-title")
+        tag("h1", "Rank models with AI", cls="page-title")
         + tag("p", "Builds a ready-made prompt from the current model "
                    "list plus whatever benchmark material you supply. "
                    "Send it yourself, or copy it into whatever chat "
@@ -875,7 +877,7 @@ def _rate_limits_body(prompt: str, docs: str) -> str:
         method="post", action="/models_catalog/rate-limits/build",
     )
     body = (
-        tag("h1", "Get rate limits with an AI", cls="page-title")
+        tag("h1", "Find rate limits with AI", cls="page-title")
         + tag("p", "Same idea as ranking models: builds a ready-made prompt "
                    "from the current model list plus whatever docs text you "
                    "paste in. Send it to whichever model you actually use, "
@@ -1578,7 +1580,7 @@ async def models_rank_apply(request: Request) -> RedirectResponse:
 
 @pages.get("/models_catalog/rate-limits", response_class=HTMLResponse, include_in_schema=False)
 def models_rate_limits_page() -> HTMLResponse:
-    return HTMLResponse(page("Rate limits with an AI", "models", _rate_limits_body("", "")))
+    return HTMLResponse(page("Find rate limits with AI", "models", _rate_limits_body("", "")))
 
 
 @pages.post("/models_catalog/rate-limits/build", response_class=HTMLResponse, include_in_schema=False)
@@ -1587,7 +1589,7 @@ async def models_rate_limits_build(request: Request) -> HTMLResponse:
     docs = form.get("docs") or ""
     idents = [f"{r.provider}/{r.model}" for r in facts.models(_live_router())]
     prompt = ranking.build_rate_limit_prompt(idents, docs) if docs.strip() else ""
-    return HTMLResponse(page("Rate limits with an AI", "models", _rate_limits_body(prompt, docs)))
+    return HTMLResponse(page("Find rate limits with AI", "models", _rate_limits_body(prompt, docs)))
 
 
 @pages.post("/models_catalog/rate-limits/proposal", response_class=HTMLResponse, include_in_schema=False)
@@ -1614,7 +1616,7 @@ async def models_rate_limits_proposal(request: Request) -> HTMLResponse:
             continue
         changes.append((row, rpm, tpm))
 
-    return HTMLResponse(page("Rate limits with an AI", "models",
+    return HTMLResponse(page("Find rate limits with AI", "models",
                              _rate_limits_proposal_body(changes, skipped_manual)))
 
 
@@ -1981,10 +1983,12 @@ def logs_page(fragment: str = "", limit: int = logs_page_mod.PAGE) -> HTMLRespon
     """The server's activity log. Only here when started with --log:
     without it the route answers 404 and the menu shows no link."""
     if not log_setup.enabled():
-        return HTMLResponse(
-            ui.empty("The server was started without logging. Restart it with "
-                     "--log to get an activity log and this page."),
-            status_code=404)
+        # A whole page, not a bare fragment (§10): say it's off and how
+        # to turn it on. Still a 404, since there is no log to show.
+        body = (tag("div", tag("h1", "Logs", cls="page-title"), cls="page-head")
+                + ui.empty("Logging is off. Start flexrouter with --log "
+                           "(flexrouter serve --log) to see its activity log here."))
+        return HTMLResponse(page("Logs", "logs", body), status_code=404)
     limit = max(10, min(int(limit or 0), 2000))
     if fragment:
         return HTMLResponse(logs_page_mod.rows(limit))
@@ -2343,7 +2347,7 @@ def _discovered_body(provider: str, preset, result, bucket_names: list) -> str:
         cls="matrix"), cls="scroll")
     return (
         head
-        + tag("p", esc(f"{len(result.models)} models reachable with this key, "
+        + tag("p", esc(f"{ui.plural(len(result.models), 'model')} reachable with this key, "
                        f"answered in {result.latency_ms} ms"), cls="lede")
         + tag("div", _panel(
             "What this key can reach", table,
@@ -2674,7 +2678,7 @@ async def settings_rescore_models() -> RedirectResponse:
             changed += 1
     return _redirect_with_message(
         "/settings", ok=True,
-        message=f"Artificial Analysis matched {matched} of {len(seen)} models; "
+        message=f"Artificial Analysis matched {matched} of {ui.plural(len(seen), 'model')}; "
                 f"{changed} score(s) updated, {unmatched} kept their old score")
 
 

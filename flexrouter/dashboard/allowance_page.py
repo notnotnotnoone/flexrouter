@@ -18,8 +18,8 @@ from flexrouter.dashboard.render import esc, tag
 
 
 def _local_clock(epoch: float) -> str:
-    t = datetime.fromtimestamp(epoch)
-    return f"{t.hour % 12 or 12}:{t.minute:02d} {'AM' if t.hour < 12 else 'PM'}"
+    """The reset as a local 24-hour clock, like every other time shown."""
+    return datetime.fromtimestamp(epoch).strftime("%H:%M")
 
 
 def _nice_date(iso: str) -> str:

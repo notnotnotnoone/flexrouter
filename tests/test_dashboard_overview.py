@@ -316,3 +316,25 @@ def test_a_busy_day_keeps_every_bar():
     from flexrouter.dashboard.overview import _trimmed
     series = [{"name": "groq", "values": [1] * 24, "requests": 24}]
     assert _trimmed(series, [str(i) for i in range(24)], [0] * 24)[3] == 0
+
+
+# ── papercut 15: one time format, local, no "+00:00Z" ───────────────────
+
+def test_clock_reads_the_old_broken_suffix():
+    from datetime import datetime, timezone
+    from flexrouter.dashboard.overview import clock, parse_utc
+    assert parse_utc("2026-09-25T05:41:04.134+00:00Z") == datetime(
+        2026, 9, 25, 5, 41, 4, 134000, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
+    shown = clock("2026-09-25T05:41:04.134+00:00Z", now=now)
+    assert "+" not in shown and "Z" not in shown and ":" in shown
+
+
+def test_clock_names_the_day_only_when_it_is_not_today():
+    from datetime import datetime, timezone
+    from flexrouter.dashboard.overview import clock
+    now = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
+    assert len(clock("2026-09-25T12:00:00Z", now=now)) == 8          # HH:MM:SS
+    assert "Sep" in clock("2026-09-20T12:00:00Z", now=now)
+    assert "2025" in clock("2025-09-20T12:00:00Z", now=now)
+    assert clock(0.0, now=now)[-5:].count(":") == 1               # epoch seconds work too

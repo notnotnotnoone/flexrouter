@@ -135,6 +135,11 @@ def countdown(at_epoch: float | None, *, prefix: str = "Resets in") -> str:
                **{"data-countdown": f"{at_epoch:.0f}", "data-prefix": prefix})
 
 
+def plural(n: int, word: str, many: str = "") -> str:
+    """"1 model", "2 models", "1,284 requests" (papercut 21)."""
+    return f"{n:,} {word if n == 1 else (many or word + 's')}"
+
+
 def duration(seconds: int) -> str:
     """4d 2h · 2h 13m · 3m 05s · 41s"""
     d, rem = divmod(int(seconds), 86400)
