@@ -280,3 +280,28 @@ def test_the_overview_does_not_jump_while_it_loads(page, server):
         setTimeout(() => done(seen.reduce((a, e) => a + e.value, 0)), 200);
     })""")
     assert cls < 0.1
+
+
+# ── PLAN-V2.3.md Session 18: Get started + Test all ─────────────────────
+
+def test_test_all_says_hi_to_every_model_and_ticks_the_step(page, server, errors, monkeypatch):
+    async def fake_chat(self, route, messages, **kwargs):
+        return {"choices": [{"message": {"content": "hello"}}]}
+    monkeypatch.setattr("flexrouter.client.AsyncClient.chat", fake_chat)
+    page.goto(server + "/")
+    step = page.locator(".qs-step[data-n='4']")
+    step.locator("[data-test-all]").click()
+    expect(step.locator("[data-test-all]")).to_contain_text("All 1 work")
+    expect(step).to_have_attribute("data-step", "done")
+    expect(step.locator(".test-row")).to_have_attribute("data-state", "done")
+    assert errors == []
+
+
+def test_hiding_get_started_offers_undo(page, server, errors):
+    page.goto(server + "/")
+    expect(page.locator("#qs")).to_be_visible()
+    page.click("#qs .box-action [data-qs-hide]")
+    expect(page.locator("#qs")).to_be_hidden()
+    page.click(".toast-act")
+    expect(page.locator("#qs")).to_be_visible()
+    assert errors == []

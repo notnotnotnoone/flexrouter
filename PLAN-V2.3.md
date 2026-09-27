@@ -465,6 +465,18 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 - Steps tick themselves; no Next buttons.
 - Shown on first start and whenever no model works. [Hide], plus "Show quickstart" in Settings.
 - **[Test all]**: says hi to every model once (~512 tokens), with per-model progress and results. It also lives on the status page. Only runs on click, no background pings.
+- *Built 2026-09-27; waiting for the owner's look in the browser before the box is ticked.*
+  - **The card** (`dashboard/quickstart.py`) sits inside Overview's live block, so steps tick themselves on the next refresh. A refresh waits while Test all is running.
+  - **What ticks each step:**
+    - Step 1: any provider is configured. Until then it lists every preset as Free or Paid, with "Get a key ↗" and the preset's free-tier note on hover.
+    - Step 2: a key Test passed (kept in `state/quickstart.json`), or any request has been answered.
+    - Step 3: any bucket has a model.
+    - Step 4: every model was asked and at least one answered. A run where none answered says so and stays open.
+    - Step 5: a request arrived that wasn't the dashboard's own. Playground, Try it and the rate-limit probe are now tagged `client=playground` / `dashboard-test`.
+  - **Test all:**
+    - It is `POST /test-model/<provider>/<model>` (`keytest.test_model`, 512 tokens, direct, and it changes no model status). The last answer per model is remembered.
+    - It is on the card and in a box on What's broken, because the Session 8 status page doesn't exist yet.
+  - **Hide** posts `show_quickstart=false`, with Undo. The card comes back by itself when no model works.
 
 **Starter prompt:**
 > Do Session 18 of PLAN-V2.3.md. Read that block, the Q18 mockup in grill-log.md, and showcase/PORTING.md. Show me in the browser pane before finishing.
