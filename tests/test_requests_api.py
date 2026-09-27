@@ -224,6 +224,42 @@ def test_the_exclude_header_leaves_models_out_of_a_stream(tmp_path, monkeypatch)
     assert _traces(tmp_path)[-1]["asked"]["exclude"] == ["alpha/big"]
 
 
+def _chunks(text: str) -> list[dict]:
+    return [json.loads(line[len("data: "):]) for line in text.splitlines()
+            if line.startswith("data: {")]
+
+
+@respx.mock
+def test_a_streamed_chunk_names_the_model_answering(tmp_path, monkeypatch):
+    respx.post(CHAT_URL).mock(side_effect=_echo_model)
+    client = _client(tmp_path, monkeypatch)
+
+    r = client.post("/v1/chat/completions", headers={"X-Flexrouter-Exclude": "alpha/big"},
+                    json={"model": "smart", "messages": MESSAGES, "stream": True})
+
+    chunks = _chunks(r.text)
+    assert chunks and all(c["flexrouter"]["model"] == "alpha/small" for c in chunks)
+    assert all(c["model"] == "smart" for c in chunks)
+
+
+@respx.mock
+def test_after_a_failover_the_stream_names_the_model_that_answered(tmp_path, monkeypatch):
+    def big_fails(request):
+        if json.loads(request.content)["model"] == "big":
+            return httpx.Response(500, json={"error": {"message": "down"}})
+        return _echo_model(request)
+
+    respx.post(CHAT_URL).mock(side_effect=big_fails)
+    client = _client(tmp_path, monkeypatch)
+
+    r = client.post("/v1/chat/completions",
+                    json={"model": "smart", "messages": MESSAGES, "stream": True})
+
+    content = [c for c in _chunks(r.text) if c["choices"] and c["choices"][0]["delta"].get("content")]
+    assert [c["choices"][0]["delta"]["content"] for c in content] == ["small"]
+    assert content[0]["flexrouter"]["model"] == "alpha/small"
+
+
 @pytest.mark.parametrize("bad", ["no-slash", "alpha/big,bucketname"])
 def test_an_exclude_entry_that_is_not_a_model_is_refused(tmp_path, monkeypatch, bad):
     client = _client(tmp_path, monkeypatch)

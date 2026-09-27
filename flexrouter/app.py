@@ -444,9 +444,16 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
     chat_id = "chatcmpl-" + uuid.uuid4().hex[:29]
     created = int(time.time())
 
+    # The model currently being tried, as "provider/model". Once content has
+    # gone out it can no longer fail over, so from then on this is the model
+    # answering. `model` stays whatever the caller asked for (ADR 0018).
+    serving: Optional[str] = None
+
     def chunk(choices: list, **extra) -> str:
         payload = {"id": chat_id, "object": "chat.completion.chunk",
                    "created": created, "model": model, "choices": choices}
+        if serving:
+            payload["flexrouter"] = {"model": serving}
         payload.update(extra)
         return _sse(payload)
 
@@ -501,6 +508,8 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
                     yield _sse_error(message, "server_error", "provider_unavailable")
                 yield "data: [DONE]\n\n"
                 return
+            if isinstance(event, AttemptEvent):
+                serving = f"{event.provider}/{event.model}"
             if isinstance(event, (AttemptEvent, AttemptFailedEvent)):
                 # Routing-progress chatter, not output: `first` stays True,
                 # so the bound stays armed until real content arrives. It is

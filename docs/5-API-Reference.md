@@ -461,6 +461,8 @@ data: {"id":"chatcmpl-...","object":"chat.completion.chunk","created":...,"choic
 data: [DONE]
 ```
 
+Each chunk also carries `"flexrouter": {"model": "<provider>/<model>"}`, the model it came from. `model` stays whatever you asked for, so this is the only way a bucket call's stream says which model is answering. Once a chunk with content has gone out the request can no longer fail over, so from then on this names the model that answers ([ADR 0018](adr/0018-request-options-are-headers.md)).
+
 ### Request headers
 
 flexrouter reads two headers of its own on `POST /v1/chat/completions`. They are headers rather than body fields so the body stays plain OpenAI and neither can be forwarded to a provider ([ADR 0018](adr/0018-request-options-are-headers.md)).

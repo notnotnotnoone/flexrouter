@@ -54,6 +54,15 @@ because that is forwarded to the provider.
   `RouterBusy` (a 503) that says so, instead of waiting out the failover
   budget for a model that can never be picked.
 
+**A streamed chunk names the model it came from.** Each chunk carries
+`"flexrouter": {"model": "provider/model"}`. Without it a client learns which
+model answered a bucket call only from the trace, after the stream ends. Agora
+needs it sooner: it runs several votes at once, and each new vote has to
+exclude the models already answering the others. Content cannot fail over once
+it has started, so the model named on the first content chunk is the one that
+answers. The chunk's own `model` is left as the caller asked, as before, so no
+existing client sees a change.
+
 **`GET /api/requests` and `GET /api/requests/{id}`.** These serve the Requests
 page's own data (`requests_page.filtered`, `facts.request_journey`) as JSON,
 with a new `client` filter. They live under `/api`, which ADR 0009 leaves open
