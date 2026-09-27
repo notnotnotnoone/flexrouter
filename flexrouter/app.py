@@ -21,6 +21,7 @@ import copy
 import hmac
 import json
 import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -88,6 +89,39 @@ def _state_dir() -> str:
 
 
 REQUEST_ID_HEADER = "x-flexrouter-request-id"
+
+# ADR 0018: flexrouter's own request options travel as headers, so the body
+# stays plain OpenAI and nothing here can reach a provider through
+# _PASSTHROUGH. The client tag is written into traces and shown in the
+# dashboard, hence the narrow character set.
+CLIENT_HEADER = "x-flexrouter-client"
+EXCLUDE_HEADER = "x-flexrouter-exclude"
+_CLIENT_TAG = re.compile(r"[A-Za-z0-9._:-]{1,64}")
+_MAX_EXCLUDED = 200
+
+
+def _flexrouter_options(request: Request) -> tuple[dict, Optional[str]]:
+    """`client=` / `exclude=` for agenerate from the request's headers, or
+    an error message naming the header that is wrong."""
+    options: dict = {}
+    raw_client = request.headers.get(CLIENT_HEADER)
+    if raw_client is not None:
+        tag = raw_client.strip()
+        if not _CLIENT_TAG.fullmatch(tag):
+            return {}, ("X-Flexrouter-Client must be 1-64 characters of "
+                        "letters, digits, '.', '_', ':' or '-'.")
+        options["client"] = tag
+    raw_exclude = request.headers.get(EXCLUDE_HEADER)
+    if raw_exclude is not None:
+        names = [n.strip() for n in raw_exclude.split(",") if n.strip()]
+        bad = [n for n in names if "/" not in n or len(n) > 200]
+        if bad or len(names) > _MAX_EXCLUDED:
+            return {}, ("X-Flexrouter-Exclude takes a comma-separated list of "
+                        "provider/model ids" + (f"; {bad[0]!r} is not one." if bad else
+                                                f", at most {_MAX_EXCLUDED}."))
+        if names:
+            options["exclude"] = frozenset(names)
+    return options, None
 
 
 def _attempt_envelope(attempts: list[dict]) -> list[dict]:
@@ -320,10 +354,14 @@ async def chat_completions(request: Request):
         return openai_error(str(exc.args[0]), "invalid_request_error",
                             "model_not_found", 404, request_id=trace_id)
     kwargs = _kwargs_from(body)
+    options, bad_header = _flexrouter_options(request)
+    if bad_header:
+        return openai_error(bad_header, "invalid_request_error", status=400,
+                            request_id=trace_id)
 
     if body.get("stream"):
         return StreamingResponse(
-            _stream_chat(router, messages, tier, model, kwargs, trace_id),
+            _stream_chat(router, messages, tier, model, kwargs, trace_id, options),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
                      REQUEST_ID_HEADER: trace_id},
@@ -331,7 +369,7 @@ async def chat_completions(request: Request):
 
     try:
         result = await asyncio.wait_for(
-            router.agenerate(messages, tier, trace_id=trace_id, **kwargs),
+            router.agenerate(messages, tier, trace_id=trace_id, **options, **kwargs),
             timeout=ROUTE_TIMEOUT_SECONDS,
         )
     except (asyncio.TimeoutError, TimeoutError):
@@ -396,7 +434,8 @@ def _tool_call_delta(event) -> dict:
 
 
 async def _stream_chat(router, messages: list[dict], tier: str, model: str,
-                       kwargs: dict, trace_id: str) -> AsyncIterator[str]:
+                       kwargs: dict, trace_id: str,
+                       options: Optional[dict] = None) -> AsyncIterator[str]:
     from flexrouter._router import (
         AttemptEvent, AttemptFailedEvent, DeltaEvent, DoneEvent,
         ReasoningDeltaEvent, ToolCallDeltaEvent,
@@ -433,7 +472,7 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
 
     try:
         events = router.agenerate_stream(
-            messages, tier, trace_id=trace_id, **kwargs).__aiter__()
+            messages, tier, trace_id=trace_id, **(options or {}), **kwargs).__aiter__()
         first = True
         emitted = False       # at least one content chunk has gone out
         # One absolute deadline for the whole call, fixed before the first
@@ -560,6 +599,34 @@ async def _stream_chat(router, messages: list[dict], tier: str, model: str,
 # --------------------------------------------------------------------------
 
 api = APIRouter(prefix="/api")
+
+
+@api.get("/requests")
+def api_requests(client: str = "", result: str = "", bucket: str = "",
+                 provider: str = "", q: str = "", limit: int = 50):
+    """The Requests page's log as JSON, newest first (ADR 0018)."""
+    from dataclasses import asdict
+
+    from flexrouter.dashboard import requests_page
+    if result not in ("", "ok", "failover", "failed"):
+        return JSONResponse({"error": "result must be ok, failover or failed"},
+                            status_code=400)
+    if not 1 <= limit <= 5000:
+        return JSONResponse({"error": "limit must be between 1 and 5000"}, status_code=400)
+    rows, total = requests_page.filtered(get_router(), client=client, result=result,
+                                         bucket=bucket, provider=provider, q=q, limit=limit)
+    return {"requests": [asdict(r) for r in rows], "total": total}
+
+
+@api.get("/requests/{request_id}")
+def api_request_journey(request_id: str):
+    """One request's journey: skipped, failed attempts, then what answered."""
+    from flexrouter.dashboard import facts
+    journey = facts.request_journey(get_router(), request_id)
+    if journey is None:
+        return JSONResponse({"error": f"no request {request_id!r} in the recent log"},
+                            status_code=404)
+    return journey
 
 
 @api.get("/status")

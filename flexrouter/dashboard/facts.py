@@ -410,6 +410,8 @@ class RequestRow:
     # "failed" (nothing answered).
     outcome: str = "ok"
     attempt_count: int = 0
+    # The caller's X-Flexrouter-Client tag, or None (ADR 0018).
+    client: Optional[str] = None
 
 
 def _read_traces(router, last: int) -> list[dict]:
@@ -460,6 +462,7 @@ def request_journey(router, request_id: str, search_last: int = 5000) -> Optiona
         tokens = entry.get("tokens") or {}
         return {"id": request_id, "at": entry.get("at", ""),
                 "bucket": (entry.get("asked") or {}).get("bucket", ""),
+                "client": (entry.get("asked") or {}).get("client"),
                 "ok": bool(entry.get("ok")), "outcome": _outcome(entry),
                 "tokens_in": tokens.get("in", 0), "tokens_out": tokens.get("out", 0),
                 "ms_total": entry.get("ms_total", 0), "steps": steps}
@@ -487,6 +490,7 @@ def recent_requests(router, limit: int = 50) -> list[RequestRow]:
             skipped_count=len(entry.get("skipped") or []),
             outcome=_outcome(entry),
             attempt_count=len(entry.get("attempts") or []),
+            client=(entry.get("asked") or {}).get("client"),
         ))
     rows.reverse()
     return rows

@@ -25,7 +25,7 @@ def _answered(r) -> str:
 
 
 def filtered(router, *, result: str = "", bucket: str = "", provider: str = "",
-             q: str = "", limit: int = PAGE) -> tuple[list, int]:
+             q: str = "", client: str = "", limit: int = PAGE) -> tuple[list, int]:
     """Rows matching the filters, newest first, and how many matched in all.
 
     Filters look back over the last few thousand requests rather than only
@@ -36,6 +36,8 @@ def filtered(router, *, result: str = "", bucket: str = "", provider: str = "",
 
     def keep(r) -> bool:
         if result and r.outcome != result:
+            return False
+        if client and r.client != client:
             return False
         if bucket and r.bucket != bucket:
             return False

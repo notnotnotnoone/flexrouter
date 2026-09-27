@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncIterator, Literal, Optional
+from typing import AsyncIterator, Iterable, Literal, Optional
 
 from flexrouter.audit import AuditLogger
 from flexrouter.client import AsyncClient, RateLimitError, ProviderError
@@ -326,6 +326,8 @@ class LocalRouter:
         vision: bool = False,
         session_id: Optional[str] = None,
         trace_id: Optional[str] = None,
+        client: Optional[str] = None,
+        exclude: Optional[Iterable[str]] = None,
         **kwargs,
     ) -> dict:
         self._maybe_hot_reload()
@@ -352,6 +354,9 @@ class LocalRouter:
             for s in self._engine_for(tier).explain_unavailable(tier, estimated_tokens, vision)
             if not s["available"]
         ]
+        # `client` and `exclude` are flexrouter's own (ADR 0018): explicit
+        # keywords, never in **kwargs, which is forwarded to the provider.
+        excluded = self._caller_exclusions(tier, exclude, is_pinned, skipped)
         attempts: list[dict] = []
         # Models tried in this request whose failure left their status alone
         # (§13: the caller's max_tokens ran out while it was thinking) - not
@@ -379,6 +384,8 @@ class LocalRouter:
                     "bucket": tier, "stream": False,
                     "needs": ["vision"] if vision else [],
                     "approx_input_tokens": estimated_tokens,
+                    **({"client": client} if client else {}),
+                    **({"exclude": sorted(excluded)} if excluded else {}),
                 },
                 "skipped": skipped,
                 "attempts": attempts,
@@ -404,6 +411,10 @@ class LocalRouter:
         total_waited_seconds = 0.0
 
         try:
+            nothing_left = self._all_excluded(tier, excluded)
+            if nothing_left is not None:
+                _write_trace(ok=False)
+                raise _tag_attempts(nothing_left, attempts)
             while True:
                 if not is_pinned and total_waited_seconds >= self._cfg.failover_budget_seconds:
                     _write_trace(ok=False)
@@ -412,7 +423,8 @@ class LocalRouter:
                         f"about {int(self._cfg.failover_budget_seconds)}s without success"), attempts)
 
                 route, key_id = await self._route_with_key(
-                    tier, estimated_tokens, vision, session_id, frozenset(tried_no_status))
+                    tier, estimated_tokens, vision, session_id,
+                    frozenset(tried_no_status) | excluded)
 
                 if route is None:
                     if last_auth_error is not None:
@@ -642,6 +654,8 @@ class LocalRouter:
         vision: bool = False,
         session_id: Optional[str] = None,
         trace_id: Optional[str] = None,
+        client: Optional[str] = None,
+        exclude: Optional[Iterable[str]] = None,
         **kwargs,
     ) -> AsyncIterator[StreamEvent]:
         self._maybe_hot_reload()
@@ -668,6 +682,9 @@ class LocalRouter:
             for s in self._engine_for(tier).explain_unavailable(tier, estimated_tokens, vision)
             if not s["available"]
         ]
+        # `client` and `exclude` are flexrouter's own (ADR 0018): explicit
+        # keywords, never in **kwargs, which is forwarded to the provider.
+        excluded = self._caller_exclusions(tier, exclude, is_pinned, skipped)
         attempts: list[dict] = []
         tried_no_status: set[str] = set()  # see agenerate()
         attempt = 0
@@ -689,6 +706,8 @@ class LocalRouter:
                     "bucket": tier, "stream": True,
                     "needs": ["vision"] if vision else [],
                     "approx_input_tokens": estimated_tokens,
+                    **({"client": client} if client else {}),
+                    **({"exclude": sorted(excluded)} if excluded else {}),
                 },
                 "skipped": skipped,
                 "attempts": attempts,
@@ -701,6 +720,10 @@ class LocalRouter:
             })
 
         try:
+            nothing_left = self._all_excluded(tier, excluded)
+            if nothing_left is not None:
+                _write_trace(ok=False)
+                raise _tag_attempts(nothing_left, attempts)
             while True:
                 if not is_pinned and total_waited_seconds >= self._cfg.failover_budget_seconds:
                     _write_trace(ok=False)
@@ -709,7 +732,8 @@ class LocalRouter:
                         f"about {int(self._cfg.failover_budget_seconds)}s without success"), attempts)
 
                 route, key_id = await self._route_with_key(
-                    tier, estimated_tokens, vision, session_id, frozenset(tried_no_status))
+                    tier, estimated_tokens, vision, session_id,
+                    frozenset(tried_no_status) | excluded)
 
                 if route is None:
                     # Unlike the sync path this loop has no wait=False escape, so
@@ -1258,6 +1282,35 @@ class LocalRouter:
         strings from a request.
         """
         return self._pin_engine if "/" in tier else self._engine
+
+    def _caller_exclusions(self, tier: str, exclude: Optional[Iterable[str]],
+                           is_pinned: bool, skipped: list[dict]) -> frozenset:
+        """The caller's X-Flexrouter-Exclude list, as the engine's `exclude` (ADR 0018).
+
+        A pinned call names its one model outright, so the list means nothing
+        there and is dropped. Each bucket model it leaves out joins `skipped`
+        (reason `excluded`) unless already there for another reason, so the
+        request's journey says why that model was never tried.
+        """
+        if is_pinned or not exclude:
+            return frozenset()
+        excluded = frozenset(exclude)
+        already = {(s["provider"], s["model"]) for s in skipped}
+        for m in self._cfg.tiers.get(tier, []):
+            if f"{m.provider}/{m.model}" in excluded and (m.provider, m.model) not in already:
+                skipped.append({"provider": m.provider, "model": m.model, "reason": "excluded",
+                                "detail": "the request asked to leave it out"})
+        return excluded
+
+    def _all_excluded(self, tier: str, excluded: frozenset) -> Optional[RouterBusy]:
+        """A bucket call whose exclude list covers every model in the bucket
+        can never be answered; waiting out the failover budget would only
+        delay saying so."""
+        models = self._cfg.tiers.get(tier, [])
+        if excluded and models and all(f"{m.provider}/{m.model}" in excluded for m in models):
+            return RouterBusy(f"Every model in bucket {tier!r} was excluded by the request "
+                              f"(X-Flexrouter-Exclude), so there is nothing left to ask.")
+        return None
 
     async def _route_with_key(
         self, tier: str, estimated_tokens: int, vision: bool, session_id: Optional[str],
