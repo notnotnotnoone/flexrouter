@@ -700,11 +700,12 @@ def _models_body(router, banner: str = "") -> str:
         tag("td", esc(p.get("model"))),
         tag("td", esc(p.get("kind"))),
     ])) for p in parked)
-    parked_section = (
-        tag("table", tag("tr", "".join(tag("th", h) for h in ["Provider", "Model", "Kind"]))
-            + parked_rows)
-        if parked else tag("p", "Nothing parked.", cls="note")
-    )
+    parked_section = ui.fold(
+        f"Not chat models yet ({len(parked)})",
+        tag("p", "Saved for later. flexrouter only routes chat models today.", cls="note")
+        + tag("table", tag("tr", "".join(tag("th", h) for h in ["Provider", "Model", "Kind"]))
+              + parked_rows),
+    ) if parked else ""
 
     n_pending = sum(len(b.get(kind) or []) for b in pending.values() if isinstance(b, dict)
                     for kind in ("appeared", "vanished", "changed"))
@@ -746,13 +747,8 @@ def _models_body(router, banner: str = "") -> str:
         + tag("div", tag("div", table, cls="scroll"), cls="box flush", **{"data-enter": ""})
         + legend
         + ui.box("Disabled models", disabled_section, **{"data-enter": ""})
-        + ui.box("Saved, not routable yet",
-                 tag("p", "Models 'Add models with AI' learned about that aren't chat "
-                          "models - flexrouter only ever routes chat requests, so these "
-                          "can never go in a bucket, but their fields are kept here.",
-                     cls="note") + parked_section,
-                 cls="tray" + (" has-items" if parked else ""), **{"data-enter": ""})
         + pending_tray
+        + (tag("div", parked_section, cls="parked", id="parked") if parked_section else "")
     )
 
 
@@ -991,6 +987,13 @@ def _add_with_ai_body(providers: list[str], provider: str, notes: str, prompt: s
     return "".join(parts)
 
 
+def _not_on_plan(row) -> bool:
+    """An explicit 0 anywhere in a row's limits means the provider gives
+    this account none of it (grill-decisions.md §6)."""
+    return any(getattr(row, f, None) == 0
+               for f in ("rpm", "tpm", "rph", "rpd", "rps", "tph", "tpd", "tps"))
+
+
 def _add_with_ai_row_html(i: int, row, bucket_names: list, is_update: bool, old,
                           state_dir: str) -> str:
     """One editable review row. `old` is the existing `ModelRow` (chat) or
@@ -1033,12 +1036,22 @@ def _add_with_ai_row_html(i: int, row, bucket_names: list, is_update: bool, old,
                       f"quotas {old.get('quotas', {})}")
         status += tag("div", esc(detail), cls="dim")
 
-    if row.kind == "chat" and not catalogue.is_real(row.provider, row.model, state_dir):
+    # §6/§18: every row, chat or parked, is checked against the provider's
+    # real list; a guessed ID can't be saved until it's fixed.
+    if not catalogue.is_real(row.provider, row.model, state_dir):
         suggestions = catalogue.did_you_mean(row.provider, row.model, state_dir)
-        note = "not a real ID"
-        if suggestions:
-            note += " - did you mean " + " or ".join(suggestions) + "?"
-        status += tag("div", esc(note), cls="state-bad")
+        note = tag("span", "not a real ID" + (", did you mean" if suggestions else ""))
+        uses = "".join(
+            " " + esc(sug) + " " + tag("button", "use", type="button", cls="btn ghost",
+                                        **{"data-use-id": sug, "data-row": str(i)})
+            for sug in suggestions)
+        status += tag("div", note + uses + ("?" if suggestions else ""),
+                      cls="state-bad id-check", **{"data-bad-row": str(i)})
+    for field, value in (("rpm", row.rpm), ("tpm", row.tpm)):
+        if value is None:
+            status += tag("div", f"{field}: unknown, learning", cls="dim")
+    if _not_on_plan(row):
+        status += tag("div", "Not on your plan: added switched off", cls="state-warn")
 
     cells = [
         tag("td", _chk("apply", True)),
@@ -1082,12 +1095,25 @@ def _add_with_ai_review_body(rows_info: list, issues: list, bucket_names: list,
             _add_with_ai_row_html(i, row, bucket_names, is_update, old, state_dir)
             for i, row, is_update, old in rows_info)
         table = tag("div", tag("table", header + body_rows, cls="matrix"), cls="scroll")
+        n_chat = sum(1 for _, row, _, _ in rows_info if row.kind == "chat")
+        n_parked = len(rows_info) - n_chat
+        summary = f"✓ {n_chat} chat model{'s' if n_chat != 1 else ''} ready"
+        if n_parked:
+            summary += f" · ▸ {n_parked} not chat models, saved for later"
+        known = {p: catalogue._known_ids(p, state_dir)
+                 for p in {row.provider for _, row, _, _ in rows_info}}
+        known_json = json.dumps({p: ids for p, ids in known.items() if ids is not None})
+        parts.append(tag("p", esc(summary), cls="lede"))
         parts.append(tag(
             "form",
             _input(type="hidden", name="row_count", value=str(len(rows_info)))
             + table
-            + tag("button", "Apply checked rows", type="submit"),
+            + tag("script", known_json.replace("</", "<\/"), type="application/json",
+                  id="known-ids")
+            + tag("button", "Apply checked rows", type="submit", id="apply-rows")
+            + tag("span", "", cls="state-bad", id="apply-block"),
             method="post", action="/models_catalog/add-with-ai/apply", cls="table-form",
+            **{"data-id-check": ""},
         ))
     else:
         parts.append(tag("p", "Nothing parsed from that answer.", cls="note"))
@@ -1747,8 +1773,14 @@ async def models_add_with_ai_apply(request: Request) -> RedirectResponse:
         except ValueError as e:
             errors.append(f"{ident}: {e}")
             continue
+        if not catalogue.is_real(provider, model, state_dir):
+            sug = catalogue.did_you_mean(provider, model, state_dir)
+            errors.append(f"{ident}: not a real ID"
+                          + (f", did you mean {' or '.join(sug)}?" if sug else ""))
+            continue
         vision = bool(form.get(f"vision:{i}"))
         free = bool(form.get(f"free:{i}"))
+        not_on_plan = any(v == 0 for v in (rpm, tpm, rph, rpd, rps, tph, tpd, tps))
         quotas = {
             k: v for k, v in
             {"rph": rph, "rpd": rpd, "rps": rps, "tph": tph, "tpd": tpd, "tps": tps}.items()
@@ -1764,6 +1796,8 @@ async def models_add_with_ai_apply(request: Request) -> RedirectResponse:
                     fields["rpm"] = rpm
                 if tpm is not None:
                     fields["tpm"] = tpm
+                if not_on_plan:
+                    fields["enabled"] = False
                 if context is not None:
                     fields["context_window"] = context
                 if quotas:
@@ -1787,8 +1821,9 @@ async def models_add_with_ai_apply(request: Request) -> RedirectResponse:
                 new_fields: dict = {
                     "provider": provider, "model": model,
                     "score": score if score is not None else router._cfg.unscored_fallback_score,
-                    "rpm": rpm if rpm is not None else 60,
-                    "tpm": tpm if tpm is not None else 60000,
+                    # §6: no invented 60 / 60K. Unknown stays unknown and
+                    # is learned from the provider's headers and 429s.
+                    "rpm": rpm, "tpm": tpm,
                     "vision": vision,
                 }
                 if context is not None:
@@ -1802,6 +1837,8 @@ async def models_add_with_ai_apply(request: Request) -> RedirectResponse:
                     new_fields["price_out"] = 0
                 try:
                     ov.add_model(bucket, new_fields)
+                    if not_on_plan:  # §6: added, but switched off
+                        settings_write.set_model_fields(provider, model, {"enabled": False})
                 except ValueError as e:
                     errors.append(f"{ident}: {e}")
                     continue
@@ -1897,6 +1934,13 @@ def requests_page(result: str = "", bucket: str = "", provider: str = "", q: str
                              requests_page_mod.body(router, params), sheet=sheet))
 
 
+@pages.get("/requests/{request_id}", response_class=HTMLResponse, include_in_schema=False)
+def request_page(request_id: str) -> HTMLResponse:
+    """One request as a real page: the log with that request's sheet open,
+    so the address can be bookmarked, shared, or opened in a new tab."""
+    return requests_page(id=request_id)
+
+
 @pages.get("/requests/{request_id}/journey", response_class=HTMLResponse,
            include_in_schema=False)
 def request_journey(request_id: str) -> HTMLResponse:
@@ -1981,8 +2025,9 @@ async def buckets_add_model(bucket: str, request: Request) -> RedirectResponse:
             "provider": (form.get("provider") or "").strip(),
             "model": (form.get("model") or "").strip(),
             "score": int(form.get("score")),
-            "rpm": int(form.get("rpm")),
-            "tpm": int(form.get("tpm")),
+            # Blank = unknown, learned from the provider (§6).
+            "rpm": _opt_int(form.get("rpm")),
+            "tpm": _opt_int(form.get("tpm")),
         }
         context_window = form.get("context_window")
         if context_window:
@@ -2254,8 +2299,6 @@ def _discovered_body(provider: str, preset, result, bucket_names: list) -> str:
         return (head + tag("p", "This key works, but the provider lists no "
                                "models it can reach.", cls="note"))
 
-    seed_rpm = preset.seed_rpm if preset else 30
-    seed_tpm = preset.seed_tpm if preset else 60_000
     options = "".join(tag("option", esc(b), value=esc(b)) for b in bucket_names)
     rows = []
     for model_id in result.models:
@@ -2264,8 +2307,6 @@ def _discovered_body(provider: str, preset, result, bucket_names: list) -> str:
             "form",
             _input(type="hidden", name="model", value=esc(model_id))
             + _input(type="hidden", name="score", value="50")
-            + _input(type="hidden", name="rpm", value=esc(seed_rpm))
-            + _input(type="hidden", name="tpm", value=esc(seed_tpm))
             + picker
             + tag("button", "Import", type="submit"),
             method="post",
@@ -2281,8 +2322,8 @@ def _discovered_body(provider: str, preset, result, bucket_names: list) -> str:
                        f"answered in {result.latency_ms} ms"), cls="lede")
         + tag("div", _panel(
             "What this key can reach", table,
-            sub=f"seeded at {seed_rpm} rpm / {seed_tpm} tpm - correct them "
-                f"afterwards on the Models page"), cls="panel-page"))
+            sub="limits start unknown and are learned from the provider's "
+                "replies - or set them on the Models page"), cls="panel-page"))
 
 
 @pages.post("/providers/{provider}/edit", include_in_schema=False)

@@ -461,6 +461,27 @@ data: {"id":"chatcmpl-...","object":"chat.completion.chunk","created":...,"choic
 data: [DONE]
 ```
 
+Each chunk also carries `"flexrouter": {"model": "<provider>/<model>"}`, the model it came from. `model` stays whatever you asked for, so this is the only way a bucket call's stream says which model is answering. Once a chunk with content has gone out the request can no longer fail over, so from then on this names the model that answers ([ADR 0018](adr/0018-request-options-are-headers.md)).
+
+### Request headers
+
+flexrouter reads two headers of its own on `POST /v1/chat/completions`. They are headers rather than body fields so the body stays plain OpenAI and neither can be forwarded to a provider ([ADR 0018](adr/0018-request-options-are-headers.md)).
+
+| Header | Value | Effect |
+|---|---|---|
+| `X-Flexrouter-Client` | 1-64 characters of letters, digits, `.`, `_`, `:` or `-`; surrounding spaces are trimmed | Tags the request. The tag is stored in its trace and shown by `GET /api/requests`, which can filter on it. |
+| `X-Flexrouter-Exclude` | Comma-separated `provider/model` ids, at most 200 | A bucket call leaves those models out. Each excluded bucket model appears in the request's journey as skipped with reason `excluded`. Ids that are not in the bucket are ignored. A pinned call (`model` is a `provider/model`) ignores the header. If it excludes every model in the bucket, the call fails at once with a 503 rather than waiting. |
+
+Anything else in either header is a 400 naming the header.
+
+```bash
+curl http://localhost:4891/v1/chat/completions   -H "Content-Type: application/json"   -H "X-Flexrouter-Client: agora-run-42"   -H "X-Flexrouter-Exclude: groq/llama-3.3-70b-versatile, cerebras/qwen-3-32b"   -d '{"model": "smart", "messages": [{"role": "user", "content": "Hi"}]}'
+```
+
+With the OpenAI Python SDK, pass them as `extra_headers={...}`; with the Node SDK, as the request option `headers: {...}`.
+
+Every response carries `x-flexrouter-request-id`, the id to look the request up by.
+
 ### `GET /v1/models`
 
 Lists all available routing tiers as models:
@@ -522,6 +543,56 @@ curl http://localhost:4891/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "auto", "messages": [{"role": "user", "content": "Hi"}]}'
 ```
+
+### `GET /api/requests`
+
+The Requests page's log as JSON, newest first, read from the recent traces. Like the rest of `/api` it is not guarded by `auth_token` ([ADR 0009](adr/0009-wire-vocabulary-and-the-client-library.md)).
+
+| Query parameter | Meaning |
+|---|---|
+| `client` | Only requests tagged with this `X-Flexrouter-Client` value |
+| `result` | `ok`, `failover` (answered after at least one failed attempt) or `failed` |
+| `bucket` | Only requests that asked this bucket (or pinned model id) |
+| `provider` | Only requests answered by this provider |
+| `q` | Substring of the id, bucket or answering model |
+| `limit` | Rows to return, 1-5000, default 50 |
+
+```json
+{
+  "requests": [{
+    "id": "req_7f3a...", "at": "2026-09-26T10:00:00.000Z", "bucket": "smart",
+    "client": "agora-run-42", "ok": true, "outcome": "failover",
+    "answered_by": {"provider": "groq", "model": "llama-3.3-70b-versatile", "key_id": "k1"},
+    "tokens_in": 812, "tokens_out": 96, "ms_total": 1430,
+    "skipped_count": 1, "attempt_count": 1
+  }],
+  "total": 1
+}
+```
+
+`total` counts every match, not just the rows returned. A bad `result` or `limit` is a 400.
+
+### `GET /api/requests/{id}`
+
+One request's journey, in order: models passed over before anything was tried, each attempt that failed, then what answered (or that nothing did). A 404 when the id is not in the recent log.
+
+```json
+{
+  "id": "req_7f3a...", "at": "...", "bucket": "smart", "client": "agora-run-42",
+  "ok": true, "outcome": "failover", "tokens_in": 812, "tokens_out": 96, "ms_total": 1430,
+  "steps": [
+    {"kind": "skipped", "provider": "cerebras", "model": "qwen-3-32b", "reason": "excluded",
+     "detail": "the request asked to leave it out"},
+    {"kind": "failed", "provider": "mistral", "model": "large", "status": 429,
+     "message": "Too many requests", "verdict": "too_fast", "ms": 88, "waited_ms": 0},
+    {"kind": "answered", "provider": "groq", "model": "llama-3.3-70b-versatile", "ms": 1430}
+  ],
+  "conversation": {"messages": [{"role": "user", "content": "hi"}],
+                   "reply": "Hello!", "reasoning": ""}
+}
+```
+
+A failed request ends with `{"kind": "gave_up"}` instead of `answered`. `waited_ms` is time spent waiting for a free slot before that attempt. `conversation` is `null` when saving is off (`save_conversations: false`) or the request is older than `save_conversations_days` (7). Each message is cut at about 20 KB, and keys flexrouter holds are masked. The dashboard shows the same request at `/requests/{id}`.
 
 ---
 

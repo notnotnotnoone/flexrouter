@@ -24,7 +24,6 @@ def test_a_preset_carries_everything_the_add_form_needs():
     assert groq.signup_url.startswith("https://")
     assert groq.models_path == "/models"
     assert groq.header_parser == "groq"
-    assert groq.seed_rpm > 0 and groq.seed_tpm > 0
 
 
 def test_ollama_lists_models_at_its_own_path():
@@ -40,13 +39,28 @@ def test_a_preset_without_discovery_says_so_with_none():
         assert p.models_path is None or p.models_path.startswith("/")
 
 
-def test_seed_limits_are_named_seeds_not_defaults():
-    # Renamed deliberately: these fill in a newly imported model's fields
-    # once and are never read as a limit. `default_rpm` invited exactly the
-    # confusion this rename exists to end.
-    groq = presets.shipped()["groq"]
-    assert not hasattr(groq, "default_rpm")
-    assert not hasattr(groq, "default_tpm")
+def test_no_invented_limits():
+    """grill-decisions.md §12/§19: seed_rpm/seed_tpm are gone. A limit is
+    learned from the provider, or set by the owner, never guessed."""
+    for p in presets.shipped().values():
+        assert not hasattr(p, "seed_rpm") and not hasattr(p, "seed_tpm")
+        assert not hasattr(p, "default_rpm")
+
+
+def test_every_preset_carries_its_provider_facts():
+    for p in presets.shipped().values():
+        assert p.daily_reset == "rolling" or p.daily_reset.count(":") == 1
+        assert isinstance(p.known_quirks, tuple)
+        assert p.counts_failed_requests in (True, False, None)
+        assert p.docs_url.startswith("https://")
+
+
+def test_google_facts_match_what_was_observed():
+    g = presets.shipped()["googleai"]
+    assert g.daily_reset == "00:00 America/Los_Angeles"
+    assert g.counts_failed_requests is True
+    assert g.checked == "2026-09-25"
+    assert g.rate_limit_page_url == "https://aistudio.google.com/rate-limit"
 
 
 # --- Owner presets layering (Task 2) ---
@@ -74,9 +88,9 @@ def test_the_owner_can_add_a_preset_of_their_own(tmp_path):
 
 
 def test_an_owner_preset_overrides_a_shipped_one_field_by_field(tmp_path):
-    path = _write(tmp_path, {"groq": {"seed_rpm": 1000}})
+    path = _write(tmp_path, {"groq": {"free_tier_note": "mine"}})
     groq = presets.all(path)["groq"]
-    assert groq.seed_rpm == 1000
+    assert groq.free_tier_note == "mine"
     # Untouched fields survive: this is a patch, not a replacement. A whole
     # -entry replace would silently blank base_url for anyone who only
     # wanted to bump a rate.
@@ -87,7 +101,7 @@ def test_an_owner_preset_overrides_a_shipped_one_field_by_field(tmp_path):
 def test_a_broken_entry_costs_one_preset_not_the_page(tmp_path):
     path = _write(tmp_path, {
         "good": {"base_url": "https://example.test/v1"},
-        "bad": {"seed_rpm": "not a number"},
+        "bad": {"known_quirks": 5},
     })
     found = presets.all(path)
     assert "good" in found
@@ -124,8 +138,6 @@ def test_the_catalogue_is_now_a_view_of_the_registry():
     assert names == set(presets.shipped())
     groq = next(p for p in catalogue.PROVIDERS if p.name == "groq")
     assert groq.base_url == "https://api.groq.com/openai/v1"
-    # The seed values reach the old attribute names refresh.py reads.
-    assert groq.default_rpm == 30
     assert callable(groq.free_filter)
 
 

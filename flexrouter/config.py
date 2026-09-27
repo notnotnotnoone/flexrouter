@@ -47,8 +47,10 @@ class ModelConfig:
     provider: str
     model: str
     score: int
-    rpm: int
-    tpm: int
+    # None = unknown: no limit enforced yet, learned from the provider's
+    # headers and 429s (grill-decisions.md §6). 0 = "Not on your plan".
+    rpm: Optional[int]
+    tpm: Optional[int]
     context_window: int = 200000
     vision: bool = False
     quotas: dict[str, int] = field(default_factory=dict)
@@ -173,10 +175,10 @@ class FlexConfig:
     owner turn off. A key flexrouter itself holds is masked either way
     (redact.set_known_secrets, an exact match, never a heuristic)."""
     save_conversations: bool = True
-    """Placeholder (PLAN-V2.3.md Session 10); real behaviour lands in Session
-    11 (grill-decisions.md §21). Prompt, reply and reasoning are saved as
-    sent for `save_conversations_days`, off switch included because anything
-    a caller pastes into a prompt would otherwise sit in state/ untouched."""
+    """Prompt, reply and reasoning per request, in state/conversations/
+    (flexrouter/conversations.py, grill-decisions.md §7), kept for
+    `save_conversations_days`. The off switch exists because anything a
+    caller pastes into a prompt would otherwise sit in state/ untouched."""
     save_conversations_days: int = 7
     show_quickstart: bool = True
     """On until the owner dismisses the quickstart checklist (Session 18)."""
@@ -700,10 +702,13 @@ def validate_config(raw: dict) -> dict:
             if not model:
                 errors.append(f"{where}.model: missing")
             for field_name in ("score", "rpm", "tpm"):
-                val = m.get(field_name)
-                if val is None:
+                if field_name not in m:
                     errors.append(f"{where}.{field_name}: missing")
-                elif not isinstance(val, (int, float)) or val <= 0:
+                    continue
+                val = m.get(field_name)
+                if val is None and field_name != "score":
+                    continue  # unknown, learned from the provider (§6)
+                if not isinstance(val, (int, float)) or val < 0 or                         (val == 0 and field_name == "score"):
                     errors.append(f"{where}.{field_name}: must be a positive number, got {val!r}")
             ctx = m.get("context_window")
             if isinstance(ctx, (int, float)) and ctx < 1000:

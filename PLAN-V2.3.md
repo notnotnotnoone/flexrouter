@@ -298,7 +298,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 
 ## Phase 3 · See everything
 
-### ☐ Session 11 — Saved conversations + the request sheet
+### ☑ Session 11 — Saved conversations + the request sheet
 **Model:** Sonnet
 **Decisions:** §7. **US:** 48–53. **P:** 9, 13, 14.
 - A conversation store: prompt, reply and reasoning per request ID, in `state/`. Long messages cut at ~20 KB, auto-deleted after 7 days, with the Settings off switch. Keys flexrouter holds are masked by exact match. Separate from the scrubbed trace.
@@ -313,7 +313,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 **Starter prompt:**
 > Do Session 11 of PLAN-V2.3.md. Read that block, grill-decisions.md §7, and the Q8 sample in grill-log.md.
 
-### ☐ Session 12 — Playground + Explain errors with AI (after 4, 8)
+### ☑ Session 12 — Playground + Explain errors with AI (after 4, 8)
 **Model:** Sonnet
 **Decisions:** §7, §8. **US:** 43–47, 54. **P:** 10, 23.
 - Playground:
@@ -326,11 +326,12 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
   - the list of clickable buttons
 
   Keys masked, no paste-back.
+- *Done 2026-09-26, ahead of Session 8:* the buttons sit on What's broken (`broken_page.py`) for now; the prompt lives in `dashboard/explain.py`, so Session 8 just calls it from the status page. Busy rows are left out of the prompt (they clear by themselves). Markdown is a small escaped subset in `app.js` (`md()`), no new vendor file.
 
 **Starter prompt:**
 > Do Session 12 of PLAN-V2.3.md. Read that block, grill-decisions.md §8, and the example prompt in grill-log.md.
 
-### ☐ Session 13 — AI paste hardening + parked models (after 5)
+### ☑ Session 13 — AI paste hardening + parked models (after 5)
 **Model:** Sonnet
 **Decisions:** §6, §18. **US:** 57–62.
 - The "Add models with AI" prompt (`dashboard/add_models.py`) includes the provider's **real ID list**: "match each row to one of these or leave it out".
@@ -340,11 +341,12 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
   - explicit 0 → "Not on your plan", added switched off
   - **delete the invented 60 RPM / 60K TPM default** (in `dashboard/pages.py`, the AI-paste save path)
 - Parked (non-chat) models: keep them, in a collapsed "Not chat models yet (N)" list at the bottom of Models, reading "Saved for later. flexrouter only routes chat models today." Validate their IDs too.
+- *Done 2026-09-26:* the prompt already carried the real ID list (Session 5). `rpm`/`tpm` are now `Optional` end to end (`ModelConfig`, `SlidingWindow`, `validate_config`), so null means no local limit until one is learned. A not-real ID is blocked twice: `app.js` disables Apply while a checked row is wrong, and the apply handler skips it with the reason. "Not on your plan" is any explicit 0 among a row's limits.
 
 **Starter prompt:**
 > Do Session 13 of PLAN-V2.3.md. Read that block and grill-decisions.md §6 and §18.
 
-### ☐ Session 14 — Provider facts + honest Allowance ⚡
+### ☑ Session 14 — Provider facts + honest Allowance ⚡
 **Model:** Sonnet
 **Decisions:** §19. **US:** 71–77, 98. **P:** 5, 6, 25.
 - `flexrouter/data/presets.json` gains:
@@ -363,12 +365,13 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
   - one row per real limit
   - "resets in 5h (midnight PT)" in local time
   - the note "counts only what flexrouter sent"
+- *Done 2026-09-26:* reset times live in `flexrouter/resets.py`, which falls back to the US daylight-saving rule because Windows has no tzdata. Only Google's facts are evidence-backed (`checked: 2026-09-25`). The other presets' URLs, notes and quirks were written from memory, so they have `checked: null` and `counts_failed_requests: null`, and the page says "provider facts not checked yet" until someone checks them. An attempt counts once the provider answered it (a status code, or an empty reply). The "failed attempts save real quota" docs note is left for Session 19.
 
 **Starter prompt:**
 > Do Session 14 of PLAN-V2.3.md. Read that block and grill-decisions.md §19.
 
 **End of phase 3:**
-- [ ] Full suite + browser suite green.
+- [x] Full suite + browser suite green (2026-09-26: 1632 passed, 1 skipped; browser 14 passed). Three tests that were already failing before this phase were fixed as stale: two assumed a one-model bucket retries after a 500/429 (not true since Session 3), and one expected Models at `/models`. The Add-with-AI browser test also still pasted the old pipe format.
 
 ---
 

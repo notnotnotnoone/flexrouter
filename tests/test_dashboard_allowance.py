@@ -1,4 +1,4 @@
-"""The Allowance page: stacked free-tier headroom, per-provider meters."""
+"""The Allowance page: per-provider groups, one row per real limit (§19)."""
 import time
 
 import pytest
@@ -56,20 +56,31 @@ def test_a_full_limit_says_when_it_frees_up(client):
     assert 0 < hour["frees_at"] - time.time() <= 3600
 
 
-def test_the_stack_adds_up_daily_headroom(client):
-    _use(3)
-    stack = facts.allowance_stack(app_module.get_router())
-    assert stack["left"] == 7 and stack["total"] == 10
-    assert stack["providers"] == 1
-
-
-def test_the_page_draws_meters_and_the_stack(client):
+def test_there_is_no_grand_total(client):
+    """§19: no single inflated number across providers."""
     _use(3)
     body = client.get("/allowance").text
-    assert 'class="stacked' in body
-    assert 'class="meter"' in body
-    assert "your limit" in body          # shown uppercase by the stylesheet
-    assert "7" in body and "free requests left today" in body
+    assert 'class="stacked' not in body and "free requests left today" not in body
+    assert "allow-group" in body and 'class="meter"' in body
+
+
+def test_each_group_says_how_it_resets_and_what_it_counts(client):
+    _use(1)
+    body = client.get("/allowance").text
+    assert "Rolling: each request frees up a day after it was sent." in body
+    assert "Counts only what flexrouter sent." in body
+    assert "console.groq.com/settings/limits" in body
+
+
+def test_failed_attempts_are_counted_and_shown(client):
+    router = app_module.get_router()
+    mc = _use(1)
+    router._quota_tracker.record(mc.provider, mc.model, 0, failed=True)
+    groups = facts.allowance_groups(router)
+    day = [lim for g in groups for m in g["models"] for lim in m["limits"]
+           if lim["window"] == "day"][0]
+    assert day["used"] == 2 and day["failed"] == 1
+    assert "1 failed" in client.get("/allowance").text
 
 
 def test_countdowns_carry_a_timestamp_for_the_browser_to_tick(client):
@@ -77,7 +88,7 @@ def test_countdowns_carry_a_timestamp_for_the_browser_to_tick(client):
     assert "data-countdown=" in client.get("/allowance").text
 
 
-def test_no_caps_set_says_how_to_get_a_stack(config_file):
+def test_no_caps_set_says_how_to_get_numbers(config_file):
     with TestClient(create_app(str(config_file))) as c:
         body = c.get("/allowance").text
-    assert "No daily caps set" in body
+    assert "No limits known for these models yet" in body

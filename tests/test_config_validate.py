@@ -18,11 +18,21 @@ def test_unknown_provider_reference_is_error():
     r = validate_config(raw)
     assert any("nope" in e and "default[0]" in e for e in r["errors"])
 
-def test_non_positive_rpm_is_error():
+def test_negative_rpm_is_error():
     raw = _base()
-    raw["tiers"]["default"][0]["rpm"] = 0
+    raw["tiers"]["default"][0]["rpm"] = -1
     r = validate_config(raw)
     assert any("rpm" in e and "default[0]" in e for e in r["errors"])
+
+
+def test_null_and_zero_rpm_are_allowed():
+    """grill-decisions.md §6: null is "unknown, learning", 0 is "Not on
+    your plan". Neither is a config error."""
+    for value in (None, 0):
+        raw = _base()
+        raw["tiers"]["default"][0]["rpm"] = value
+        r = validate_config(raw)
+        assert not any("rpm" in e for e in r["errors"])
 
 def test_low_context_window_warns_modality():
     raw = _base()

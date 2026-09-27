@@ -172,6 +172,15 @@ def sheet(title: str, body: str, *, close_href: str, sub: str = "") -> str:
                                                  "aria-labelledby": "sheet-title"}))
 
 
+def fold(summary: str, body: str, *, note: str = "", open: bool = False,
+         body_cls: str = "") -> str:
+    """Expand / collapse (the showcase's `.fold`). `summary` and `body` are
+    markup; `note` is plain text shown dimmed after the summary."""
+    head = summary + (" " + tag("span", esc(note), cls="n") if note else "")
+    return (f'<details class="fold"{" open" if open else ""}><summary>{head}</summary>'
+            + tag("div", body, cls=("fold-body " + body_cls).strip()) + "</details>")
+
+
 def empty(message: str, *, action: str = "") -> str:
     """What a block says when it has nothing to show, and what to do next."""
     return tag("div", tag("p", esc(message)) + action, cls="empty")

@@ -60,7 +60,7 @@ def test_page_marks_the_current_area():
 def test_page_links_every_area():
     html = render.page("Overview", "overview", "")
     for slug, _, _, _ in render.AREAS:
-        expected = 'href="/"' if slug == "overview" else f'href="/{slug}"'
+        expected = f'href="{render._HREF_OVERRIDES.get(slug, "/" + slug)}"'
         assert expected in html, slug
 
 

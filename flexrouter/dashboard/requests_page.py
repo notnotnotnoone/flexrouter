@@ -25,7 +25,7 @@ def _answered(r) -> str:
 
 
 def filtered(router, *, result: str = "", bucket: str = "", provider: str = "",
-             q: str = "", limit: int = PAGE) -> tuple[list, int]:
+             q: str = "", client: str = "", limit: int = PAGE) -> tuple[list, int]:
     """Rows matching the filters, newest first, and how many matched in all.
 
     Filters look back over the last few thousand requests rather than only
@@ -36,6 +36,8 @@ def filtered(router, *, result: str = "", bucket: str = "", provider: str = "",
 
     def keep(r) -> bool:
         if result and r.outcome != result:
+            return False
+        if client and r.client != client:
             return False
         if bucket and r.bucket != bucket:
             return False
@@ -82,7 +84,7 @@ def _filters(router, current: dict) -> str:
 
 
 def _row(r) -> str:
-    href = f"/requests?id={r.id}"
+    href = f"/requests/{r.id}"
     open_link = tag("a", esc(clock(r.at)), href=href, cls="row-link",
                     **{"hx-get": f"/requests/{r.id}/journey", "hx-target": "#sheet-root",
                        "hx-swap": "innerHTML", "hx-push-url": href})
@@ -140,54 +142,87 @@ def log(router, params: dict) -> str:
                   "hx-swap": "morph:innerHTML", "data-enter": ""})
 
 
-_STEP = {
-    "skipped": ("○", "Passed over"),
-    "failed": ("✕", "Failed"),
-    "answered": ("●", "Answered"),
-    "gave_up": ("▲", "Nothing answered"),
-}
+def _secs(ms) -> str:
+    return f"{(ms or 0) / 1000:.1f}s"
+
+
+def _msg(who: str, text: str, cls: str = "") -> str:
+    return tag("div", tag("span", esc(who), cls="rq-who") + tag("div", esc(text), cls="rq-text"),
+               cls=("rq-msg " + cls).strip())
+
+
+def _tried_first(failed: list[dict]) -> str:
+    """Each failed attempt, and the time the caller lost to it: any wait for
+    a free slot before it, plus the attempt itself (papercut 9)."""
+    items, lost = "", 0
+    for s in failed:
+        waited = (s.get("waited_ms") or 0) + (s.get("ms") or 0)
+        lost += waited
+        status = str(s["status"]) if s.get("status") else "no status"
+        why = (s.get("message") or s.get("verdict", "").replace("_", " ") or "failed").strip()
+        items += tag("li", tag("span", esc(f"{s['provider']}/{s['model']}"))
+                     + tag("span", esc(f"{status} {why.splitlines()[0][:160]}"), cls="bad")
+                     + tag("span", esc(f"waited {_secs(waited)}"), cls="rq-wait"))
+    plural = "" if len(failed) == 1 else "s"
+    return ui.fold("Tried first", tag("ul", items, cls="rq-tried"),
+                   note=f"{len(failed)} model{plural} · waited {_secs(lost)}")
+
+
+def _passed_over(skipped: list[dict]) -> str:
+    items = "".join(
+        tag("li", tag("span", esc(f"{s['provider']}/{s['model']}"))
+            + tag("span", esc(s["detail"] or s["reason"].replace("_", " ")), cls="dim"))
+        for s in skipped)
+    return ui.fold("Passed over", tag("ul", items, cls="rq-tried"),
+                   note=f"{len(skipped)} not tried")
 
 
 def journey_panel(j: dict, close_href: str = "/requests") -> str:
-    facts_row = "".join(
-        tag("div", tag("span", esc(k), cls="stat-label") + tag("b", esc(v)), cls="jfact")
-        for k, v in [("Bucket", j["bucket"] or "-"), ("Took", f"{j['ms_total']:,} ms"),
-                     ("Tokens", f"{j['tokens_in']:,} in / {j['tokens_out']:,} out"),
-                     ("When", clock(j["at"]))])
-    steps = ""
-    for n, s in enumerate(j["steps"], 1):
-        glyph, word = _STEP[s["kind"]]
-        if s["kind"] == "gave_up":
-            what = tag("div", "Every option was tried or passed over.", cls="jstep-detail")
-            where = ""
+    """The request sheet (grill-decisions.md §7): a one-line header, then
+    Thinking, You, Reply, and what was tried before the answer."""
+    steps = j["steps"]
+    answered = next((s for s in steps if s["kind"] == "answered"), None)
+    failed = [s for s in steps if s["kind"] == "failed"]
+    skipped = [s for s in steps if s["kind"] == "skipped"]
+    who = f"{answered['provider']}/{answered['model']}" if answered else "nothing answered"
+    line = tag("div",
+               tag("span", _OUTCOME_WORD[j["outcome"]], cls=f"outcome outcome-{j['outcome']}")
+               + tag("span", esc(j["bucket"] or "-"))
+               + tag("span", "→", cls="arrow") + tag("span", esc(who))
+               + tag("span", esc(_secs(j["ms_total"])), cls="n")
+               + tag("span", esc(clock(j["at"])), cls="n"),
+               cls="rq-line")
+    sub = tag("div", tag("span", esc(j["id"]), cls="n")
+              + tag("span", esc(f" · {j['tokens_in']:,} in / {j['tokens_out']:,} out"), cls="n"),
+              cls="rq-line")
+
+    convo = j.get("conversation")
+    parts = ""
+    if convo:
+        if convo.get("reasoning"):
+            parts += ui.fold("Thinking", tag("div", esc(convo["reasoning"]), cls="rq-think"),
+                             note=f"{len(convo['reasoning']):,} characters")
+        msgs = "".join(_msg("You" if m["role"] == "user" else m["role"].title() or "?",
+                            m["content"], "rq-you" if m["role"] == "user" else "")
+                       for m in convo.get("messages") or [])
+        if answered:
+            msgs += _msg("Reply", convo.get("reply") or "(no text: the reply was tool calls)")
         else:
-            where = tag("div", esc(f"{s['provider']}/{s['model']}"), cls="jstep-where")
-            if s["kind"] == "skipped":
-                what = tag("div", esc(s["detail"] or s["reason"].replace("_", " ")),
-                           cls="jstep-detail") + ui.tag_(s["reason"].replace("_", " "))
-            elif s["kind"] == "failed":
-                status = f"HTTP {s['status']}" if s.get("status") else "no status"
-                what = (tag("pre", esc(s["message"]), cls="jstep-msg") if s["message"] else "") \
-                    + ui.tag_(status, "bad") + (ui.tag_(s["verdict"].replace("_", " "), "violet")
-                                               if s["verdict"] else "") \
-                    + (tag("span", esc(f"{s['ms']:,} ms"), cls="n") if s.get("ms") is not None else "")
-            else:
-                what = tag("span", esc(f"{(s.get('ms') or 0):,} ms total"), cls="n")
-        steps += tag("li",
-                     tag("span", esc(str(n)), cls="jstep-n")
-                     + tag("div",
-                           tag("div", tag("span", f"{glyph} {esc(word).upper()}",
-                                          cls=f"jstep-kind jstep-{s['kind']}") + where,
-                               cls="jstep-head") + what,
-                           cls="jstep-body"),
-                     cls=f"jstep jstep-{s['kind']}")
-    outcome = tag("span", _OUTCOME_WORD[j["outcome"]], cls=f"outcome outcome-{j['outcome']}")
-    body = (tag("div", outcome + tag("span", esc(j["id"]), cls="n"), cls="jtop")
-            + tag("div", facts_row, cls="jfacts")
-            + tag("h3", "Journey", cls="sheet-h")
-            + tag("ol", steps, cls="journey"))
-    return ui.sheet("Request", body, close_href=close_href,
-                    sub="What flexrouter tried, in order")
+            gave_up = failed[-1]["message"] if failed else "Every option was tried or passed over."
+            msgs += tag("div", tag("span", "Reply", cls="rq-who")
+                        + tag("div", esc(gave_up or "Nothing answered."), cls="rq-text bad"),
+                        cls="rq-msg")
+        parts += tag("div", msgs, cls="rq-convo")
+    else:
+        parts += tag("p", "The prompt and reply weren't saved for this request "
+                     "(saving was off, or it's older than the keep window in Settings).",
+                     cls="dim rq-convo")
+    if failed:
+        parts += _tried_first(failed)
+    if skipped:
+        parts += _passed_over(skipped)
+    return ui.sheet("Request", line + sub + parts, close_href=close_href,
+                    sub="What was asked, what came back, and what was tried first")
 
 
 def body(router, params: dict) -> str:

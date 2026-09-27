@@ -33,9 +33,24 @@ class Preset:
     models_path: Optional[str] = None
     header_parser: str = "openai_compatible"
     free: bool = True
-    seed_rpm: int = 30
-    seed_tpm: int = 60_000
     free_filter: str = "all"
+    # Provider facts (grill-decisions.md §19): shipped, hand-maintained, and
+    # dated. `checked` is when someone last compared them with the
+    # provider's own pages; None means nobody has yet.
+    key_url: str = ""
+    rate_limit_page_url: str = ""
+    docs_url: str = ""
+    # "rolling", or "HH:MM Area/City" when the provider's day starts over
+    # at a fixed time (Google: midnight Pacific). See flexrouter/resets.py.
+    daily_reset: str = "rolling"
+    # Whether failed attempts count toward the provider's limits. None is
+    # unknown - not the same as no.
+    counts_failed_requests: Optional[bool] = None
+    limit_scope: str = ""  # per key / per project / per account ...
+    reports_remaining_per_day: bool = False
+    known_quirks: tuple[str, ...] = ()
+    free_tier_note: str = ""
+    checked: Optional[str] = None
 
 
 def _coerce(name: str, raw: dict) -> Preset:
@@ -54,9 +69,18 @@ def _coerce(name: str, raw: dict) -> Preset:
         models_path=path or None,
         header_parser=str(raw.get("header_parser") or "openai_compatible"),
         free=bool(raw.get("free", True)),
-        seed_rpm=int(raw.get("seed_rpm", 30)),
-        seed_tpm=int(raw.get("seed_tpm", 60_000)),
         free_filter=str(raw.get("free_filter") or "all"),
+        key_url=str(raw.get("key_url") or ""),
+        rate_limit_page_url=str(raw.get("rate_limit_page_url") or ""),
+        docs_url=str(raw.get("docs_url") or ""),
+        daily_reset=str(raw.get("daily_reset") or "rolling"),
+        counts_failed_requests=(None if raw.get("counts_failed_requests") is None
+                                else bool(raw["counts_failed_requests"])),
+        limit_scope=str(raw.get("limit_scope") or ""),
+        reports_remaining_per_day=bool(raw.get("reports_remaining_per_day", False)),
+        known_quirks=tuple(str(q) for q in (raw.get("known_quirks") or ())),
+        free_tier_note=str(raw.get("free_tier_note") or ""),
+        checked=raw.get("checked") or None,
     )
 
 

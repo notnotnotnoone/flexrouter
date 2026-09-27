@@ -328,6 +328,18 @@ def set_known_secrets(secrets) -> None:
     _secrets = tuple(sorted({s for s in secrets if s}, key=len, reverse=True))
 
 
+def mask_known_secrets(text: str) -> str:
+    """Only the exact-match half of scrub_body: every key flexrouter holds,
+    cut to a tail, and nothing heuristic. For saved conversations, where
+    anything cleverer would mangle the text the owner wants to read."""
+    if not text:
+        return text
+    for secret in _secrets:
+        if secret in text:
+            text = text.replace(secret, _tail(secret))
+    return text
+
+
 def scrub_body(text: str) -> str:
     """A provider's whole response body, readable, minus every credential.
 

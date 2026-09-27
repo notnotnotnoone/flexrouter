@@ -378,3 +378,40 @@ async def test_final_usage_chunk_populates_done_event_usage(config_file, monkeyp
     events = [e async for e in router.agenerate_stream(MESSAGES, tier="low")]
     done = [e for e in events if isinstance(e, DoneEvent)][0]
     assert done.result["usage"] == {"prompt_tokens": 3, "completion_tokens": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_reply_and_its_thinking_are_saved(config_file, monkeypatch):
+    """PLAN-V2.3.md Session 11: the request sheet reads prompt, reply and
+    reasoning back by request id."""
+    router = _router(config_file)
+    monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE]))
+    monkeypatch.setattr(
+        router._client, "stream_chat",
+        _stream_chat_sequence([_ok_stream(["<think>hm</think>Hel", "lo"])]))
+    async for _ in router.agenerate_stream(MESSAGES, tier="low", trace_id="req_saved"):
+        pass
+    saved = router._conversations.get("req_saved")
+    assert saved["messages"] == MESSAGES
+    assert saved["reply"] == "Hello" and saved["reasoning"] == "hm"
+
+
+@pytest.mark.asyncio
+async def test_attempts_the_provider_answered_count_toward_its_limits(config_file, monkeypatch):
+    """grill-decisions.md §19: Google charged six overloaded 503s to the
+    day's 20. flexrouter counts every attempt the provider answered, not
+    just the one that worked; a connection that never reached it doesn't."""
+    router = _router(config_file)
+    monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE, ROUTE, ROUTE]))
+    monkeypatch.setattr(router, "_pick_key", lambda route: (route, None, False))
+    monkeypatch.setattr(router._client, "stream_chat", _stream_chat_sequence([
+        _fail_stream(ProviderError("overloaded", status_code=503)),
+        _fail_stream(ProviderError("connection reset")),
+        _ok_stream(["ok"]),
+    ]))
+    async for _ in router.agenerate_stream(MESSAGES, tier="low"):
+        pass
+    q = router._quota_tracker
+    events = q._state[f"{ROUTE.provider}/{ROUTE.model}"]
+    assert len(events) == 2
+    assert q.failed_in_window(ROUTE.provider, ROUTE.model, "rpd") == 1

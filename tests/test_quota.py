@@ -165,3 +165,46 @@ def test_tpm_sums_tokens_in_a_sixty_second_window(tmp_path, monkeypatch):
 
     fake_now[0] += 60.1
     assert tracker.is_available("groq", "m1", {"tpm": 500}) is True
+
+
+# ── §19: the provider's own day, and failed attempts ────────────────────
+
+def test_a_daily_cap_counts_from_the_providers_reset(tmp_path, monkeypatch):
+    """Google's day starts at midnight Pacific. A request sent before that
+    no longer counts toward today, however recent it was."""
+    from datetime import datetime, timezone
+    from flexrouter import quota
+    t = QuotaTracker(str(tmp_path), {"googleai": "00:00 America/Los_Angeles"})
+    before = datetime(2026, 9, 26, 6, 50, tzinfo=timezone.utc).timestamp()   # 23:50 PDT
+    after = datetime(2026, 9, 26, 7, 10, tzinfo=timezone.utc).timestamp()    # 00:10 PDT
+    monkeypatch.setattr(quota.time, "time", lambda: before)
+    t.record("googleai", "gemini", 0)
+    monkeypatch.setattr(quota.time, "time", lambda: after)
+    assert t.is_available("googleai", "gemini", {"rpd": 1})
+    # A rolling provider still remembers it.
+    r = QuotaTracker(str(tmp_path / "r"))
+    monkeypatch.setattr(quota.time, "time", lambda: before)
+    r.record("groq", "m", 0)
+    monkeypatch.setattr(quota.time, "time", lambda: after)
+    assert not r.is_available("groq", "m", {"rpd": 1})
+
+
+def test_a_full_aligned_day_frees_at_the_reset(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from flexrouter import quota
+    t = QuotaTracker(str(tmp_path), {"googleai": "00:00 America/Los_Angeles"})
+    now = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc).timestamp()      # 05:00 PDT
+    monkeypatch.setattr(quota.time, "time", lambda: now)
+    t.record("googleai", "gemini", 0)
+    reset = datetime(2026, 9, 27, 7, 0, tzinfo=timezone.utc).timestamp()
+    assert abs(t.seconds_until_available("googleai", "gemini", {"rpd": 1}) - (reset - now)) < 1
+
+
+def test_failed_attempts_count(tmp_path):
+    t = QuotaTracker(str(tmp_path))
+    t.record("g", "m", 0, failed=True)
+    t.record("g", "m", 5)
+    assert not t.is_available("g", "m", {"rpd": 2})
+    assert t.failed_in_window("g", "m", "rpd") == 1
+    # and it survives a restart
+    assert QuotaTracker(str(tmp_path)).failed_in_window("g", "m", "rpd") == 1
