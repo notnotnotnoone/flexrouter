@@ -402,7 +402,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 **Starter prompt:**
 > Do Session 15 of PLAN-V2.3.md. Read that block and .scratch/polish/showcase/PORTING.md.
 
-### ☐ Session 16 — No jumping, no swapping, every width (after 15)
+### ☑ Session 16 — No jumping, no swapping, every width (after 15)
 **Model:** Sonnet
 **US:** 88–90. **P:** 26–30.
 - Overview layout shift under 0.1 (it's 0.32 today).
@@ -412,8 +412,18 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 - Readable chart axis labels, and traffic not squeezed into one bar.
 
 **Done when:**
-- [ ] Measured in the browser pane (layout-shift observer).
-- [ ] Browser tests added for the no-swap rule.
+- [x] Measured in the browser pane (layout-shift observer).
+- [x] Browser tests added for the no-swap rule.
+
+*Done 2026-09-26*, measured on a sandbox home with fake traffic:
+- **Before:** at 1014px every page was 1100px wide, because of `body { min-width: 1100px }`. At 375px six pages were 480–660px wide.
+- **After:** no page is wider than the window at 1014px or 375px.
+- **Layout shift:** 0.000 on every page. The 0.32 didn't reproduce with warm fonts; both fonts are now preloaded anyway.
+- **Phones:** under 760px the sidebar is a top bar with a Menu button.
+- **Live refresh:** a poll is skipped while the pointer rests on a row, while a field has focus, or for 400ms after a click. The next tick tries again.
+- **Chart labels:** sized in screen pixels by `app.js` (`--tick`, 11px).
+- **Chart start:** the chart begins at the first request, with at least 6 bars.
+- **Browser tests:** no-swap, no overflow at both widths, the Menu, label size, layout shift, failed save, and Undo.
 
 **Starter prompt:**
 > Do Session 16 of PLAN-V2.3.md. Read that block and papercuts.md items 26–30. Measure before and after in the browser pane.
