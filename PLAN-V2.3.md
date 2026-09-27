@@ -313,7 +313,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 **Starter prompt:**
 > Do Session 11 of PLAN-V2.3.md. Read that block, grill-decisions.md §7, and the Q8 sample in grill-log.md.
 
-### ☐ Session 12 — Playground + Explain errors with AI (after 4, 8)
+### ☑ Session 12 — Playground + Explain errors with AI (after 4, 8)
 **Model:** Sonnet
 **Decisions:** §7, §8. **US:** 43–47, 54. **P:** 10, 23.
 - Playground:
@@ -326,6 +326,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
   - the list of clickable buttons
 
   Keys masked, no paste-back.
+- *Done 2026-09-26, ahead of Session 8:* the buttons sit on What's broken (`broken_page.py`) for now; the prompt lives in `dashboard/explain.py`, so Session 8 just calls it from the status page. Busy rows are left out of the prompt (they clear by themselves). Markdown is a small escaped subset in `app.js` (`md()`), no new vendor file.
 
 **Starter prompt:**
 > Do Session 12 of PLAN-V2.3.md. Read that block, grill-decisions.md §8, and the example prompt in grill-log.md.

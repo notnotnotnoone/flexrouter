@@ -931,6 +931,7 @@ table.log td { padding: 8px 12px; }
 .card-where { font: 400 11px var(--mono); color: var(--ink-3); }
 .card-why { margin: 0; color: var(--ink-2); font-size: 12px; }
 .card-foot { display: flex; align-items: center; gap: 12px; }
+.explain-bar { display: flex; margin: 0 0 12px; }
 
 /* error brain */
 .brain-card { gap: 10px; border-left-color: var(--violet); }
@@ -1205,6 +1206,16 @@ tbody tr.m-detail:hover td { background: var(--ground); }
 .pg-compare-msg { max-width: none; width: 100%; }
 .pg-who { font: 500 10px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--ink-4); }
 .pg-text { white-space: pre-wrap; word-break: break-word; line-height: 1.6; padding: 10px 14px; border: 1px solid var(--rule); background: var(--raise); min-height: 40px; min-width: 60px; }
+.pg-assistant .pg-text, .pg-compare-card .pg-text { white-space: normal; }
+.pg-text > :first-child { margin-top: 0; }
+.pg-text > :last-child { margin-bottom: 0; }
+.pg-text p, .pg-text ul, .pg-text ol, .pg-text pre { margin: 0 0 .7em; }
+.pg-text ul, .pg-text ol { padding-left: 1.4em; }
+.pg-text h3, .pg-text h4, .pg-text h5, .pg-text h6 { margin: .8em 0 .4em; font-size: 14px; }
+.pg-text code { font: 12px var(--mono); background: var(--panel); padding: 1px 4px; }
+.pg-text pre { white-space: pre; overflow-x: auto; padding: 8px 10px; background: var(--panel); border: 1px solid var(--rule); }
+.pg-text pre code { padding: 0; background: none; }
+.pg-msg > .fold { margin: -2px 0 0; }
 .pg-user .pg-text { background: var(--green-wash); border-color: rgba(52, 211, 153, .3); }
 .pg-error .pg-text { color: var(--bad); border-color: rgba(248, 113, 113, .4); }
 .pg-strip {

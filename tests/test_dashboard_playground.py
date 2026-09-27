@@ -155,3 +155,15 @@ def test_compare_all_fans_out_and_tags_each_reply_by_model(compare_client, monke
     assert "reply from groq/llama-3.1-8b-instant" in text
     assert "reply from openai/gpt-4o-mini" in text
     assert text.count("event: flexrouter") == 2
+
+
+def test_the_reply_is_not_labelled_flexrouter():
+    """PLAN-V2.3.md Session 12: the reply names the model that answered
+    (app.js fills it from each chunk's flexrouter.model), and replies are
+    rendered markdown with a collapsible Thinking section."""
+    from pathlib import Path
+    js = (Path(__file__).parent.parent / "flexrouter/dashboard/static/app.js").read_text(
+        encoding="utf-8")
+    assert 'role === "user" ? "you" : "flexrouter"' not in js
+    assert "payload.flexrouter.model" in js
+    assert "function md(src)" in js and "reasoning_content" in js

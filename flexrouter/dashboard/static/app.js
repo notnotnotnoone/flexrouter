@@ -362,6 +362,52 @@
     } catch (err) { /* storage blocked: settings just aren't remembered */ }
   }
 
+  /* Markdown for replies (§7, US-45): a small, safe subset. Everything is
+     escaped first, so a model can only ever produce the tags made here. */
+  function md(src) {
+    var esc = function (t) { return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); };
+    var inline = function (t) {
+      return t.replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    };
+    var out = [], list = null, para = [];
+    var flushPara = function () { if (para.length) { out.push("<p>" + inline(para.join("<br>")) + "</p>"); para = []; } };
+    var flushList = function () { if (list) { out.push("</" + list + ">"); list = null; } };
+    var blocks = src.split(/```/);
+    blocks.forEach(function (block, i) {
+      if (i % 2) { flushPara(); flushList(); out.push("<pre><code>" + esc(block.replace(/^[\w-]*\n/, "")) + "</code></pre>"); return; }
+      esc(block).split("\n").forEach(function (line) {
+        var h = /^(#{1,4})\s+(.*)$/.exec(line), ul = /^\s*[-*]\s+(.*)$/.exec(line), ol = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+        if (h) { flushPara(); flushList(); out.push("<h" + (h[1].length + 2) + ">" + inline(h[2]) + "</h" + (h[1].length + 2) + ">"); }
+        else if (ul || ol) {
+          flushPara();
+          var kind = ul ? "ul" : "ol";
+          if (list !== kind) { flushList(); out.push("<" + kind + ">"); list = kind; }
+          out.push("<li>" + inline((ul || ol)[1]) + "</li>");
+        }
+        else if (!line.trim()) { flushPara(); flushList(); }
+        else { flushList(); para.push(line); }
+      });
+      flushPara(); flushList();
+    });
+    return out.join("");
+  }
+
+  /* The collapsible Thinking section above a reply, made on the first
+     reasoning chunk (§7). */
+  function thinking(body) {
+    var fold = body.parentNode.querySelector(".fold");
+    if (!fold) {
+      fold = document.createElement("details");
+      fold.className = "fold";
+      fold.innerHTML = '<summary>Thinking <span class="n"></span></summary><div class="fold-body rq-think"></div>';
+      body.parentNode.insertBefore(fold, body);
+    }
+    return fold;
+  }
+
   function bubble(role, text) {
     var log = document.getElementById("pg-log");
     var empty = log.querySelector(".empty");
@@ -370,7 +416,7 @@
     b.className = "pg-msg pg-" + role;
     var who = document.createElement("span");
     who.className = "pg-who";
-    who.textContent = role === "user" ? "you" : "flexrouter";
+    who.textContent = role === "user" ? "you" : "waiting for a model";
     var body = document.createElement("div");
     body.className = "pg-text";
     body.textContent = text;
@@ -385,7 +431,7 @@
   function strip(target, info) {
     var s = document.createElement("a");
     s.className = "pg-strip outcome-" + (info.outcome || "ok");
-    s.href = "/requests?id=" + encodeURIComponent(info.id);
+    s.href = "/requests/" + encodeURIComponent(info.id);
     s.setAttribute("hx-get", "/requests/" + encodeURIComponent(info.id) + "/journey");
     s.setAttribute("hx-target", "#sheet-root");
     s.setAttribute("hx-swap", "innerHTML");
@@ -396,6 +442,9 @@
       (info.ms || 0).toLocaleString() + " ms"
     ].join("  ·  ");
     target.parentNode.appendChild(s);
+    var who = target.parentNode.querySelector(".pg-who");
+    if (who && !target.closest(".pg-compare-card"))
+      who.textContent = info.answered_by || "nothing answered";
     if (window.htmx) htmx.process(s);
   }
 
@@ -447,7 +496,7 @@
     btn.disabled = true;
     var sys = document.getElementById("pg-system").value.trim();
     var msgs = (sys ? [{ role: "system", content: sys }] : []).concat(convo);
-    var answer = "", cards = null;
+    var answer = "", reasoning = "", cards = null;
     try {
       var r = await fetch("/playground/chat", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -495,13 +544,24 @@
             }
             var c = payload.choices && payload.choices[0];
             var delta = (c && c.delta && c.delta.content) || "";
+            var think = (c && c.delta && c.delta.reasoning_content) || "";
             if (card) {
               card.text += delta;
               card.body.classList.remove("shimmer");
-              card.body.textContent = card.text;
-            } else {
+              card.body.innerHTML = md(card.text);
+            } else if (out) {
+              // The reply is labelled with the model answering it, never
+              // "flexrouter" (US-44): every chunk names it (ADR 0018).
+              if (payload.flexrouter && payload.flexrouter.model)
+                out.parentNode.querySelector(".pg-who").textContent = payload.flexrouter.model;
+              if (think) {
+                reasoning += think;
+                var fold = thinking(out);
+                fold.querySelector(".rq-think").textContent = reasoning;
+                fold.querySelector(".n").textContent = reasoning.length.toLocaleString() + " characters";
+              }
               answer += delta;
-              if (out) { out.classList.remove("shimmer"); out.textContent = answer; }
+              if (answer) { out.classList.remove("shimmer"); out.innerHTML = md(answer); }
             }
             document.getElementById("pg-log").scrollTop = 1e9;
           });
