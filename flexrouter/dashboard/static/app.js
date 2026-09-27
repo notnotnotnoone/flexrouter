@@ -1460,6 +1460,13 @@
      this runs for the click that caused it. */
   flex.settle = function (row, status) {
     var list = row.closest(".st"), group = row.closest(".st-group");
+    /* the line under the title follows the Needs-you count */
+    var says = list.querySelector(".st-says");
+    if (says && row.getAttribute("data-status") === "needs") {
+      var left = Math.max(0, list.querySelectorAll('.st-row[data-status="needs"]').length - 1);
+      says.textContent = left ? left + (left === 1 ? " thing needs you" : " things need you")
+                              : "Nothing needs you right now.";
+    }
     var from = row.getAttribute("data-status");
     var dot = row.querySelector(":scope > .pill-dot");
     var chip = list.querySelector('.st-count[data-status="' + status + '"]');

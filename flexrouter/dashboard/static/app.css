@@ -1179,6 +1179,7 @@ table.log td { padding: 8px 12px; }
 /* One row, one sentence, at most one button. Detail behind a click. */
 
 .st { display: block; }
+.st-says { margin: -14px 0 14px; }
 .st-top { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px; margin-bottom: 16px; }
 .st-top .st-strip { margin-bottom: 0; }
 .st > .box { margin-top: 24px; }

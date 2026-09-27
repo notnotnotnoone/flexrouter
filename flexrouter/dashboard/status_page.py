@@ -278,17 +278,22 @@ def inner(router, rows: dict | None = None) -> str:
     ask = _explain_button(everything, "Explain errors with AI", "explain-all") if everything else ""
     foot = tag("p", "Click any row for the full provider response and past requests. "
                + esc(_classifier_line(router)), cls="st-foot")
-    return (tag("div", strip + tag("span", "", cls="spacer") + ask, cls="st-top")
+    return (_says(rows) + tag("div", strip + tag("span", "", cls="spacer") + ask, cls="st-top")
             + body + foot + _test_all_box(router))
+
+
+def _says(rows: dict) -> str:
+    """The one-line answer under the title; inside the live block, so a fix
+    or a refresh keeps it true."""
+    n = len(rows["needs"])
+    return tag("p", esc(f"{n} thing{'s' if n != 1 else ''} need{'s' if n == 1 else ''} you" if n
+                        else "Nothing needs you right now."), cls="page-status st-says",
+               **{"data-row": "st-says", "data-value": n})
 
 
 def body(router) -> str:
     rows = groups(router)
-    n = len(rows["needs"])
-    status = (f"{n} thing{'s' if n != 1 else ''} need{'s' if n == 1 else ''} you" if n
-              else "Nothing needs you right now.")
-    head = tag("div", tag("div", tag("h1", "Status", cls="page-title")
-                          + tag("p", esc(status), cls="page-status"), cls="page-head-text"),
+    head = tag("div", tag("div", tag("h1", "Status", cls="page-title"), cls="page-head-text"),
                cls="page-head")
     return head + tag("section", inner(router, rows), cls="st", id="status", **{
         "data-live": "", "hx-get": "/status?fragment=1",
