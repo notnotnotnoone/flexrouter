@@ -65,8 +65,8 @@ def test_a_request_opens_its_journey_and_escape_closes_it(page, server, errors):
     page.goto(server + "/requests")
     page.locator("tr.req-row").first.click()
     expect(page.locator("#sheet-root .sheet")).to_be_visible()
-    expect(page.locator("li.jstep-failed")).to_contain_text("slow down")
-    expect(page).to_have_url(server + "/requests?id=req_b1")
+    expect(page.locator("#sheet-root .rq-tried")).to_contain_text("slow down")
+    expect(page).to_have_url(server + "/requests/req_b1")
     page.keyboard.press("Escape")
     expect(page.locator("#sheet-root .sheet")).to_have_count(0)
     expect(page).to_have_url(server + "/requests")
@@ -139,11 +139,41 @@ def test_add_with_ai_review_lets_you_edit_and_apply_a_row(page, server, errors):
     page.goto(server + "/models_catalog/add-with-ai")
     page.select_option("select[name=provider]", "groq")
     page.click("button:has-text('Build prompt')")
-    page.fill("textarea[name=answer]",
-              "groq | new-model-x | chat | 8192 | 30 | 6000 | no | yes | 70")
+    page.fill("textarea[name=answer]", json.dumps([{
+        "provider": "groq", "model": "new-model-x", "kind": "chat", "context": 8192,
+        "rpm": 30, "tpm": 6000, "rph": None, "rpd": None, "rps": None, "tph": None,
+        "tpd": None, "tps": None, "vision": False, "free": True, "score": 70}]))
     page.click("button:has-text('Show what would be added')")
     expect(page.locator("input[name='model:0']")).to_have_value("new-model-x")
     page.click("button:has-text('Apply checked rows')")
     expect(page).to_have_url(server + "/models_catalog?ok=1&message=1%20added")
     expect(page.locator("body")).to_contain_text("added")
     assert errors == []
+
+
+def test_a_guessed_id_locks_apply_until_use_fixes_it(page, server, errors):
+    """PLAN-V2.3.md Session 13: a row whose ID isn't on the provider's real
+    list can't be applied; [use] swaps in the real one and unlocks it."""
+    from pathlib import Path
+    import flexrouter.app as app_module
+    from flexrouter import catalogue
+    from flexrouter.store import write_json
+    state = Path(app_module.get_router()._cfg.state_dir)
+    write_json(state / catalogue.KNOWN_MODEL_IDS_FILENAME, {"groq": {"ids": ["new-model-x2"]}})
+    try:
+        page.goto(server + "/models_catalog/add-with-ai")
+        page.select_option("select[name=provider]", "groq")
+        page.click("button:has-text('Build prompt')")
+        page.fill("textarea[name=answer]", json.dumps([{
+            "provider": "groq", "model": "new-model-x", "kind": "chat", "context": 8192,
+            "rpm": None, "tpm": None, "rph": None, "rpd": None, "rps": None, "tph": None,
+            "tpd": None, "tps": None, "vision": False, "free": True, "score": 70}]))
+        page.click("button:has-text('Show what would be added')")
+        expect(page.locator("#apply-rows")).to_be_disabled()
+        expect(page.locator("#apply-block")).to_contain_text("Fix 1 ID")
+        page.click("[data-use-id='new-model-x2']")
+        expect(page.locator("input[name='model:0']")).to_have_value("new-model-x2")
+        expect(page.locator("#apply-rows")).to_be_enabled()
+        assert errors == []
+    finally:
+        (state / catalogue.KNOWN_MODEL_IDS_FILENAME).unlink(missing_ok=True)

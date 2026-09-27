@@ -60,7 +60,13 @@ def test_an_auth_failure_is_classified_as_bad_key(tmp_path, monkeypatch):
 
 
 def test_a_429_is_classified_as_too_fast(tmp_path, monkeypatch):
-    router = _router(tmp_path, monkeypatch)
+    # A second model to fail over to: since PLAN-V2.3.md Session 3 a
+    # rate-limited model is Busy at once, so a one-model bucket has no retry.
+    cfg = _cfg(tmp_path)
+    cfg.tiers["smart"].append(ModelConfig(provider="alpha", model="small", score=50,
+                                          rpm=60, tpm=60000, context_window=100_000))
+    monkeypatch.setattr("flexrouter._router.load_config", lambda _p: cfg)
+    router = LocalRouter(str(tmp_path / "config.yaml"))
     calls = {"n": 0}
 
     from flexrouter.client import RateLimitError

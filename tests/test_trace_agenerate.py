@@ -65,8 +65,18 @@ def test_needs_lists_vision_when_the_request_asked_for_it(tmp_path, monkeypatch)
     assert _traces(tmp_path)[0]["asked"]["needs"] == ["vision"]
 
 
+def _two_model_router(tmp_path, monkeypatch):
+    """A second model to fail over to: since PLAN-V2.3.md Session 3 a
+    failed model is Busy at once, so a one-model bucket has no retry."""
+    cfg = _cfg(tmp_path)
+    cfg.tiers["smart"].append(ModelConfig(provider="alpha", model="small", score=50,
+                                          rpm=60, tpm=60000, context_window=100_000))
+    monkeypatch.setattr("flexrouter._router.load_config", lambda _p: cfg)
+    return LocalRouter(str(tmp_path / "config.yaml"))
+
+
 def test_a_provider_failure_is_recorded_as_an_attempt(tmp_path, monkeypatch):
-    router = _router(tmp_path, monkeypatch)
+    router = _two_model_router(tmp_path, monkeypatch)
     calls = {"n": 0}
 
     async def fake_chat(self, route, messages, **kwargs):

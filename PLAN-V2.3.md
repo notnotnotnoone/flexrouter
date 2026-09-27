@@ -371,7 +371,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 > Do Session 14 of PLAN-V2.3.md. Read that block and grill-decisions.md §19.
 
 **End of phase 3:**
-- [ ] Full suite + browser suite green.
+- [x] Full suite + browser suite green (2026-09-26: 1632 passed, 1 skipped; browser 14 passed). Three tests that were already failing before this phase were fixed as stale: two assumed a one-model bucket retries after a 500/429 (not true since Session 3), and one expected Models at `/models`. The Add-with-AI browser test also still pasted the old pipe format.
 
 ---
 
