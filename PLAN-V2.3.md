@@ -244,8 +244,18 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 
 **Done when:**
 - [ ] The owner has reviewed it in the browser.
-- [ ] Dashboard page tests and browser tests pass.
-- [ ] It matches the approved mockup.
+- [x] Dashboard page tests and browser tests pass.
+- [x] It matches the approved mockup.
+
+*Built 2026-09-27 (after Phase 4's other sessions, which had worked around its absence):*
+- **The page** is `dashboard/status_page.py` at `/status`. `/broken` and `/brain` answer 301 to it, and the menu has one "Status" entry. `broken_page.py` and `brain_page.py` are gone, and their tests were ported to `tests/test_dashboard_status.py`.
+- **The rows** come from `facts.broken()`, so Explain with AI (Session 12) and Test all (Session 18) moved over unchanged. Ready rows come from every configured model, and Off rows from `enabled: false`.
+- **Row buttons** go to `POST /status/<use|retry|remove|turn_on>/<provider>/<model>`. The JSON answer names the status the row settles into (`flex.settle`). [Remove] turns the model off, because config.yaml is never rewritten.
+- **"Not sure"** rows are error-brain entries flagged for review. Opening one shows where it happened, the requests it hit, and the classifier's odds, with a one-time "It means… [Tell it]" form (`/brain/<fp>/verdict`, which now redirects to Status).
+- **Classifier telemetry** is one footer line.
+- **Same statuses everywhere:**
+  - Overview's verdict tags are the same counts as Status: N ready · busy · struggling · N need you.
+  - Providers and Models show `ui.pill()` statuses. `ui.status()`'s "● OK / ▲ BROKEN" is no longer used on those pages.
 
 **Starter prompt:**
 > Do Session 8 of PLAN-V2.3.md. Read that block, the approved mockup in grill-log.md, and .scratch/polish/showcase/PORTING.md. Show me in the browser pane before finishing.
