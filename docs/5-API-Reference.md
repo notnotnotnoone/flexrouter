@@ -503,6 +503,7 @@ Lists all available routing tiers as models:
 |---|---|
 | `auto` | Pick the tier with the **highest-scoring model** (most intelligent available) |
 | `auto-{tier}` | Route through a specific tier (e.g. `auto-default`, `auto-premium`) |
+| `all` | Built in: every model in every bucket, once each (ADR 0019). A bucket you name `all` takes its place. |
 | Any other string | Falls back to the `default` tier |
 
 ### Using with OpenAI SDKs
