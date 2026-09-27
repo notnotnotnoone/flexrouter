@@ -117,7 +117,7 @@ class LocalRouter:
         self._rate_limit_store = RateLimitStore(self._cfg.state_dir)
         errors.set_max_length(self._cfg.error_max_length)
         self._register_known_identifiers()
-        self._quota_tracker = QuotaTracker(self._cfg.state_dir)
+        self._quota_tracker = QuotaTracker(self._cfg.state_dir, self._daily_resets())
         self._events = EventLogger(self._cfg.state_dir)
         # grill-decisions.md §3: one status per model, replacing the penalty
         # box, quarantine, and the 7-day auto-bench (which is gone: a model
@@ -276,11 +276,18 @@ class LocalRouter:
         Scrubbed at the write site for the same reason as
         _handle_auth_failure: the provider's text is persisted and served.
         """
+        status_code = 429 if isinstance(exc, RateLimitError) else getattr(exc, "status_code", None)
+        if status_code is not None:
+            # §19: an attempt the provider answered counts toward its limits
+            # even when it failed (Google charged 6 overloaded 503s to the
+            # day's 20), so flexrouter's count has to include it too.
+            self._quota_tracker.record(route.provider, route.model, 0, failed=True)
+            if key_id is not None:
+                self._quota_tracker.record_key(route.provider, key_id, 0, failed=True)
         if verdict == "bad_key" and getattr(exc, "status_code", None) == 400:
             self._handle_auth_failure(route, exc, key_id)
             return
         detail = scrub(str(exc))
-        status_code = 429 if isinstance(exc, RateLimitError) else getattr(exc, "status_code", None)
         failure = self._status.record_failure(
             route.provider, route.model, status_code, getattr(exc, "body", "") or str(exc),
             retry_after=getattr(exc, "retry_after", None), detail=detail, verdict=verdict)
@@ -301,8 +308,17 @@ class LocalRouter:
                 route.provider, key_id, status.seconds_left() or st.BUSY_DEFAULT_SECONDS,
                 "Too many requests")
 
+    def _daily_resets(self) -> dict[str, str]:
+        """Each configured provider's daily reset, from its preset (§19)."""
+        from flexrouter import presets
+        found = presets.all()
+        return {name: found[name].daily_reset for name in self._cfg.providers
+                if name in found}
+
     def _handle_empty_reply(self, route, detail: str) -> None:
-        """§2: an empty reply makes the model Struggling, for about an hour."""
+        """§2: an empty reply makes the model Struggling, for about an hour.
+        §19: the provider answered, so the attempt counts toward its limits."""
+        self._quota_tracker.record(route.provider, route.model, 0, failed=True)
         self._status.set_struggling(
             route.provider, route.model, "Gave an empty reply.", detail=detail)
         self._events.record(route.provider, route.model, "server_error", detail=detail)
@@ -1412,7 +1428,7 @@ class LocalRouter:
         self._cfg = cfg
         self._register_known_identifiers()
         self._rate_limit_store = RateLimitStore(self._cfg.state_dir)
-        self._quota_tracker = QuotaTracker(self._cfg.state_dir)
+        self._quota_tracker = QuotaTracker(self._cfg.state_dir, self._daily_resets())
         self._engine.update_config(self._cfg)
         self._engine._rate_limit_store = self._rate_limit_store
         self._engine._quota_tracker = self._quota_tracker

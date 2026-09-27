@@ -1,108 +1,145 @@
 """The Allowance page: how much free-tier headroom is left, and when it comes back.
 
-Top: every provider's daily caps stacked into one bar - the whole pitch of
-flexrouter, as a picture. Below: one box per provider with a block meter per
-limit and a live countdown. Limits the owner set are metered exactly;
-limits a provider reported are shown as "N left" with a countdown, because
-providers rarely say out of how many.
+grill-decisions.md §19: one group per provider and no grand total, so a
+14,400-a-day Gemma can't swamp twenty-a-day Geminis in one big number. Each
+group says when that provider's day starts over, in your own time, and one
+row per real limit. Our own counts include failed attempts (the provider
+counts them too) and say so; a figure the provider reported is shown as the
+provider's, because it's the truth. Every group ends with the reminder that
+flexrouter only counts what it sent.
 """
 from __future__ import annotations
 
-from flexrouter.dashboard import charts, facts, ui
+from datetime import datetime
+
+from flexrouter.dashboard import facts, ui
 from flexrouter.dashboard.overview import num
 from flexrouter.dashboard.render import esc, tag
 
 
-def _stack(stack: dict, colors: dict) -> str:
-    if not stack["parts"]:
-        return ui.box("Stacked daily headroom", ui.empty(
-            "No daily caps set yet. Give a model a requests-per-day cap on Models "
-            "and its headroom stacks up here.",
-            action=ui.button("Set caps on Models", href="/models_catalog")),
-            **{"data-enter": "", "data-box": "stack"})
-    used_share = stack["total"] - stack["left"]
-    bar = ui.stacked_bar([(p["provider"], p["left"], colors[p["provider"]]) for p in stack["parts"]],
-                         empty_share=used_share)
-    legend = "".join(
-        tag("span", tag("span", "", cls="swatch", style=f"background:{colors[p['provider']]}")
-            + tag("span", esc(p["provider"])) + tag("span", f"{num(p['left'])} / {num(p['total'])}",
-                                                    cls="n"), cls="legend-item")
-        for p in stack["parts"])
-    plural = "" if stack["providers"] == 1 else "s"
-    headline = tag("div",
-                   tag("b", num(stack["left"]), cls="stack-big", **{"data-value": stack["left"]})
-                   + tag("span", f"free requests left today across {stack['providers']} "
-                                 f"provider{plural}", cls="stack-sub")
-                   + tag("span", f"of {num(stack['total'])} a day", cls="n"),
-                   cls="stack-head")
-    return ui.box("Stacked daily headroom",
-                  headline + bar + tag("div", legend, cls="legend stack-legend"),
-                  sub="only daily caps you have set are counted",
-                  **{"data-enter": "", "data-box": "stack", "data-stat": "stack-left"})
+def _local_clock(epoch: float) -> str:
+    t = datetime.fromtimestamp(epoch)
+    return f"{t.hour % 12 or 12}:{t.minute:02d} {'AM' if t.hour < 12 else 'PM'}"
 
 
-def _limit_row(model: str, lim: dict) -> str:
+def _nice_date(iso: str) -> str:
+    try:
+        d = datetime.fromisoformat(iso)
+    except ValueError:
+        return iso
+    return f"{d.day} {d.strftime('%b')} {d.year}"
+
+
+def _limit_row(model: str, lim: dict, label: str, counts_failed) -> str:
     frac = lim["used"] / lim["limit"] if lim["limit"] else None
-    left = max(lim["limit"] - lim["used"], 0)
     unit_word = "tokens" if lim["unit"] == "tokens" else "requests"
-    label = f"{unit_word} per {lim['window']}"
-    note = (ui.countdown(lim["frees_at"], prefix="Frees up in") if lim["frees_at"]
-            else tag("span", f"{num(left)} left · rolling {lim['window']}", cls="n"))
+    window = "today" if lim["window"] == "day" and lim["aligned"] else f"per {lim['window']}"
+    figs = f"{num(lim['used'])} / {num(lim['limit'])}"
+    if lim.get("failed"):
+        figs += tag("small", f"{lim['failed']} failed")
+    note = ""
+    if lim["frees_at"] and lim["used"] >= lim["limit"]:
+        note = ("Used up. flexrouter skips it until "
+                + ("the reset. " if lim["aligned"] else "one frees up. ")
+                + ui.countdown(lim["frees_at"], prefix="in"))
+    elif lim.get("failed"):
+        why = (f"{esc(label)} counts failed tries too" if counts_failed
+               else "Failed tries are included, in case they count")
+        note = (f"{why}: {lim['failed']} of these {num(lim['used'])} failed. "
+                + tag("span", "our count", cls="lim-src"))
     return tag("div",
                tag("div", tag("span", esc(model), cls="lim-model")
-                   + tag("span", label, cls="lim-window"), cls="lim-name")
-               + ui.meter(frac, label=f"{model} {label}")
-               + tag("span", f"{num(lim['used'])} / {num(lim['limit'])}", cls="lim-figs")
-               + ui.tag_("your limit")
-               + tag("div", note, cls="lim-note"),
+                   + tag("span", f"{unit_word} {window}", cls="lim-window"), cls="lim-name")
+               + ui.meter(frac, label=f"{model} {unit_word} {window}")
+               + tag("div", figs, cls="lim-figs")
+               + (tag("div", note, cls="lim-note") if note else ""),
                cls="lim-row", **{"data-row": f"lim:{model}:{lim['unit']}:{lim['window']}",
                                  "data-value": lim["used"]})
 
 
-def _says_row(model: str, says: dict) -> str:
+def _says_row(model: str, says: dict, label: str) -> str:
     return tag("div",
                tag("div", tag("span", esc(model), cls="lim-model")
-                   + tag("span", esc(says["what"]), cls="lim-window"), cls="lim-name")
-               + ui.meter(None, label=f"{model} {says['what']}")
-               + tag("span", f"{num(says['remaining'])} left", cls="lim-figs")
-               + ui.tag_("provider says", "blue")
-               + tag("div", ui.countdown(says["resets_at"]), cls="lim-note"),
+                   + tag("span", esc(f"{says['what']} left"), cls="lim-window"), cls="lim-name")
+               + ui.meter(None, label=f"{model} {says['what']} left")
+               + tag("div", f"{num(says['remaining'])} left", cls="lim-figs")
+               + tag("div", f"{esc(label)} sends what's left with every reply, so this is "
+                            f"{esc(label)}'s number. "
+                     + tag("span", f"{esc(label)} says", cls="lim-src theirs")
+                     + (" " + ui.countdown(says["resets_at"], prefix="resets in")
+                        if says["resets_at"] else ""),
+                     cls="lim-note"),
                cls="lim-row", **{"data-row": f"says:{model}:{says['what']}",
                                  "data-value": says["remaining"]})
 
 
-def _provider_box(g: dict, color: str) -> str:
-    rows = ""
-    exhausted = ""
+def _reset_line(g: dict) -> str:
+    if g["next_reset"]:
+        return tag("div",
+                   tag("span", f"Resets at {esc(g['reset_words'])}, "
+                       + tag("b", esc(_local_clock(g["next_reset"]))) + " your time")
+                   + ui.countdown(g["next_reset"], prefix="in"),
+                   cls="allow-reset")
+    return tag("div", tag("span", "Rolling: each request frees up a day after it was sent."),
+               cls="allow-reset")
+
+
+def _foot(g: dict) -> str:
+    bits = ["Counts only what flexrouter sent."]
+    if g["counts_failed"]:
+        bits.append(f"{esc(g['label'])} counts failed tries too.")
+    elif g["counts_failed"] is False:
+        bits.append(f"{esc(g['label'])} doesn't count failed tries.")
+    if g["limits_url"]:
+        bits.append(tag("a", f"{esc(g['label'])}'s own numbers ↗", href=g["limits_url"],
+                        target="_blank", rel="noopener"))
+    bits.append(f"checked {esc(_nice_date(g['checked']))}" if g["checked"]
+                else "provider facts not checked yet")
+    return tag("p", " ".join(bits[:-1]) + " · " + bits[-1], cls="allow-foot")
+
+
+def _provider_box(g: dict) -> str:
+    busy, quiet = [], []
     for m in g["models"]:
-        for lim in m["limits"]:
-            rows += _limit_row(m["model"], lim)
-        for says in m["provider_says"]:
-            rows += _says_row(m["model"], says)
+        rows = "".join(_limit_row(m["model"], lim, g["label"], g["counts_failed"])
+                       for lim in m["limits"])
+        rows += "".join(_says_row(m["model"], says, g["label"]) for says in m["provider_says"])
         if m["exhausted_until"]:
-            exhausted += tag("div",
-                             tag("span", "▲ USED UP", cls="status status-bad")
-                             + tag("span", esc(f"{m['model']}: the provider says there is nothing "
-                                               "left; flexrouter is sending these requests to "
-                                               "the next model in the bucket"), cls="dim")
-                             + ui.countdown(m["exhausted_until"], prefix="Back in"),
-                             cls="lim-out")
-    if not rows:
-        rows = tag("p", "No limits known for these models yet. Set a cap on Models, or send "
+            rows += tag("div",
+                        tag("span", "▲ USED UP", cls="status status-bad")
+                        + tag("span", esc(f"{m['model']}: {g['label']} says there is nothing "
+                                          "left; flexrouter is sending these requests to the "
+                                          "next model in the bucket"), cls="dim")
+                        + ui.countdown(m["exhausted_until"], prefix="Back in"),
+                        cls="lim-out")
+        if not rows:
+            continue
+        used = any(lim["used"] for lim in m["limits"]) or m["provider_says"] \
+            or m["exhausted_until"]
+        (busy if used else quiet).append((m["model"], rows))
+    if not busy and not quiet:
+        body = tag("p", "No limits known for these models yet. Set a cap on Models, or send "
                         "a request and the provider's own numbers appear here.", cls="note")
-    title = tag("span", "", cls="swatch", style=f"background:{color}")
+    else:
+        body = "".join(rows for _, rows in busy)
+        if quiet:
+            if busy:
+                names = " · ".join(name for name, _ in quiet[:3])
+                body += ui.fold(f"{len(quiet)} more model{'s' if len(quiet) != 1 else ''}",
+                                "".join(rows for _, rows in quiet), note=names)
+            else:
+                body += "".join(rows for _, rows in quiet)
     keys = f"{g['keys']} key" + ("" if g["keys"] == 1 else "s")
-    return ui.box(g["provider"], exhausted + rows, sub=keys,
-                  action=title, **{"data-enter": "", "data-box": f"prov-{g['provider']}"})
+    sub = f"{g['limit_scope']} · {keys}" if g["limit_scope"] else keys
+    return ui.box(g["label"], _reset_line(g) + body + _foot(g), sub=sub,
+                  cls="allow-group", **{"data-enter": "", "data-box": f"prov-{g['provider']}"})
 
 
 def body(router) -> str:
     groups = facts.allowance_groups(router)
-    stack = facts.allowance_stack(router)
-    status = (f"{num(stack['left'])} of {num(stack['total'])} daily requests left"
-              if stack["total"] else "Free-tier headroom, and when it comes back.")
     head = tag("div", tag("div", tag("h1", "Allowance", cls="page-title")
-                          + tag("p", esc(status), cls="page-status"), cls="page-head-text"),
+                          + tag("p", "Free-tier headroom per provider, and when it comes back.",
+                                cls="page-status"), cls="page-head-text"),
                cls="page-head")
     if not groups:
         return head + ui.empty("No models configured yet.",
@@ -116,7 +153,4 @@ def body(router) -> str:
 
 def inner(router) -> str:
     groups = facts.allowance_groups(router)
-    stack = facts.allowance_stack(router)
-    colors = {g["provider"]: charts.color_for(i) for i, g in enumerate(groups)}
-    return _stack(stack, colors) + tag("div", "".join(
-        _provider_box(g, colors[g["provider"]]) for g in groups), cls="allow-grid")
+    return tag("div", "".join(_provider_box(g) for g in groups), cls="allow-grid")

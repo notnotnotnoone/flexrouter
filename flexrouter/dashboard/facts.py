@@ -562,37 +562,42 @@ _QUOTA_WINDOWS = {
 
 
 def _quota_usage(router, provider: str, model: str, quotas: dict, now: float) -> list[dict]:
-    """The owner's own caps on one model, with what has been used of each.
+    """The model's caps, with what has been used of each.
 
-    `frees_at` is when the next request becomes allowed again - only set
-    when the cap is actually reached. These windows roll (the last 24
-    hours, not "today"), so a full cap frees up one request (or enough
-    tokens) at a time as the oldest event in the window ages out.
+    grill-decisions.md §19: failed attempts count (the provider counts
+    them), and a daily cap counts from the provider's own reset when its
+    preset names one, so "7 / 20" matches the provider's console. `failed`
+    is how many of `used` were failures. `frees_at` is set only when the
+    cap is reached: the reset for an aligned day, otherwise the moment the
+    oldest event rolls out.
     """
-    events = sorted(router._quota_tracker._state.get(f"{provider}/{model}", []))
+    tracker = router._quota_tracker
+    events = sorted(tracker._state.get(f"{provider}/{model}", []))
     out = []
     for q_type, limit in quotas.items():
         if q_type not in _QUOTA_WINDOWS or not limit:
             continue
         word, seconds, is_token = _QUOTA_WINDOWS[q_type]
         unit = "tokens" if is_token else "requests"
-        in_window = [e for e in events if e[0] > now - seconds]
-        if is_token:
-            used = sum(tokens for _, tokens in in_window)
-        else:
-            used = len(in_window)
+        start = tracker.window_start(provider, q_type, now)
+        in_window = [e for e in events if e[0] > start]
+        used = sum(e[1] for e in in_window) if is_token else len(in_window)
+        failed = sum(1 for e in in_window if len(e) > 2 and e[2])
         frees_at = None
         if used >= limit:
             if is_token:
                 remaining = used
-                for ts, tokens in in_window:
-                    remaining -= tokens
+                for e in in_window:
+                    remaining -= e[1]
                     if remaining < limit:
-                        frees_at = ts + seconds
+                        frees_at = tracker.window_end(provider, q_type, e[0], now)
                         break
             else:
-                frees_at = in_window[used - limit][0] + seconds
+                frees_at = tracker.window_end(provider, q_type,
+                                              in_window[used - limit][0], now)
+        aligned = start != now - seconds
         out.append({"window": word, "unit": unit, "used": used, "limit": int(limit),
+                    "failed": 0 if is_token else failed, "aligned": aligned,
                     "frees_at": frees_at, "source": "yours"})
     return sorted(out, key=lambda lim: (0 if lim["window"] == "day" else
                                         1 if lim["window"] == "hour" else 2,
@@ -633,9 +638,26 @@ def allowance_groups(router, now: Optional[float] = None) -> list[dict]:
                 "provider_says": _provider_says(router, mc.provider, mc.model, now),
                 "exhausted_until": router._rate_limit_store.available_at(mc.provider, mc.model),
             })
-    return [{"provider": p, "keys": _key_count(router, p),
-             "models": sorted(ms, key=lambda m: m["model"])}
-            for p, ms in sorted(by_provider.items())]
+    from flexrouter import presets, resets
+    found = presets.all()
+    out = []
+    for p, ms in sorted(by_provider.items()):
+        preset = found.get(p)
+        spec = preset.daily_reset if preset else "rolling"
+        out.append({
+            "provider": p, "keys": _key_count(router, p),
+            "models": sorted(ms, key=lambda m: m["model"]),
+            # Provider facts (§19), for the group's header and footer.
+            "label": preset.label if preset else p,
+            "daily_reset": spec,
+            "reset_words": resets.describe(spec),
+            "next_reset": resets.next_reset(spec, now),
+            "counts_failed": preset.counts_failed_requests if preset else None,
+            "limit_scope": preset.limit_scope if preset else "",
+            "limits_url": preset.rate_limit_page_url if preset else "",
+            "checked": preset.checked if preset else None,
+        })
+    return out
 
 
 def _key_count(router, provider: str) -> int:
@@ -643,24 +665,6 @@ def _key_count(router, provider: str) -> int:
     if pcfg is None:
         return 0
     return len(getattr(pcfg, "keys", None) or getattr(pcfg, "api_keys", None) or [])
-
-
-def allowance_stack(router, now: Optional[float] = None) -> dict:
-    """Daily headroom summed across every provider - the whole point of
-    stacking free tiers, as one number. Only daily caps the owner has set
-    are counted: a provider that never said its total cannot be added up."""
-    parts = []
-    for g in allowance_groups(router, now):
-        total = used = 0
-        for m in g["models"]:
-            for lim in m["limits"]:
-                if lim["window"] == "day" and lim["unit"] == "requests":
-                    total += lim["limit"]
-                    used += min(lim["used"], lim["limit"])
-        if total:
-            parts.append({"provider": g["provider"], "left": total - used, "total": total})
-    return {"parts": parts, "left": sum(p["left"] for p in parts),
-            "total": sum(p["total"] for p in parts), "providers": len(parts)}
 
 
 _SETTINGS_ATTR = {

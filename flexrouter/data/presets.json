@@ -5,7 +5,20 @@
     "signup_url": "https://console.groq.com/keys",
     "models_path": "/models",
     "header_parser": "groq",
-    "free": true, "seed_rpm": 30, "seed_tpm": 6000, "free_filter": "groq_chat"
+    "free": true,
+    "free_filter": "groq_chat",
+    "key_url": "https://console.groq.com/keys",
+    "rate_limit_page_url": "https://console.groq.com/settings/limits",
+    "docs_url": "https://console.groq.com/docs/rate-limits",
+    "daily_reset": "rolling",
+    "counts_failed_requests": null,
+    "limit_scope": "per organization",
+    "reports_remaining_per_day": true,
+    "known_quirks": [
+      "Sends what's left with every reply (x-ratelimit-remaining-requests is per day)."
+    ],
+    "free_tier_note": "About 1,000 requests/day on most models; smaller models allow more.",
+    "checked": null
   },
   "cerebras": {
     "label": "Cerebras",
@@ -13,7 +26,20 @@
     "signup_url": "https://cloud.cerebras.ai",
     "models_path": "/models",
     "header_parser": "cerebras",
-    "free": true, "seed_rpm": 30, "seed_tpm": 60000, "free_filter": "all"
+    "free": true,
+    "free_filter": "all",
+    "key_url": "https://cloud.cerebras.ai",
+    "rate_limit_page_url": "https://cloud.cerebras.ai",
+    "docs_url": "https://inference-docs.cerebras.ai/support/rate-limits",
+    "daily_reset": "rolling",
+    "counts_failed_requests": null,
+    "limit_scope": "per organization",
+    "reports_remaining_per_day": true,
+    "known_quirks": [
+      "zai-glm reasoning arrives in a `reasoning` field, not `reasoning_content`."
+    ],
+    "free_tier_note": "About 14,400 requests/day and 1M tokens/day per model.",
+    "checked": null
   },
   "openrouter": {
     "label": "OpenRouter",
@@ -21,7 +47,20 @@
     "signup_url": "https://openrouter.ai/keys",
     "models_path": "/models",
     "header_parser": "openrouter",
-    "free": true, "seed_rpm": 20, "seed_tpm": 100000, "free_filter": "zero_price"
+    "free": true,
+    "free_filter": "zero_price",
+    "key_url": "https://openrouter.ai/keys",
+    "rate_limit_page_url": "https://openrouter.ai/settings/credits",
+    "docs_url": "https://openrouter.ai/docs/api-reference/limits",
+    "daily_reset": "00:00 UTC",
+    "counts_failed_requests": null,
+    "limit_scope": "per account",
+    "reports_remaining_per_day": false,
+    "known_quirks": [
+      "Free models end in `:free`."
+    ],
+    "free_tier_note": "50 requests/day on :free models, 1,000/day once you've bought $10 of credit.",
+    "checked": null
   },
   "mistral": {
     "label": "Mistral",
@@ -29,7 +68,20 @@
     "signup_url": "https://console.mistral.ai/api-keys",
     "models_path": "/models",
     "header_parser": "mistral",
-    "free": true, "seed_rpm": 60, "seed_tpm": 500000, "free_filter": "mistral_chat"
+    "free": true,
+    "free_filter": "mistral_chat",
+    "key_url": "https://console.mistral.ai/api-keys",
+    "rate_limit_page_url": "https://admin.mistral.ai/plateforme/limits",
+    "docs_url": "https://docs.mistral.ai/deployment/laplateforme/tier/",
+    "daily_reset": "rolling",
+    "counts_failed_requests": null,
+    "limit_scope": "per workspace",
+    "reports_remaining_per_day": false,
+    "known_quirks": [
+      "Free tier limits are per second and per month, not per day."
+    ],
+    "free_tier_note": "Experiment plan: about 1 request/second, a monthly token cap.",
+    "checked": null
   },
   "nvidia": {
     "label": "NVIDIA NIM",
@@ -37,7 +89,20 @@
     "signup_url": "https://build.nvidia.com",
     "models_path": "/models",
     "header_parser": "openai_compatible",
-    "free": true, "seed_rpm": 40, "seed_tpm": 60000, "free_filter": "all"
+    "free": true,
+    "free_filter": "all",
+    "key_url": "https://build.nvidia.com",
+    "rate_limit_page_url": "https://build.nvidia.com",
+    "docs_url": "https://docs.api.nvidia.com/nim/reference/",
+    "daily_reset": "rolling",
+    "counts_failed_requests": null,
+    "limit_scope": "per account",
+    "reports_remaining_per_day": false,
+    "known_quirks": [
+      "Sends no rate-limit headers; limits are learned from 429s."
+    ],
+    "free_tier_note": "About 40 requests/minute; no published daily cap.",
+    "checked": null
   },
   "googleai": {
     "label": "Google AI Studio",
@@ -45,7 +110,22 @@
     "signup_url": "https://aistudio.google.com/apikey",
     "models_path": "/models",
     "header_parser": "google",
-    "free": true, "seed_rpm": 15, "seed_tpm": 1000000, "free_filter": "googleai_free"
+    "free": true,
+    "free_filter": "googleai_free",
+    "key_url": "https://aistudio.google.com/apikey",
+    "rate_limit_page_url": "https://aistudio.google.com/rate-limit",
+    "docs_url": "https://ai.google.dev/gemini-api/docs/rate-limits",
+    "daily_reset": "00:00 America/Los_Angeles",
+    "counts_failed_requests": true,
+    "limit_scope": "per project",
+    "reports_remaining_per_day": false,
+    "known_quirks": [
+      "IDs differ from display names; preview models carry `-preview`.",
+      "Gemma puts its reasoning inline as `<thought>`.",
+      "Failed attempts (503 'high demand') count toward the daily limit: observed 2026-09-25, 7 of 7 matched AI Studio."
+    ],
+    "free_tier_note": "20 requests/day on most Gemini models; Gemma allows 14,400/day.",
+    "checked": "2026-09-25"
   },
   "deepseek": {
     "label": "DeepSeek",
@@ -53,7 +133,18 @@
     "signup_url": "https://platform.deepseek.com",
     "models_path": "/models",
     "header_parser": "openai_compatible",
-    "free": false, "seed_rpm": 60, "seed_tpm": 200000, "free_filter": "all"
+    "free": false,
+    "free_filter": "all",
+    "key_url": "https://platform.deepseek.com/api_keys",
+    "rate_limit_page_url": "https://platform.deepseek.com/usage",
+    "docs_url": "https://api-docs.deepseek.com/quick_start/rate_limit",
+    "daily_reset": "rolling",
+    "counts_failed_requests": null,
+    "limit_scope": "per account",
+    "reports_remaining_per_day": false,
+    "known_quirks": [],
+    "free_tier_note": "Paid only; new accounts sometimes get a small credit.",
+    "checked": null
   },
   "siliconflow": {
     "label": "SiliconFlow",
@@ -61,7 +152,18 @@
     "signup_url": "https://cloud.siliconflow.cn",
     "models_path": "/models",
     "header_parser": "siliconflow",
-    "free": false, "seed_rpm": 20, "seed_tpm": 100000, "free_filter": "all"
+    "free": false,
+    "free_filter": "all",
+    "key_url": "https://cloud.siliconflow.cn/account/ak",
+    "rate_limit_page_url": "https://cloud.siliconflow.cn",
+    "docs_url": "https://docs.siliconflow.cn/en/userguide/rate-limits/rate-limit-and-upgradation",
+    "daily_reset": "rolling",
+    "counts_failed_requests": null,
+    "limit_scope": "per account",
+    "reports_remaining_per_day": false,
+    "known_quirks": [],
+    "free_tier_note": "A few models are free; most are paid.",
+    "checked": null
   },
   "sambanova": {
     "label": "SambaNova",
@@ -69,7 +171,18 @@
     "signup_url": "https://cloud.sambanova.ai",
     "models_path": "/models",
     "header_parser": "openai_compatible",
-    "free": false, "seed_rpm": 20, "seed_tpm": 50000, "free_filter": "all"
+    "free": false,
+    "free_filter": "all",
+    "key_url": "https://cloud.sambanova.ai/apis",
+    "rate_limit_page_url": "https://cloud.sambanova.ai",
+    "docs_url": "https://docs.sambanova.ai/cloud/docs/get-started/rate-limits",
+    "daily_reset": "rolling",
+    "counts_failed_requests": null,
+    "limit_scope": "per account",
+    "reports_remaining_per_day": false,
+    "known_quirks": [],
+    "free_tier_note": "Free tier has low per-minute limits.",
+    "checked": null
   },
   "llm7": {
     "label": "LLM7.io",
@@ -77,7 +190,20 @@
     "signup_url": "https://dash.llm7.io",
     "models_path": "/models",
     "header_parser": "openai_compatible",
-    "free": true, "seed_rpm": 40, "seed_tpm": 30000, "free_filter": "llm7_free"
+    "free": true,
+    "free_filter": "llm7_free",
+    "key_url": "https://dash.llm7.io",
+    "rate_limit_page_url": "https://dash.llm7.io",
+    "docs_url": "https://docs.llm7.io",
+    "daily_reset": "rolling",
+    "counts_failed_requests": null,
+    "limit_scope": "per key",
+    "reports_remaining_per_day": false,
+    "known_quirks": [
+      "402 means the balance is empty, not a bad request."
+    ],
+    "free_tier_note": "Free models work without a balance; paid ones need one.",
+    "checked": null
   },
   "ollama": {
     "label": "Ollama (local)",
@@ -85,6 +211,19 @@
     "signup_url": "https://ollama.com",
     "models_path": "/api/tags",
     "header_parser": "openai_compatible",
-    "free": true, "seed_rpm": 600, "seed_tpm": 10000000, "free_filter": "all"
+    "free": true,
+    "free_filter": "all",
+    "key_url": "",
+    "rate_limit_page_url": "",
+    "docs_url": "https://github.com/ollama/ollama/blob/main/docs/openai.md",
+    "daily_reset": "rolling",
+    "counts_failed_requests": false,
+    "limit_scope": "local",
+    "reports_remaining_per_day": false,
+    "known_quirks": [
+      "Runs on your computer: no limits, only your hardware."
+    ],
+    "free_tier_note": "Free and local.",
+    "checked": null
   }
 }

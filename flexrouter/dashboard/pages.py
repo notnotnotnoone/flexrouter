@@ -2025,8 +2025,9 @@ async def buckets_add_model(bucket: str, request: Request) -> RedirectResponse:
             "provider": (form.get("provider") or "").strip(),
             "model": (form.get("model") or "").strip(),
             "score": int(form.get("score")),
-            "rpm": int(form.get("rpm")),
-            "tpm": int(form.get("tpm")),
+            # Blank = unknown, learned from the provider (§6).
+            "rpm": _opt_int(form.get("rpm")),
+            "tpm": _opt_int(form.get("tpm")),
         }
         context_window = form.get("context_window")
         if context_window:
@@ -2298,8 +2299,6 @@ def _discovered_body(provider: str, preset, result, bucket_names: list) -> str:
         return (head + tag("p", "This key works, but the provider lists no "
                                "models it can reach.", cls="note"))
 
-    seed_rpm = preset.seed_rpm if preset else 30
-    seed_tpm = preset.seed_tpm if preset else 60_000
     options = "".join(tag("option", esc(b), value=esc(b)) for b in bucket_names)
     rows = []
     for model_id in result.models:
@@ -2308,8 +2307,6 @@ def _discovered_body(provider: str, preset, result, bucket_names: list) -> str:
             "form",
             _input(type="hidden", name="model", value=esc(model_id))
             + _input(type="hidden", name="score", value="50")
-            + _input(type="hidden", name="rpm", value=esc(seed_rpm))
-            + _input(type="hidden", name="tpm", value=esc(seed_tpm))
             + picker
             + tag("button", "Import", type="submit"),
             method="post",
@@ -2325,8 +2322,8 @@ def _discovered_body(provider: str, preset, result, bucket_names: list) -> str:
                        f"answered in {result.latency_ms} ms"), cls="lede")
         + tag("div", _panel(
             "What this key can reach", table,
-            sub=f"seeded at {seed_rpm} rpm / {seed_tpm} tpm - correct them "
-                f"afterwards on the Models page"), cls="panel-page"))
+            sub="limits start unknown and are learned from the provider's "
+                "replies - or set them on the Models page"), cls="panel-page"))
 
 
 @pages.post("/providers/{provider}/edit", include_in_schema=False)

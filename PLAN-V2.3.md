@@ -346,7 +346,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 **Starter prompt:**
 > Do Session 13 of PLAN-V2.3.md. Read that block and grill-decisions.md §6 and §18.
 
-### ☐ Session 14 — Provider facts + honest Allowance ⚡
+### ☑ Session 14 — Provider facts + honest Allowance ⚡
 **Model:** Sonnet
 **Decisions:** §19. **US:** 71–77, 98. **P:** 5, 6, 25.
 - `flexrouter/data/presets.json` gains:
@@ -365,6 +365,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
   - one row per real limit
   - "resets in 5h (midnight PT)" in local time
   - the note "counts only what flexrouter sent"
+- *Done 2026-09-26:* reset times live in `flexrouter/resets.py`, which falls back to the US daylight-saving rule because Windows has no tzdata. Only Google's facts are evidence-backed (`checked: 2026-09-25`). The other presets' URLs, notes and quirks were written from memory, so they have `checked: null` and `counts_failed_requests: null`, and the page says "provider facts not checked yet" until someone checks them. An attempt counts once the provider answered it (a status code, or an empty reply). The "failed attempts save real quota" docs note is left for Session 19.
 
 **Starter prompt:**
 > Do Session 14 of PLAN-V2.3.md. Read that block and grill-decisions.md §19.

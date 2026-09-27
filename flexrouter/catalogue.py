@@ -47,8 +47,6 @@ class ProviderDef:
     signup_url: str
     free: bool
     free_filter: Callable[[dict], bool]
-    default_rpm: int
-    default_tpm: int
     rate_limit_headers: dict = field(default_factory=lambda: dict(STANDARD_RL_HEADERS))
     ollama: bool = False
 
@@ -123,20 +121,15 @@ class DiscoveryError(Exception):
 
 
 def _as_provider_def(p) -> ProviderDef:
-    """One preset in the shape `refresh.py` has always read.
-
-    `default_rpm`/`default_tpm` keep their old names here even though the
-    preset calls them seeds, because this dataclass is what the refresh
-    path consumes and renaming it is not this change's job.
-    """
+    """One preset in the shape `refresh.py` has always read. The invented
+    seed limits are gone (grill-decisions.md §12, §19): an unknown limit is
+    learned, never guessed."""
     return ProviderDef(
         name=p.name,
         base_url=p.base_url,
         signup_url=p.signup_url,
         free=p.free,
         free_filter=FREE_FILTERS.get(p.free_filter, _all_free),
-        default_rpm=p.seed_rpm,
-        default_tpm=p.seed_tpm,
         ollama=(p.name == "ollama"),
     )
 
