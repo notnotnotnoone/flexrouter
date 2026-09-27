@@ -125,10 +125,10 @@ def steps(router, base_url: str) -> list[Step]:
     # answered isn't "done", it's the thing to go and fix.
     four = Step(4, "Say hi to every model", bool(models) and len(results) == len(models) and good > 0)
     if len(results) == len(models) and models and not good:
-        four.sub = f"None of the {len(models)} answered. What's broken says why."
+        four.sub = f"None of the {len(models)} answered. Status says why."
     elif four.done:
         bad = len(results) - good
-        four.sub = f"{good} of {len(models)} answered" + (f" · {bad} didn't, see What's broken" if bad else "")
+        four.sub = f"{good} of {len(models)} answered" + (f" · {bad} didn't, see Status" if bad else "")
         four.ok_sub = not bad
     else:
         four.sub = "One tiny request each (\"hi\", up to 512 tokens), so you know they all answer."
@@ -189,7 +189,7 @@ def _test_list(models: list[str], results: dict) -> str:
 
 def test_all(models: list[str], results: dict, ident: str = "ta") -> str:
     """[Test all], its meter and its rows. Used by the quickstart and on
-    What's broken. Only runs on a click; nothing pings in the background."""
+    Status. Only runs on a click; nothing pings in the background."""
     from flexrouter.dashboard import ui
     from flexrouter.dashboard.render import tag
     if not models:

@@ -110,7 +110,7 @@ def test_step_five_gives_a_copyable_python_and_curl(client):
     assert "localhost:" in body and "/v1" in body
 
 
-def test_test_all_is_on_whats_broken_too(client):
-    body = client.get("/broken").text
-    assert 'data-test-all="#broken-list"' in body
+def test_test_all_is_on_the_status_page_too(client):
+    body = client.get("/status").text
+    assert 'data-test-all="#status-list"' in body
     assert 'data-model="llama-3.1-8b-instant"' in body

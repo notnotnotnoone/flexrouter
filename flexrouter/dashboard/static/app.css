@@ -858,6 +858,7 @@ button:active { transform: scale(.97); }
 /* verdict: the one loose, sentence-shaped block */
 .verdict { padding: 2px 0 4px; }
 .verdict-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.verdict-tags { display: inline-flex; flex-wrap: wrap; gap: 6px; text-decoration: none; border: 0 !important; }
 .verdict-line strong { font: 600 18px var(--mono); letter-spacing: -.01em; }
 .verdict-ok .verdict-line strong::before { content: "● "; color: var(--green); }
 .verdict-warn .verdict-line strong::before { content: "◆ "; color: var(--warn); }
@@ -1177,6 +1178,12 @@ table.log td { padding: 8px 12px; }
 /* ── status ─────────────────────────────────────────────── */
 /* One row, one sentence, at most one button. Detail behind a click. */
 
+.st { display: block; }
+.st-top { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px; margin-bottom: 16px; }
+.st-top .st-strip { margin-bottom: 0; }
+.st > .box { margin-top: 24px; }
+.st-detail .correct-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.st-detail > .btn { margin-top: 8px; }
 .st-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
 .st-count {
   display: inline-flex;

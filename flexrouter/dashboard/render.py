@@ -27,8 +27,7 @@ AREAS: list[tuple[str, str, str, str]] = [
     ("buckets", "Buckets", "The router", "layers"),
     ("requests", "Requests", "Traffic", "arrows"),
     ("playground", "Playground", "Traffic", "terminal"),
-    ("broken", "What's broken", "Traffic", "alert"),
-    ("brain", "Error brain", "Traffic", "brain"),
+    ("status", "Status", "Traffic", "alert"),
     ("allowance", "Allowance", "Traffic", "meter"),
     ("settings", "Settings", "System", "settings"),
 ]
@@ -194,7 +193,7 @@ def _live_badges() -> dict:
     try:
         from flexrouter.app import get_router
         from flexrouter.dashboard import facts
-        return {"broken": len(facts.broken(get_router())["needs_you"])}
+        return {"status": len(facts.broken(get_router())["needs_you"])}
     except Exception:  # noqa: BLE001 - a badge must never break a page
         return {}
 

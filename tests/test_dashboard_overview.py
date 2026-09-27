@@ -297,7 +297,8 @@ def test_buckets_are_drawn_as_block_meters(client, state_dir):
 def test_provider_state_is_a_word_not_only_a_colour(client, state_dir):
     _seed(state_dir, [_row(1)])
     body = client.get("/").text
-    assert any(w in body for w in ("● OK", "◆ ATTENTION", "▲ BROKEN"))
+    # One of the five statuses, glyph and word (Session 8), never "OK".
+    assert 'class="pill-word"' in body and "● OK" not in body
 
 
 # ── papercut 30: traffic isn't squeezed into the last bar ───────────────

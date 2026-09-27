@@ -40,8 +40,7 @@ from fastapi.responses import Response
 from flexrouter import app_password
 from flexrouter.dashboard import prefs as dashboard_prefs
 from flexrouter.dashboard import settings_page as settings_page_mod
-from flexrouter.dashboard import brain_page as brain_page_mod
-from flexrouter.dashboard import broken_page as broken_page_mod
+from flexrouter.dashboard import status_page as status_page_mod
 from flexrouter.dashboard import logs_page as logs_page_mod
 from flexrouter.dashboard import requests_page as requests_page_mod
 from flexrouter.dashboard.render import attrs, esc, page, tag
@@ -200,7 +199,7 @@ def _key_counts(s) -> str:
 def _provider_row(s) -> str:
     return tag("tr", "".join([
         tag("td", tag("a", esc(s.name), href=f"/providers/{quote(s.name)}")),
-        tag("td", ui.status(s.state)),
+        tag("td", ui.pill(s.pill)),
         tag("td", esc(s.base_url), cls="dim"),
         tag("td", esc(_key_counts(s))),
         tag("td", _num(s.models_total), cls="num"),
@@ -644,7 +643,6 @@ def _models_body(router, banner: str = "") -> str:
     for n, r in enumerate(rows_data):
         caps = (_cap_cell(r.vision, "vision") + _cap_cell(r.tools, "tools")
                 + _cap_cell(r.reasoning, "reason") + _size_tag(r.learned_context or r.context_window))
-        state = {"ready": "ok", "busy": "warn", "struggling": "warn"}.get(r.state, "bad")
         search = f"{r.provider} {r.model} {' '.join(r.buckets)}".lower()
         rows.append(tag("tr", "".join([
             tag("td", tag("span", esc(r.provider), cls="m-prov") + tag("span", esc(r.model),
@@ -656,7 +654,7 @@ def _models_body(router, banner: str = "") -> str:
             tag("td", esc(f"{r.response_rate:.0%} ({ui.plural(r.requests, 'request')})")
                 if r.response_rate is not None else tag("span", "no data yet", cls="dim")),
             tag("td", tag("div", caps, cls="caps")),
-            tag("td", ui.status(state)
+            tag("td", ui.pill({"needs_you": "needs"}.get(r.state, r.state))
                 + (tag("div", esc(r.why), cls="m-why") if r.why else "")),
             tag("td", tag("button", ui.icon("arrow-right"), type="button", cls="m-open",
                           **{"aria-label": f"Details for {r.model}", "data-toggle": f"m-{n}"})),
@@ -1447,12 +1445,54 @@ def overview_page(range: str = DEFAULT_RANGE, fragment: str = "") -> HTMLRespons
     return HTMLResponse(page("Overview", "overview", overview.body(router, key)))
 
 
-@pages.get("/broken", response_class=HTMLResponse, include_in_schema=False)
-def broken_page(fragment: str = "") -> HTMLResponse:
+@pages.get("/status", response_class=HTMLResponse, include_in_schema=False)
+def status_page(fragment: str = "", ok: str = "", message: str = "") -> HTMLResponse:
+    """Every model's one status (§3-§4). `fragment=1` is the live list alone."""
     router = _live_router()
     if fragment:
-        return HTMLResponse(broken_page_mod.inner(router))
-    return HTMLResponse(page("What's broken", "broken", broken_page_mod.body(router)))
+        return HTMLResponse(status_page_mod.inner(router))
+    return HTMLResponse(page("Status", "status",
+                             _message_banner(ok, message) + status_page_mod.body(router)))
+
+
+@pages.get("/broken", include_in_schema=False)
+@pages.get("/brain", include_in_schema=False)
+def old_status_pages(request: Request) -> RedirectResponse:
+    """What's broken and Error brain became Status (PLAN-V2.3.md Session 8)."""
+    qs = request.url.query
+    return RedirectResponse(url="/status" + (f"?{qs}" if qs else ""), status_code=301)
+
+
+@pages.post("/status/{action}/{provider}/{model:path}", include_in_schema=False)
+async def status_action(action: str, provider: str, model: str) -> JSONResponse:
+    """A Status row's one button: [Use X], [Retry] / [Try now], [Remove]
+    (turns the model off: config.yaml is never rewritten, ADR 0002) and
+    [Turn on]. Answers with the status the row settles into."""
+    router = _live_router()
+    try:
+        if action == "use":
+            current = router._status.get(provider, model)
+            if not (current.action or "").startswith("use:"):
+                raise ValueError("there's no suggestion for this model any more")
+            settings_write.use_suggested_model(router._cfg, provider, model,
+                                               current.action.removeprefix("use:"))
+            router.reload()
+            return JSONResponse({"ok": True, "status": "ready",
+                                 "message": f"Using {current.action[4:]}"})
+        if action == "retry":
+            router._status.clear(provider, model)
+            return JSONResponse({"ok": True, "status": "ready", "message": "Will try it next"})
+        if action == "remove":
+            settings_write.set_model_fields(provider, model, {"enabled": False})
+            router.reload()
+            return JSONResponse({"ok": True, "status": "off", "message": "Turned off"})
+        if action == "turn_on":
+            settings_write.set_model_fields(provider, model, {"enabled": True})
+            router.reload()
+            return JSONResponse({"ok": True, "status": "ready", "message": "Turned on"})
+    except ValueError as e:
+        return JSONResponse({"ok": False, "message": str(e)}, status_code=400)
+    return JSONResponse({"ok": False, "message": f"unknown action {action!r}"}, status_code=404)
 
 
 def toast_trigger(message: str, kind: str = "ok") -> dict[str, str]:
@@ -1475,7 +1515,6 @@ def _message_banner(ok: str, message: str) -> str:
                    **{"data-kind": "ok"})
     return (tag("div", esc(message), cls="toast-seed", hidden=True, **{"data-kind": "bad"})
             + tag("p", esc(message), cls="state-bad"))
-
 
 @pages.get("/models_catalog", response_class=HTMLResponse, include_in_schema=False)
 def models_page(ok: str = "", message: str = "") -> HTMLResponse:
@@ -1997,12 +2036,6 @@ def logs_page(fragment: str = "", limit: int = logs_page_mod.PAGE) -> HTMLRespon
     return HTMLResponse(page("Logs", "logs", logs_page_mod.body(limit)))
 
 
-@pages.get("/brain", response_class=HTMLResponse, include_in_schema=False)
-def brain_page(ok: str = "", message: str = "") -> HTMLResponse:
-    return HTMLResponse(page("Error brain", "brain",
-                             brain_page_mod.body(_live_router(), _message_banner(ok, message))))
-
-
 @pages.post("/brain/{fp}/verdict", include_in_schema=False)
 async def brain_correct(fp: str, request: Request) -> RedirectResponse:
     """Correct what one learned error means. Stored as the owner's own
@@ -2012,11 +2045,11 @@ async def brain_correct(fp: str, request: Request) -> RedirectResponse:
     try:
         _live_router()._error_brain.correct(fp, verdict)
     except KeyError:
-        return _redirect_with_message("/brain", False, "That error is no longer on record.")
+        return _redirect_with_message("/status", False, "That error is no longer on record.")
     except ValueError as exc:
-        return _redirect_with_message("/brain", False, str(exc))
-    label = brain_page_mod.LABELS.get(verdict, verdict)
-    return _redirect_with_message("/brain", True, f"Saved: that error now means \"{label}\".")
+        return _redirect_with_message("/status", False, str(exc))
+    label = status_page_mod.LABELS.get(verdict, verdict)
+    return _redirect_with_message("/status", True, f"Saved: that error now means \"{label}\".")
 
 
 @pages.get("/allowance", response_class=HTMLResponse, include_in_schema=False)

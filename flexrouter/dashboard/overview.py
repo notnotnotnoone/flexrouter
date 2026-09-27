@@ -204,11 +204,17 @@ def _verdict(data: dict, window: dict, label: str) -> str:
     else:
         headline, state = "Serving normally.", "ok"
 
-    tags = [ui.tag_(f"{p['ok']} of {ui.plural(p['total'], 'provider')} fine", "ok")]
-    if p["warn"]:
-        tags.append(ui.tag_(f"{p['warn']} unsettled", "warn"))
-    if p["bad"]:
-        tags.append(ui.tag_(f"{p['bad']} down", "bad"))
+    # The same statuses, and the same "need you" number, as the Status
+    # page: never "5 of 5 fine" next to "7 need you" (Session 8).
+    counts = data["models"]["statuses"]
+    tags = [ui.tag_(f"{counts.get('ready', 0)} ready", "ok")]
+    if counts.get("busy"):
+        tags.append(ui.tag_(f"{counts['busy']} busy", "warn"))
+    if counts.get("struggling"):
+        tags.append(ui.tag_(f"{counts['struggling']} struggling", "warn"))
+    if needs_you:
+        tags.append(ui.tag_(f"{needs_you} need{'s' if needs_you == 1 else ''} you", "bad"))
+    tags = [tag("a", "".join(tags), href="/status", cls="verdict-tags")]
 
     if window["requests"] == 0:
         story = (f"Nothing has come through in the last {label}. Point an app "
@@ -327,7 +333,7 @@ def _needs_you(broken_data: dict) -> str:
         body += tag("div",
                     tag("span", "", cls="todo-mark")
                     + tag("span", what, cls="todo-where")
-                    + ui.button("Fix", href="/broken", kind="primary")
+                    + ui.button("Fix", href="/status", kind="primary")
                     + tag("span", esc(item.reason), cls="todo-why"),
                     cls="todo-item")
     return ui.box("Needs you", body, cls="flush",
@@ -398,7 +404,7 @@ def _providers(summaries: list, window: dict, label: str) -> str:
         rows.append(tag("tr", "".join([
             tag("td", tag("span", _swatch(color) + esc(s.name), cls="prov-name")
                 + tag("span", esc(s.base_url), cls="prov-url")),
-            tag("td", ui.status(s.state)),
+            tag("td", ui.pill(s.pill)),
             tag("td", esc(f"{s.keys_ready} of {s.key_count} ready"), cls="dim"),
             tag("td", num(reqs), cls="num"),
             tag("td", esc(answered), cls="num"),

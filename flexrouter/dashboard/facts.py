@@ -52,6 +52,17 @@ class ProviderSummary:
     status_reason: str
     state: str  # "ok" | "warn" | "bad"
 
+    @property
+    def pill(self) -> str:
+        """The provider as one of the five statuses, for a status pill:
+        a key or the provider itself needing you is Needs you; nothing
+        ready but something coming back is Busy."""
+        if self.status == "needs_you" or self.keys_need_you or self.key_count == 0:
+            return "needs"
+        if self.keys_ready == 0:
+            return "busy" if self.keys_busy else "needs"
+        return "busy" if self.keys_busy else "ready"
+
 
 @dataclass
 class KeyDetail:

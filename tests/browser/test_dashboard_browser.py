@@ -23,7 +23,7 @@ def _write_trace(trace: dict):
 
 def test_every_page_loads_without_a_script_error(page, server, errors):
     for path in ["/", "/providers", "/models_catalog", "/buckets", "/requests", "/playground",
-                 "/broken", "/brain", "/allowance", "/settings"]:
+                 "/status", "/allowance", "/settings"]:
         page.goto(server + path)
         expect(page.locator(".page-title")).to_be_visible()
     assert errors == []
@@ -305,3 +305,29 @@ def test_hiding_get_started_offers_undo(page, server, errors):
     page.click(".toast-act")
     expect(page.locator("#qs")).to_be_visible()
     assert errors == []
+
+
+# ── PLAN-V2.3.md Session 8: the Status page ────────────────────────────
+
+def test_a_status_row_opens_and_its_fix_settles_it(page, server, errors):
+    import flexrouter.app as app_module
+    app_module.get_router()._status.set_needs_you(
+        "groq", "llama-3.1-8b-instant", "Your Groq balance is empty.", kind="balance_empty",
+        action="retry", detail="402 Payment Required END-OF-BODY")
+    page.goto(server + "/status")
+    row = page.locator(".st-row[data-status='needs']")
+    expect(row).to_contain_text("Your Groq balance is empty.")
+    row.locator(".st-name").click()
+    expect(page.locator(".st-detail:not([hidden])")).to_contain_text("END-OF-BODY")
+    row.locator("[data-st-action]").click()
+    expect(page.locator(".st-count[data-status='ready'] b")).to_have_text("1")
+    expect(page.locator(".st-group[data-group='needs'] .st-row")).to_have_count(0)
+    assert errors == []
+
+
+def test_pressing_a_count_shows_only_those(page, server):
+    page.goto(server + "/status")
+    expect(page.locator(".st-group[data-group='ready']")).to_be_hidden()
+    page.click(".st-count[data-status='ready']")
+    expect(page.locator(".st-group[data-group='ready']")).to_be_visible()
+    expect(page.locator(".st-group[data-group='needs']")).to_be_hidden()

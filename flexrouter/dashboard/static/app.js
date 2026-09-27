@@ -1139,9 +1139,9 @@
       if (!step || !r || !r.total) return;
       var sub = step.querySelector(".qs-sub"), none = r.failed === r.total;
       if (sub) {
-        sub.textContent = none ? "None of the " + r.total + " answered. What's broken says why."
+        sub.textContent = none ? "None of the " + r.total + " answered. Status says why."
           : (r.total - r.failed) + " of " + r.total + " answered" +
-            (r.failed ? " · " + r.failed + " didn't, see What's broken" : "");
+            (r.failed ? " · " + r.failed + " didn't, see Status" : "");
         sub.classList.toggle("ok", !r.failed);
       }
       if (!none) flex.tickStep(step);
@@ -1375,6 +1375,42 @@
       /* Ready and Off stay folded away unless asked for (data-quiet). */
       g.hidden = want ? g.getAttribute("data-group") !== want : g.hasAttribute("data-quiet");
     });
+  });
+
+  /* A pressed chip survives the live refresh, which morphs the strip. */
+  var stFilter = null;
+  document.addEventListener("click", function (e) {
+    var chip = e.target.closest && e.target.closest(".st-count");
+    if (chip) stFilter = chip.getAttribute("aria-pressed") === "true" ? chip.getAttribute("data-status") : null;
+  });
+  document.addEventListener("htmx:afterSettle", function (e) {
+    if (!stFilter || !e.detail.target || e.detail.target.id !== "status") return;
+    var chip = e.detail.target.querySelector('.st-count[data-status="' + stFilter + '"]');
+    if (chip && chip.getAttribute("aria-pressed") !== "true") { stFilter = null; chip.click(); }
+  });
+
+  /* A row's one button: POST data-st-action, then the row settles into
+     the status the server answers with (Session 8). */
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest && e.target.closest("[data-st-action]");
+    if (!btn || btn.getAttribute("data-state") === "working") return;
+    var row = btn.closest(".st-row"), then = null;
+    flex.run(btn, function () {
+      return fetch(btn.getAttribute("data-st-action"), { method: "POST" })
+        .then(function (r) { return r.json(); }, function () { throw new Error("couldn't reach flexrouter"); })
+        .then(function (d) {
+          if (!d.ok) throw new Error(d.message || "that didn't work");
+          then = d.status || btn.getAttribute("data-then") || "ready";
+          return { label: d.message };
+        });
+    }, { stay: true }).then(function (r) {
+      if (r && row && then) flex.settle(row, then);
+    });
+  });
+
+  /* A Busy row whose countdown ran out goes back to Ready by itself. */
+  document.addEventListener("flex:back", function (e) {
+    if (e.target.classList && e.target.classList.contains("st-row")) flex.settle(e.target, "ready");
   });
 
   function bump(list, status, by) {
