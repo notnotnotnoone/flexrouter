@@ -72,7 +72,7 @@ response = router.generate(
 
 ### Fallback on Unavailability
 
-If the pinned model becomes unavailable (rate-limited, penalized, over budget), flexrouter falls back to the next-best model for that call only:
+If the pinned model becomes unavailable (Busy, Struggling, Needs you, over budget), flexrouter falls back to the next-best model for that call only:
 
 ```python
 # Pinned to model A
@@ -123,7 +123,7 @@ providers:
       - env: GROQ_KEY_3
 ```
 
-Each request uses the next key in the list. If a key hits a 429 (rate limit), that key is penalized and the next key is used immediately.
+Each request uses the next key in the list. If a key hits a 429 (rate limit), that key turns Busy and the next key is used immediately (see [When a Key Is Busy](#when-a-key-is-busy) below).
 
 ### Why Multiple Keys?
 
@@ -333,10 +333,10 @@ Opens `http://localhost:4891`. The pages, in menu order:
 - **Playground**: chat through any bucket or model, with the reasoning in a
   folded Thinking section and replies rendered as markdown.
 - **Status**: every model's one status. Needs you on top, one sentence and
-  one button each; Busy with a countdown; Not sure; Ready and Off folded
-  away. Press a row for what the provider actually said. **Explain errors
-  with AI** copies a prompt describing every problem, and **Test all** says hi
-  to every model.
+  one button each; Struggling and Busy with a countdown; Not sure; Ready and
+  Off folded away. Press a row for what the provider actually said.
+  **Explain errors with AI** copies a prompt describing every problem, and
+  **Test all** says hi to every model.
 - **Allowance**: free-tier headroom per provider, when each provider's day
   starts over (in your own time), and the provider's own figures when it
   sends them.
@@ -504,8 +504,8 @@ print(df["model"].value_counts().head(10))
 | Status | Meaning |
 |--------|---------|
 | `ok` | Request succeeded |
-| `rate_limited` | 429, model penalized, retried |
-| `server_error` | 5xx, model penalized, retried |
+| `rate_limited` | 429, model turns Busy, next one tried |
+| `server_error` | 5xx, model turns Busy, next one tried |
 | `context_window` | Context too large, model skipped |
 | `auth_error` | Auth failed, no retry (hard error) |
 | `timeout` | Request timeout |

@@ -86,7 +86,7 @@ Within a tier, models have a **score** (1–100). Higher score = preferred.
 
 When you request a tier:
 
-1. Filter to available models (not penalized, not rate-limited, not over budget)
+1. Filter to available models (not Busy, Struggling or Needs you, not over budget)
 2. Score each: higher score wins
 3. **Avoid thundering herd:** Instead of always picking the #1 model, randomly select from the top 20% of available models
 
@@ -320,7 +320,7 @@ settings:
 
 ### Fallback on Unavailable
 
-If the pinned model becomes unavailable (penalized, rate-limited, over budget):
+If the pinned model becomes unavailable (Busy, Struggling, Needs you, over budget):
 - For that call only, flexrouter picks the next-best model
 - **The pin is NOT reset** — future calls continue using the original pinned model (if it recovers)
 
@@ -434,7 +434,7 @@ A reload that fails leaves the previously loaded settings in place and serving. 
 
 **Preserved on reload:**
 - ✅ Rate-limit windows
-- ✅ Penalty state
+- ✅ Model and key status (Busy/Struggling/Needs you)
 - ✅ Session pins
 - ✅ Audit logs
 
@@ -452,7 +452,7 @@ No restart needed. Your app stays running.
 1. **Tiers** isolate models by cost/quality. You pick per-call.
 2. **Scoring** and **thundering herd prevention** pick the best available model.
 3. **Rate limits** (RPM/TPM) are enforced locally using sliding windows.
-4. **Penalty box** with exponential backoff protects against cascading failures.
+4. **One status per model** (Ready, Busy, Struggling, Needs you, Off) replaces a penalty box — busy models clear on their own, broken ones wait for you.
 5. **Budget tracking** prevents runaway costs.
 6. **Session stickiness** pins a conversation to one model for consistency.
 7. **Error handling** gives you control: catch `RouterBusy`, `RouterError`, `ContextWindowWarning`.
