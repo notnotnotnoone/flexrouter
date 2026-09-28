@@ -26,9 +26,9 @@ def _built_router(tmp_path, monkeypatch):
     return LocalRouter(str(tmp_path / "config.yaml"))
 
 
-def test_pin_engine_has_one_bucket_per_model(tmp_path, monkeypatch):
+def test_pin_engine_has_one_bucket_per_model_plus_the_built_in_all(tmp_path, monkeypatch):
     router = _built_router(tmp_path, monkeypatch)
-    assert set(router._pin_engine._cfg.tiers) == {"alpha/big", "beta/small"}
+    assert set(router._pin_engine._cfg.tiers) == {"alpha/big", "beta/small", "all"}
     assert [mc.model for mc in router._pin_engine._cfg.tiers["alpha/big"]] == ["big"]
 
 

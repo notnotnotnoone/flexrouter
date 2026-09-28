@@ -35,6 +35,7 @@ from flexrouter.status import StatusStore
 from flexrouter.scheduler import RoundRobinCounters, key_quota_ok, pick_key
 from flexrouter.conversations import ConversationStore
 from flexrouter.traces import TraceWriter, new_trace_id
+from flexrouter.wire import ALL_BUCKET
 
 logger = logging.getLogger(__name__)
 
@@ -694,7 +695,7 @@ class LocalRouter:
         # budget runs out. max_attempts is kept only as an informational
         # figure on the events a stream consumer sees (e.g. "attempt 2/4"),
         # not as a loop bound - it is just how many models are in the tier.
-        max_attempts = 1 if is_pinned else max(1, len(self._cfg.tiers.get(tier, [])))
+        max_attempts = 1 if is_pinned else max(1, len(self._bucket_models(tier)))
 
         trace_id = trace_id or new_trace_id()
         request_started = time.monotonic()
@@ -1298,13 +1299,23 @@ class LocalRouter:
         for model_configs in self._cfg.tiers.values():
             for mc in model_configs:
                 pinned.setdefault(f"{mc.provider}/{mc.model}", [mc])
+        # The built-in `all` bucket (ADR 0019) lives here too, for the same
+        # reason: it is a bucket the owner never wrote, so it has no place in
+        # the real config. One entry per model, as the pins already are.
+        if ALL_BUCKET not in self._cfg.tiers:
+            pinned[ALL_BUCKET] = [mcs[0] for name, mcs in pinned.items() if name != ALL_BUCKET]
         shadow = dataclasses.replace(self._cfg, tiers=pinned)
-        return RoutingEngine(
+        engine = RoutingEngine(
             shadow,
             rate_limit_store=self._rate_limit_store,
             status=self._status,
             quota_tracker=self._quota_tracker,
         )
+        # Requests are only ever recorded on the main engine's windows, so the
+        # shadow reads those: a pinned or `all` call respects a model's
+        # configured rpm/tpm the same as a bucket call does.
+        engine._windows = self._engine._windows
+        return engine
 
     def _engine_for(self, tier: str) -> RoutingEngine:
         """The engine that knows about `tier`.
@@ -1313,7 +1324,13 @@ class LocalRouter:
         contain one. See `flexrouter/wire.py`, which is what produces these
         strings from a request.
         """
-        return self._pin_engine if "/" in tier else self._engine
+        if "/" in tier or (tier == ALL_BUCKET and tier not in self._cfg.tiers):
+            return self._pin_engine
+        return self._engine
+
+    def _bucket_models(self, tier: str) -> list:
+        """The models `tier` holds, whichever engine knows about it."""
+        return self._engine_for(tier)._cfg.tiers.get(tier, [])
 
     def _caller_exclusions(self, tier: str, exclude: Optional[Iterable[str]],
                            is_pinned: bool, skipped: list[dict]) -> frozenset:
@@ -1328,7 +1345,7 @@ class LocalRouter:
             return frozenset()
         excluded = frozenset(exclude)
         already = {(s["provider"], s["model"]) for s in skipped}
-        for m in self._cfg.tiers.get(tier, []):
+        for m in self._bucket_models(tier):
             if f"{m.provider}/{m.model}" in excluded and (m.provider, m.model) not in already:
                 skipped.append({"provider": m.provider, "model": m.model, "reason": "excluded",
                                 "detail": "the request asked to leave it out"})
@@ -1338,7 +1355,7 @@ class LocalRouter:
         """A bucket call whose exclude list covers every model in the bucket
         can never be answered; waiting out the failover budget would only
         delay saying so."""
-        models = self._cfg.tiers.get(tier, [])
+        models = self._bucket_models(tier)
         if excluded and models and all(f"{m.provider}/{m.model}" in excluded for m in models):
             return RouterBusy(f"Every model in bucket {tier!r} was excluded by the request "
                               f"(X-Flexrouter-Exclude), so there is nothing left to ask.")

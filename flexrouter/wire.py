@@ -13,6 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+# A bucket every flexrouter has without being asked: every model in every
+# bucket, once each (ADR 0019). A bucket the owner names "all" wins.
+ALL_BUCKET = "all"
+
 
 @dataclass(frozen=True)
 class Target:
@@ -57,7 +61,7 @@ def resolve(target: Target, bucket_names: list[str], best_bucket: str) -> str:
         return target.name
     if target.name == "auto":
         return best_bucket
-    if target.name in bucket_names:
+    if target.name in bucket_names or target.name == ALL_BUCKET:
         return target.name
     raise KeyError(
         f"There is no bucket named {target.name!r}. "
