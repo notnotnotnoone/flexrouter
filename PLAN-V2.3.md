@@ -491,7 +491,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 **Starter prompt:**
 > Do Session 18 of PLAN-V2.3.md. Read that block, the Q18 mockup in grill-log.md, and showcase/PORTING.md. Show me in the browser pane before finishing.
 
-### ☐ Session 19 — Docs, ADRs, release 🪶 (last)
+### ☑ Session 19 — Docs, ADRs, release 🪶 (last)
 **Model:** Sonnet for ADRs and glossary; Haiku is fine for README/CHANGELOG prose
 **Decisions:** §11, §16. **US:** 101–105.
 - **README** Quickstart + `docs/1-Getting-Started.md`: the dashboard path (add key → Add models with AI → Test all → point your app). YAML moves to `docs/2-Configuration-Guide.md` as the by-hand option.
@@ -512,10 +512,15 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 > Do Session 19 of PLAN-V2.3.md. Read that block and grill-decisions.md §11 and §16. Use a cheap model for prose where possible.
 
 **End of phase 4:**
-- [ ] Full suite + browser suite green.
-- [ ] Final say-hi sweep.
-- [ ] Light mode checked.
-- [ ] Every write button checked for visible feedback (the two items the papercut sweep never covered).
+- [x] Full suite + browser suite green. On 2026-09-27: 1657 passed, 5 skipped; browser 27 passed. Browser runs on a loaded machine occasionally time out one test that passes alone. Two stale tests were fixed on the way. The did-you-mean tests read an untracked `.scratch` file, now a tracked fixture in `tests/fixtures/`. The discovery toggle test looked for the old checkbox.
+- [ ] Final say-hi sweep. **Not run:** it sends real requests with your keys to the running service, which is still the old code until you restart it from this branch.
+- [x] Light mode checked. A contrast scan of every page found the faintest grey at 2.6:1; the light `--ink-4` is now `#74747d`, and nothing is under 3:1.
+- [x] Every write button checked for visible feedback. All 62 POST forms across 14 pages use a `.btn` that `app.js` drives through working → done/failed (a failed write stays on the page with its reason). Test all, the Status fixes, switches, copy, drag and Undo have their own feedback, and the browser tests cover a failed save, Undo, Test all, a Status fix and the copy button.
+
+*Session 19 notes (2026-09-27):*
+- ADR 0018 was already taken ("request options are headers"), so v2.3's six ADRs are **0019–0024**, not 0018–0023: error brain decides, one status, model list always read, saved conversations, quickstart checklist, fastest = first word. The ADRs they supersede or amend (0007, 0010, 0012, 0013, 0014, 0016) have updated Status lines.
+- The version is bumped to 2.3.0 and the CHANGELOG has a `[2.3.0]` entry. It isn't tagged or pushed.
+- The plan stays in the repo root, not `docs/archive/`, until Sessions 8 and 18 get the owner's look.
 
 ---
 
