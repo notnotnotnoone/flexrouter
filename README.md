@@ -418,6 +418,8 @@ Press `a` to add a key, `d` to remove the selected one, `r` to refresh, `q` to q
 
 ## Dashboard
 
+<img src="docs/assets/dashboard-overview.png" alt="flexrouter dashboard overview: requests, failovers, latency, and who answered each hour" width="100%">
+
 ```bash
 flexrouter dashboard
 # → http://localhost:4891
