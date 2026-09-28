@@ -174,3 +174,10 @@ def test_the_journey_api_carries_the_conversation(client):
     _save()
     j = client.get("/api/requests/req_fo").json()
     assert j["conversation"]["reply"] == "Hello!"
+
+
+def test_a_named_model_is_not_listed_as_a_bucket(client):
+    _write(_trace(id="req_pin", asked={"bucket": "groq/llama-3.1-8b-instant", "stream": False}))
+    body = client.get("/requests").text
+    assert "named model" in body
+    assert body.count(">groq/llama-3.1-8b-instant</td>") == 1    # answered by, not bucket

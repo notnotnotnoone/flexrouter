@@ -11,7 +11,7 @@ from __future__ import annotations
 from urllib.parse import urlencode
 
 from flexrouter.dashboard import facts, prefs, ui
-from flexrouter.dashboard.overview import clock, num
+from flexrouter.dashboard.overview import clock, is_pinned, num
 from flexrouter.dashboard.render import esc, tag
 
 RESULTS = (("", "Any result"), ("ok", "OK"), ("failover", "Failover"), ("failed", "Failed"))
@@ -94,7 +94,8 @@ def _row(r) -> str:
         hops = tag("span", esc(f" · {r.attempt_count} failed attempt{plural}"), cls="hop")
     return tag("tr", "".join([
         tag("td", open_link, cls="mono dim"),
-        tag("td", esc(r.bucket), cls="mono"),
+        tag("td", ui.tag_("named model") if is_pinned(r.bucket) else esc(r.bucket),
+            cls="mono"),
         tag("td", esc(_answered(r)) + hops, cls="mono"),
         tag("td", esc(f"{r.tokens_in:,} / {r.tokens_out:,}"), cls="num mono"),
         tag("td", esc(f"{r.ms_total:,} ms"), cls="num mono"),
@@ -187,7 +188,7 @@ def journey_panel(j: dict, close_href: str = "/requests") -> str:
     who = f"{answered['provider']}/{answered['model']}" if answered else "nothing answered"
     line = tag("div",
                tag("span", _OUTCOME_WORD[j["outcome"]], cls=f"outcome outcome-{j['outcome']}")
-               + tag("span", esc(j["bucket"] or "-"))
+               + tag("span", "named model" if is_pinned(j["bucket"]) else esc(j["bucket"] or "-"))
                + tag("span", "→", cls="arrow") + tag("span", esc(who))
                + tag("span", esc(_secs(j["ms_total"])), cls="n")
                + tag("span", esc(clock(j["at"])), cls="n"),
@@ -229,7 +230,7 @@ def body(router, params: dict) -> str:
     rows, total = filtered(router, limit=5000)
     fo = sum(1 for r in rows if r.outcome == "failover")
     bad = sum(1 for r in rows if r.outcome == "failed")
-    status = (f"{num(total)} requests on record · {num(fo)} failovers · {num(bad)} failed"
+    status = (f"{ui.plural(total, 'request')} on record · {ui.plural(fo, 'failover')} · {num(bad)} failed"
               if total else "Every request flexrouter handles, newest first.")
     head = tag("div",
                tag("div", tag("h1", "Requests", cls="page-title")

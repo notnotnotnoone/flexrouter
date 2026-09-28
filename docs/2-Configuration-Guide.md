@@ -2,6 +2,11 @@
 
 **Goal:** Understand every setting in your flexrouter settings file, and configure flexrouter for your multi-provider, multi-tier needs.
 
+> **You don't have to write this file.** The dashboard's Get started card
+> takes you from no file at all to working buckets (add a key → Add models
+> with AI → Test all), see [Getting Started](1-Getting-Started.md). This page
+> is the by-hand option.
+>
 > **Three ways to work with your configuration:** the **dashboard**
 > (`flexrouter dashboard`) lets you view and edit settings from your browser
 > and shows the effect live; the **TUI** (`flexrouter tui`) manages keys and
@@ -105,8 +110,8 @@ tiers:
 | `provider` | string | Yes | Key matching a provider in the `providers` section |
 | `model` | string | Yes | Model identifier (e.g., `gpt-4o`, `claude-sonnet-4-5`) |
 | `score` | int (1–100) | Yes | Priority within tier. Higher = preferred. Random selection among top 20% to avoid thundering herd. |
-| `rpm` | int or `null` | Yes (key must be present) | Requests per minute limit *you enforce locally*. `null` means "unknown" — nothing is enforced until flexrouter learns the real limit from the provider's own headers or a 429. |
-| `tpm` | int or `null` | Yes (key must be present) | Tokens per minute limit *you enforce locally*. Same `null` behavior as `rpm`. |
+| `rpm` | int | No | Requests per minute *you enforce locally*. Leave it out (or `null`) and there's no local limit: flexrouter learns the real one from the provider's headers and 429s. `0` means "not on your plan" and the model starts switched off. |
+| `tpm` | int | No | Tokens per minute, the same way as `rpm` |
 | `context_window` | int | Yes | Max tokens this model can handle. Used for overflow detection. |
 | `vision` | bool | No (default: false) | Set `true` if model supports images |
 
@@ -189,7 +194,7 @@ Keys rotate in order with each request. If one hits a 429, it's skipped immediat
 
 > Saved keys (`flexrouter keys add <provider>`) can also be managed without the
 > command line: the **TUI's Keys tab** adds, removes, and disables keys, and
-> the dashboard shows key status on its **Account Status** tab.
+> the dashboard shows each key's status on **Providers & keys**.
 
 ### OpenAI-Compatible Requirement
 
@@ -223,7 +228,8 @@ settings:
   # Rate limiting windows
   window_seconds: 60
 
-  # How long a request keeps trying other models in its tier before giving up
+  # Failover: try every model in the bucket, straight away, and give up
+  # after this many seconds
   failover_budget_seconds: 30
 
   # Session behavior
@@ -232,9 +238,16 @@ settings:
   # Port for the service (API + dashboard, one port)
   port: 4891
 
-  # Saved conversations (prompt, reply, reasoning) for the request sheet
+  # Saved conversations (prompt, reply, reasoning) and how long to keep them
   save_conversations: true
   save_conversations_days: 7
+
+  # Add newly found models automatically (reading each provider's model
+  # list is always on; adding is not)
+  auto_add_models: false
+
+  # The Get started card on Overview
+  show_quickstart: true
 
   # Cost tracking
   provider_budget:
@@ -252,26 +265,29 @@ settings:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `state_dir` | string | `.flexrouter/` | Where audit.csv and health.json are written |
-| `window_seconds` | int | 60 | Duration of sliding window for RPM/TPM tracking |
-| `failover_budget_seconds` | float | 30 | How long a request keeps trying other models in its tier before giving up |
-| `session_ttl_minutes` | int | 30 | Time before sticky session expires |
+| `state_dir` | string | `.flexrouter/` | Where logs, traces, conversations and learned state are written |
+| `window_seconds` | int | 60 | Duration of the sliding window for RPM/TPM tracking |
+| `failover_budget_seconds` | number | 30 | "Give up after": how long a request keeps trying other models in its bucket |
+| `session_ttl_minutes` | int | 30 | Time before a sticky session expires |
 | `port` | int | 4891 | Port for the service (API and dashboard together). `dashboard_port` still works as an older name for the same setting. |
-| `save_conversations` | bool | `true` | Keeps the prompt, reply and reasoning of every request so you can look back at them (the request sheet on the Requests page) |
-| `save_conversations_days` | int | 7 | How long a saved conversation is kept before it's deleted |
+| `save_conversations` | bool | true | Keep each request's prompt, reply and reasoning in `state/conversations/`. See [the privacy trade-off](4-Advanced-Usage.md#saved-conversations) |
+| `save_conversations_days` | int | 7 | Days before a saved conversation is deleted |
+| `auto_add_models` | bool | false | Add newly found models on their own. `experimental_model_discovery` is still read as an older name |
+| `show_quickstart` | bool | true | Show the Get started card on Overview (it also shows whenever no model works) |
+| `redact_errors` | bool | false | Also blank anything shaped like a credential in error text. Keys flexrouter holds are masked either way |
 | `provider_budget` | dict | null | Max USD per provider per day |
 | `hooks` | list | `[]` | Built-in pre-routing hooks to enable |
 
-### Failover Budget
+### Settings v2.3 no longer uses
 
-flexrouter doesn't retry a fixed number of times — a request tries every model in the tier, in score order, until one answers or it has spent `failover_budget_seconds` waiting, whichever comes first:
-
-```yaml
-settings:
-  failover_budget_seconds: 60   # give it longer before giving up
-```
-
-If the budget runs out with nothing answering, `generate()`/`agenerate()` raise `RouterBusy`.
+`retries`, `backoff_seconds`, `retry_policy`, `penalty_base_seconds`,
+`penalty_max_seconds`, `quarantine_seconds` and the four `decider_confidence_*`
+/ `decider_rule_prior_confidence` / `decider_contested_statuses` knobs are
+gone. Failover no longer sleeps or counts retries: it tries every model in
+the bucket straight away, and a failing model gets one status (Busy,
+Struggling, Needs you) instead of a penalty. If your file still has any of
+them they are ignored, and `flexrouter doctor` and the Settings page say so
+once. flexrouter never rewrites your file, so delete them when you like.
 
 ### Cost Budgets
 
@@ -286,7 +302,7 @@ settings:
 
 Once a provider hits its daily budget, it's skipped. Warning logged. Routing continues with other providers in the tier.
 
-Check remaining budget in the dashboard **Account Status** tab.
+Check what's left per provider on the dashboard's **Allowance** page.
 
 ### Hooks
 
@@ -329,7 +345,7 @@ Watching only the settings file would mean watching the one file nothing is allo
 - ✅ Adds and removes buckets and models
 - ✅ Updates provider addresses
 - ✅ Picks up a newly added or removed key
-- ✅ Changes settings (failover budget, budgets, and so on)
+- ✅ Changes settings (retry policy, budgets, and so on)
 - ❌ Does NOT reset what it has learned so far — rate-limit counts, rest periods and session pins all carry over
 
 **If the change can't be read**, flexrouter keeps running on the last settings it read successfully rather than failing the request you were in the middle of. Correct the file and the next request picks up the fix. Nothing announces this yet, so if a change appears to have done nothing, check the file for a mistake.
@@ -392,7 +408,6 @@ providers:
 
 settings:
   state_dir: .flexrouter/
-  failover_budget_seconds: 10   # fail over fast, don't sit around waiting
 ```
 
 ### Production (Quality + Fallback)
@@ -429,7 +444,6 @@ settings:
   state_dir: .flexrouter/
   provider_budget:
     openai: 50.00
-  failover_budget_seconds: 30
 ```
 
 ### Vision Tasks

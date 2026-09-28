@@ -879,7 +879,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
     state.config_path = config_path
     state.router = None
 
-    app = FastAPI(title="flexrouter", version="2.2.0", lifespan=lifespan)
+    from flexrouter.dashboard.render import _version
+    app = FastAPI(title="flexrouter", version=_version() or "dev", lifespan=lifespan)
 
     # Registered *before* add_middleware(CORSMiddleware) below, on purpose:
     # Starlette wraps middleware in registration order, so whatever is added

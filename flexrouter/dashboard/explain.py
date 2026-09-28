@@ -14,7 +14,6 @@ provider's real model IDs that look like it. Nothing here writes.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
 
 from flexrouter import catalogue
 from flexrouter.dashboard import facts
@@ -39,11 +38,9 @@ WINDOW_SECONDS = 24 * 3600
 
 
 def _parse_at(at: str) -> float | None:
-    try:
-        return datetime.fromisoformat(at.rstrip("Z").replace("Z", "")).replace(
-            tzinfo=timezone.utc).timestamp()
-    except (ValueError, AttributeError):
-        return None
+    from flexrouter.dashboard.overview import parse_utc
+    dt = parse_utc(at or "")
+    return dt.timestamp() if dt else None
 
 
 def _ago(seconds: float) -> str:

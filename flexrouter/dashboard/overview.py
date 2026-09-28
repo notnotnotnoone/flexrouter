@@ -16,9 +16,9 @@ and the refresh - the live view cannot drift from the served one.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
-from flexrouter.dashboard import charts, facts, prefs, stats, ui
+from flexrouter.dashboard import charts, facts, prefs, quickstart, stats, ui
 from flexrouter.dashboard.render import esc, tag
 
 # (key, label, hours, bucket_hours, label_format)
@@ -61,18 +61,42 @@ def num(value: object) -> str:
         return esc(value)
 
 
-def clock(iso: str) -> str:
-    """A stored UTC timestamp as a local wall clock.
+def parse_utc(iso: str) -> datetime | None:
+    """A stored timestamp, aware. Accepts "...Z", "...+00:00", and the
+    "...+00:00Z" that traces written before v2.3 carry."""
+    try:
+        text = iso.strip()
+        if text.endswith("Z"):
+            text = text[:-1] if "+" in text[10:] else text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+    except (ValueError, AttributeError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def clock(when, now: datetime | None = None) -> str:
+    """A stored time (ISO text or epoch seconds) in the one format every
+    page uses (papercut 15): your own local time, 24-hour, with the day
+    only when it isn't today - "14:03:22", "25 Sep 14:03:22",
+    "25 Sep 2025 14:03".
 
     Traces are written in UTC and the chart buckets by local hour
     (`stats.recent_window`). Printing the raw UTC time next to that chart
     would put two different clocks on one screen.
     """
-    try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
-    except (ValueError, AttributeError):
-        return iso or ""
-    return dt.strftime("%H:%M:%S")
+    if isinstance(when, (int, float)):
+        dt = datetime.fromtimestamp(when, tz=timezone.utc)
+    else:
+        dt = parse_utc(when or "")
+        if dt is None:
+            return when or ""
+    dt = dt.astimezone()
+    today = (now or datetime.now(timezone.utc)).astimezone()
+    if dt.date() == today.date():
+        return dt.strftime("%H:%M:%S")
+    if dt.year == today.year:
+        return f"{dt.day} {dt.strftime('%b %H:%M:%S')}"
+    return f"{dt.day} {dt.strftime('%b %Y %H:%M')}"
 
 
 def pct(fraction) -> str:
@@ -180,11 +204,17 @@ def _verdict(data: dict, window: dict, label: str) -> str:
     else:
         headline, state = "Serving normally.", "ok"
 
-    tags = [ui.tag_(f"{p['ok']} of {p['total']} providers fine", "ok")]
-    if p["warn"]:
-        tags.append(ui.tag_(f"{p['warn']} unsettled", "warn"))
-    if p["bad"]:
-        tags.append(ui.tag_(f"{p['bad']} down", "bad"))
+    # The same statuses, and the same "need you" number, as the Status
+    # page: never "5 of 5 fine" next to "7 need you" (Session 8).
+    counts = data["models"]["statuses"]
+    tags = [ui.tag_(f"{counts.get('ready', 0)} ready", "ok")]
+    if counts.get("busy"):
+        tags.append(ui.tag_(f"{counts['busy']} busy", "warn"))
+    if counts.get("struggling"):
+        tags.append(ui.tag_(f"{counts['struggling']} struggling", "warn"))
+    if needs_you:
+        tags.append(ui.tag_(f"{needs_you} need{'s' if needs_you == 1 else ''} you", "bad"))
+    tags = [tag("a", "".join(tags), href="/status", cls="verdict-tags")]
 
     if window["requests"] == 0:
         story = (f"Nothing has come through in the last {label}. Point an app "
@@ -192,7 +222,7 @@ def _verdict(data: dict, window: dict, label: str) -> str:
     else:
         busiest = window["providers"][0]
         share = busiest["requests"] / window["requests"]
-        story = (f"{window['requests']:,} requests in the last {label}, "
+        story = (f"{ui.plural(window['requests'], 'request')} in the last {label}, "
                  f"{pct(window['answered_rate'])} answered. "
                  f"{busiest['name']} carried {pct(share)} of them.")
         if window["failovers"]:
@@ -217,7 +247,7 @@ def _stats(data: dict, window: dict, label: str) -> str:
         ui.stat("Requests", f"{window['requests']:,}", key="requests",
                 note=f"last {label}", spark=spark),
         ui.stat("Answered", pct(window["answered_rate"]), key="answered",
-                note=f"{data['models']['available']} of {data['models']['total']} models up"),
+                note=f"{data['models']['available']} of {ui.plural(data['models']['total'], 'model')} up"),
         ui.stat("Failovers", f"{window['failovers']:,}", key="failovers", note=failover_note),
         ui.stat("Median reply", f"{lat['p50']:,} ms" if lat["p50"] is not None else "-",
                 key="median",
@@ -248,6 +278,23 @@ def _chart_table(window: dict, series: list[dict]) -> str:
                cls="table-view")
 
 
+MIN_CHART_BARS = 6
+
+
+def _trimmed(series: list[dict], labels: list[str], fails: list[int]):
+    """Drop the empty stretch before the first request (papercut 30).
+
+    A new install's day is 23 empty hours and one full one; drawn as is,
+    all its traffic is squeezed into the last bar. The chart starts where
+    traffic starts instead, but never with fewer than MIN_CHART_BARS bars.
+    """
+    n = len(labels)
+    busy = [i for i in range(n) if any(s["values"][i] for s in series) or fails[i]]
+    start = min(busy[0] if busy else 0, max(n - MIN_CHART_BARS, 0))
+    return ([{**s, "values": s["values"][start:]} for s in series],
+            labels[start:], fails[start:], start)
+
+
 def _chart(window: dict) -> str:
     title = "Who answered, " + ("hour by hour" if window["bucket_hours"] == 1
                                 else f"{bucket_word(window)} by {bucket_word(window)}"
@@ -261,7 +308,10 @@ def _chart(window: dict) -> str:
         tag("span", _swatch(colors[s["name"]]) + tag("span", esc(s["name"]))
             + tag("span", num(s["requests"]), cls="n"), cls="legend-item")
         for s in series)
-    svg = charts.stacked_hours(series, window["labels"], window["fails_by_hour"])
+    shown, labels, fails, start = _trimmed(series, window["labels"], window["fails_by_hour"])
+    svg = charts.stacked_hours(shown, labels, fails)
+    if start:
+        title += ", since the first request"
     return ui.box(title, tag("div", svg, cls="plot") + _chart_table(window, series),
                   action=tag("div", legend, cls="legend"),
                   **{"data-enter": "", "data-box": "chart"})
@@ -283,7 +333,7 @@ def _needs_you(broken_data: dict) -> str:
         body += tag("div",
                     tag("span", "", cls="todo-mark")
                     + tag("span", what, cls="todo-where")
-                    + ui.button("Fix", href="/broken", kind="primary")
+                    + ui.button("Fix", href="/status", kind="primary")
                     + tag("span", esc(item.reason), cls="todo-why"),
                     cls="todo-item")
     return ui.box("Needs you", body, cls="flush",
@@ -291,8 +341,17 @@ def _needs_you(broken_data: dict) -> str:
                   **{"data-enter": "", "data-box": "needs-you"})
 
 
+def is_pinned(bucket: str) -> bool:
+    """A request that named one model ("groq/llama-...") rather than a
+    bucket. It is logged under that name, but it is not a bucket
+    (papercut 16)."""
+    return "/" in (bucket or "")
+
+
 def _buckets(router, window: dict, label: str) -> str:
     counts = {b["bucket"]: b["requests"] for b in window["buckets"]}
+    pinned = sum(n for b, n in counts.items() if is_pinned(b))
+    counts = {b: n for b, n in counts.items() if not is_pinned(b)}
     names = list(router._cfg.tiers)
     for name in counts:
         if name not in names:
@@ -312,6 +371,10 @@ def _buckets(router, window: dict, label: str) -> str:
                     + tag("span", "", cls="spacer")
                     + tag("span", num(n), cls="bucket-n", **{"data-value": n}),
                     cls="bucket-row", **{"data-row": f"bucket:{name}"})
+    if pinned:
+        word = "request" if pinned == 1 else "requests"
+        rows += tag("p", esc(f"Plus {pinned:,} {word} that named one model instead of a bucket."),
+                    cls="note", **{"data-row": "bucket:pinned", "data-value": pinned})
     return ui.box("Buckets", rows,
                   sub=f"requests in the last {label}, against the busiest bucket",
                   action=ui.button("Manage", href="/buckets", kind="ghost"),
@@ -341,7 +404,7 @@ def _providers(summaries: list, window: dict, label: str) -> str:
         rows.append(tag("tr", "".join([
             tag("td", tag("span", _swatch(color) + esc(s.name), cls="prov-name")
                 + tag("span", esc(s.base_url), cls="prov-url")),
-            tag("td", ui.status(s.state)),
+            tag("td", ui.pill(s.pill)),
             tag("td", esc(f"{s.keys_ready} of {s.key_count} ready"), cls="dim"),
             tag("td", num(reqs), cls="num"),
             tag("td", esc(answered), cls="num"),
@@ -426,8 +489,11 @@ def inner(router, range_key: str) -> str:
     window = stats.recent_window(router._cfg.state_dir, hours=hours,
                                  bucket_hours=bucket_hours, label_format=fmt)
     said = label.lower()
+    port = router._cfg.port or router._cfg.dashboard_port or 4891
     return (
-        _verdict(data, window, said)
+        quickstart.card(router, f"http://localhost:{port}/v1",
+                        model_works=data["models"]["available"] > 0)
+        + _verdict(data, window, said)
         + _stats(data, window, said)
         + tag("div", _chart(window) + tag("div", _needs_you(broken_data), cls="ov-stack"),
               cls="ov-row")

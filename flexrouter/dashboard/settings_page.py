@@ -85,25 +85,21 @@ def _row(f) -> str:
         f.name, ("Advanced", f.name.replace("_", " ").capitalize(), "", "", False))
     changed = tag("span", "", cls="set-dot", title="changed here") if f.overridden else ""
     if isinstance(f.value, bool):
-        # A checkbox alone omits itself from the form when unchecked, which
-        # `_cast_setting` would read as "field left blank" rather than
-        # "explicitly turned off". The hidden fallback submits "false" in
-        # that case; when checked, both are sent and the checkbox (which
-        # comes first) wins - see `_cast_setting`'s `_BOOL_SETTINGS` branch.
-        control = (f'<input type="checkbox" name="value" value="true"'
-                   f'{" checked" if f.value else ""} aria-label="{esc(label)}">'
-                   '<input type="hidden" name="value" value="false">')
-        form = tag("form", control + tag("button", "Save", type="submit"),
-                   method="post", action=f"/settings/{f.name}", cls="set-form set-bool")
+        # A switch: flips at once and saves itself (app.js POSTs
+        # value=true|false to data-post), snapping back if the save fails.
+        form = tag("div", ui.switch("", f.value,
+                                    **{"data-post": f"/settings/{f.name}",
+                                       "aria-label": label}),
+                   cls="set-form set-bool")
     else:
         value = _display(f.value)
         form = tag("form",
                    f'<input type="text" name="value" value="{esc(value)}" '
                    f'aria-label="{esc(label)}" class="set-input">'
                    + (tag("span", esc(unit), cls="set-unit") if unit else "")
-                   + tag("button", "Save", type="submit"),
+                   + ui.submit("Save", **{"data-working": "Saving", "data-done": "Saved"}),
                    method="post", action=f"/settings/{f.name}", cls="set-form")
-    reset = (tag("form", tag("button", "Reset", type="submit", cls="ghost-btn"),
+    reset = (tag("form", ui.submit("Reset", kind="ghost", **{"data-working": "Resetting"}),
                  method="post", action=f"/settings/{f.name}/clear", cls="set-reset")
              if f.overridden else "")
     where = tag("span", "changed here" if f.overridden else "from your settings file",
@@ -161,7 +157,7 @@ def _app_password(router, shown: str = "") -> str:
         body = (tag("p", "Your new app password. Copy it now; it will not be shown again.",
                     cls="set-help")
                 + tag("div", tag("code", esc(shown), cls="secret", id="new-secret")
-                      + ui.button("Copy", icon_name="check",
+                      + ui.button("Copy", kind="copy", icon_name="copy",
                                   **{"data-copy": "#new-secret"}), cls="secret-row")
                 + tag("p", "Apps send it as: Authorization: Bearer <password>. Any app still "
                            "using an older password gets a 401 from now on.", cls="note"))
@@ -174,12 +170,11 @@ def _app_password(router, shown: str = "") -> str:
     else:
         body = tag("p", "No password: any app on this machine can use /v1. flexrouter only "
                         "listens on this machine, so this is fine for most setups.", cls="set-help")
-    actions = tag("form", tag("button", "Make a new password" if (generated or from_settings)
-                              else "Make a password", type="submit", cls="primary-btn"),
+    actions = tag("form", ui.submit("Make a new password" if (generated or from_settings)
+                              else "Make a password", kind="primary"),
                   method="post", action="/settings/app-password")
     if generated:
-        actions += tag("form", tag("button", "Forget generated password", type="submit",
-                                   cls="ghost-btn"),
+        actions += tag("form", ui.submit("Forget generated password", kind="ghost"),
                        method="post", action="/settings/app-password/clear")
     return ui.box("App password", body + tag("div", actions, cls="set-actions"),
                   id="g-app-password", **{"data-enter": ""})
@@ -203,7 +198,7 @@ def _prefs() -> str:
                      + select("default_range", p.default_range, prefs.RANGE_KEYS), cls="field")
                + tag("label", tag("span", "Timezone")
                      + f'<input type="text" name="timezone" value="{esc(p.timezone)}">', cls="field")
-               + tag("button", "Save preferences", type="submit"),
+               + ui.submit("Save preferences", **{"data-working": "Saving", "data-done": "Saved"}),
                method="post", action="/settings/dashboard", cls="grouped-form")
     return ui.box("Dashboard", form, sub="stored in dashboard.json, not your settings file",
                   id="g-dashboard", **{"data-enter": ""})
@@ -221,14 +216,12 @@ def _backup() -> str:
                 + tag("form",
                       '<input type="file" name="backup" accept="application/json" required '
                       'aria-label="Backup file">'
-                      + tag("button", "Restore", type="submit"),
+                      + ui.submit("Restore", **{"data-working": "Restoring"}),
                       method="post", action="/settings/restore", enctype="multipart/form-data",
                       cls="restore-form")
-                + tag("form", tag("button", "Reset everything I changed", type="submit",
-                                  cls="danger"),
-                      method="post", action="/settings/reset-all",
-                      **{"data-confirm": "Undo every change made from this dashboard? "
-                                        "Your settings file is not touched."}),
+                + tag("form", ui.submit("Reset everything I changed", kind="danger",
+                                        **{"data-working": "Resetting"}),
+                      method="post", action="/settings/reset-all"),
                 cls="set-actions")
             + tag("p", "A backup holds every change made from this dashboard and your dashboard "
                        "preferences. Keys are never included.", cls="note")
@@ -251,7 +244,7 @@ def _about(router) -> str:
     table = "".join(tag("div", tag("span", esc(k), cls="stat-label") + tag("code", esc(v)),
                         cls="about-row") for k, v in rows)
     if router._cfg.auto_add_models:
-        check = tag("form", tag("button", "Check for new models now", type="submit"),
+        check = tag("form", ui.submit("Check for new models now", kind="test"),
                     method="post", action="/settings/refresh-models",
                     **{"data-busy": "Checking every provider with a valid key..."})
         sub = "new models found go to the Models page to accept"
@@ -260,7 +253,7 @@ def _about(router) -> str:
                          "providers for new models.", cls="set-help")
         sub = ""
     test_limits = tag("form",
-                      tag("button", "Test rate limits for every model", type="submit"),
+                      ui.submit("Test rate limits for every model", kind="test"),
                       method="post", action="/settings/test-rate-limits", cls="set-actions",
                       **{"data-busy": "Sending one test message to every model..."})
     return ui.box("About", table + tag("div", check, cls="set-actions")
@@ -273,7 +266,8 @@ def _about(router) -> str:
                   sub=sub, id="g-about", **{"data-enter": ""})
 
 
-def body(router, banner: str, service_keys_html: str, shown_password: str = "") -> str:
+def body(router, banner: str, service_keys_html: str, shown_password: str = "",
+         danger: str = "") -> str:
     nav = "".join(tag("a", esc(g), href=f"#g-{_slug(g)}", cls="toc-link")
                   for g in (*GROUPS[:-1], "App password", "Dashboard", "Backup", "About"))
     head = tag("div",
@@ -291,6 +285,6 @@ def body(router, banner: str, service_keys_html: str, shown_password: str = "") 
                   + tag("div",
                         _groups(router) + _app_password(router, shown_password)
                         + tag("div", service_keys_html, cls="box set-keys", id="g-keys")
-                        + _prefs() + _backup() + _about(router),
+                        + _prefs() + _backup() + _about(router) + danger,
                         cls="set-main"),
                   cls="set-layout"))

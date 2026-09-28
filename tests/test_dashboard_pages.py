@@ -59,7 +59,7 @@ def test_overview_points_at_broken_once_something_does(client):
     router._status.set_provider_needs_you("groq", "key rejected")
     body = client.get("/").text
     assert "need" in body.lower()
-    assert 'href="/broken"' in body
+    assert 'href="/status"' in body
 
 
 def test_a_needs_you_key_reason_is_escaped_not_injected(client):
@@ -157,7 +157,7 @@ def test_models_shows_its_response_rate(client):
     router._audit.log("low", "groq", "llama-3.1-8b-instant", 0, 0, 0.0, 100, "rate_limited")
     router._audit.log("low", "groq", "llama-3.1-8b-instant", 0, 0, 0.0, 100, "rate_limited")
     body = client.get("/models_catalog").text
-    assert "25% (4 reqs)" in body
+    assert "25% (4 requests)" in body
 
 
 def test_pending_catalogue_says_nothing_pending_when_empty(client):
@@ -206,7 +206,10 @@ def test_buckets_shows_why_a_model_is_skipped(client):
 def test_buckets_offers_a_draggable_card_for_every_configured_model(client):
     body = client.get("/buckets").text
     assert 'class="model-card"' in body
-    assert 'draggable="true"' in body
+    # Pointer-event drag (and tap, and Enter), not HTML5 drag-and-drop,
+    # which never worked with a finger (showcase PORTING.md).
+    assert 'draggable="true"' not in body
+    assert 'role="button"' in body
     assert 'data-provider="groq"' in body
     assert 'data-model="llama-3.1-8b-instant"' in body
 
@@ -244,17 +247,11 @@ def test_requests_shows_a_written_trace(client):
     assert "groq/llama-3.1-8b-instant" in body
 
 
-def test_brain_is_no_longer_a_stub(client):
-    body = client.get("/brain").text
-    assert "not built yet" not in body.lower()
-    assert "nothing learned yet" in body.lower()
-
-
-def test_brain_shows_a_learned_entry_and_flags_it_for_review(client):
+def test_status_asks_about_an_error_it_is_unsure_of(client):
     router = app_module.get_router()
     router._error_brain.classify("a completely unrecognized provider message", None)
-    body = client.get("/brain").text
-    assert "needs review" in body.lower()
+    body = client.get("/status").text
+    assert "Not sure" in body and "Say what it means once." in body
 
 
 def test_a_brain_sample_is_escaped_not_injected(client):
@@ -299,7 +296,7 @@ def test_a_healthy_provider_shows_state_ok(client):
     # the config_file fixture's one provider has a ready key,
     # so it must render as "ok".
     body = client.get("/").text
-    assert "status-ok" in body and "● OK" in body
+    assert 'class="pill-word">Ready<' in body
 
 
 def test_a_provider_that_needs_you_shows_state_bad_and_why(client):
@@ -308,7 +305,7 @@ def test_a_provider_that_needs_you_shows_state_bad_and_why(client):
     router = app_module.get_router()
     router._status.set_provider_needs_you("groq", "key rejected")
     body = client.get("/").text
-    assert "status-bad" in body and "▲ BROKEN" in body
+    assert 'class="pill-word">Needs you<' in body
     assert "key rejected" in body
 
 

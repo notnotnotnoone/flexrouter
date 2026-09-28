@@ -4,6 +4,101 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-09-27
+
+The honesty and polish release: errors say what really happened, failover
+stops sleeping, every model has one status, and the dashboard gets a first-
+run guide and a working button for everything.
+
+### Added
+
+- **Status page** (`/status`) replaces "What's broken" and "Error brain"
+  (their old addresses redirect). Every model is Ready, Busy, Struggling,
+  Needs you or Off. Needs-you rows say one sentence and offer one fix
+  ([Use X], [Retry], [Remove]); Busy rows count down; errors the classifier
+  isn't sure about are asked once under "Not sure". Press a row for the
+  provider's whole response and recent tries.
+- **Get started** checklist on Overview: add a provider (every preset listed
+  Free or Paid, with "Get a key ↗"), paste its key, Add models with AI,
+  Test all, point your app at `localhost:4891/v1`. Steps tick themselves
+  (ADR 0023).
+- **Test all**: says "hi" to every model once, with room for 512 tokens, and
+  shows what each answered or why it didn't. Only on a click.
+- **Did you mean?** A 404 is checked against the provider's real model list;
+  [Use X] files the right ID and turns the wrong one off (ADR 0021).
+- **Saved conversations**: each request's prompt, reply and reasoning, kept
+  7 days in `state/conversations/`, shown on the request sheet. On by
+  default, with an off switch; see the privacy note in the docs (ADR 0022).
+- **Request sheet** (`/requests/<id>`): the model that answered, Thinking,
+  what you sent, the reply, and every model tried first with the time spent
+  waiting.
+- **Explain errors with AI**: copies a detailed prompt about every problem
+  (or one row) to discuss with any chatbot.
+- **Undo** instead of "are you sure?" on removing a key, disabling a model,
+  putting changes back, "Reset everything I changed" and model resets.
+- **Provider facts** in presets: key and rate-limit page links, each
+  provider's daily reset time, whether failed attempts count, limit scope,
+  free-tier notes, and the date they were checked.
+- Playground renders markdown, folds the model's reasoning into "Thinking",
+  and labels each reply with the model that answered.
+- Light theme (follows your system), a phone-width layout with a Menu
+  button, and a drag that works with a finger, a tap, or the keyboard.
+
+### Changed
+
+- **Errors are honest.** Every error carries the providers' own words,
+  `error.flexrouter.request_id` (also the `x-flexrouter-request-id` header on
+  every response) and `error.flexrouter.attempts[]`, one entry per model
+  tried. Provider text is no longer mangled.
+- **Failover never sleeps.** A bucket tries every model straight away and
+  gives up after 30 seconds ("Give up after"). A pinned `provider/model`
+  fails at once when busy, with no fallback.
+- **One status per model and key** replaces quarantine, penalties, benching
+  and cooldowns (ADR 0020). Overloads (500/503) are only ever Busy; nothing
+  is benched for days. Old state files are migrated once.
+- **The error brain decides** what an unfamiliar error means, and a bare 400
+  goes to it instead of always blaming the caller (ADR 0019).
+- **The real model list is always read** at startup; adding new models
+  automatically stays optional and off (ADR 0021).
+- **"Fastest" means measured time to the first word** over your last 20
+  requests; unmeasured models are tried, not skipped (ADR 0024).
+- **Allowance** is grouped per provider, resets on each provider's own
+  clock (Google: midnight Pacific, shown in your time), and counts failed
+  attempts — Google counts them too, so failing over at once saves real
+  daily quota.
+- Rate limits left empty mean "unknown, learning", not an invented 60/60K.
+  `0` means "not on your plan" and adds the model switched off. Add models
+  with AI rejects IDs that aren't on the provider's real list; non-chat
+  models are kept in a folded "Not chat models yet" list.
+- Every button shows working, then done or the reason it failed; a failed
+  save stays on the page with what you typed.
+- The reset-all Danger zone moved from Providers to Settings.
+- Times are shown in your own time, in one format. Plainer words throughout
+  ("a better one goes first", "named model"), correct plurals, and one name
+  for the three "… with AI" tools.
+- Docs: the Quickstart and Getting Started guide use the dashboard path; the
+  settings file is the by-hand option.
+
+### Removed
+
+- The retry, penalty, quarantine and decider-confidence settings
+  (`retries`, `backoff_seconds`, `retry_policy`, `penalty_*`,
+  `quarantine_seconds`, `decider_confidence_*`, …). Left in a settings file
+  they are ignored, and `flexrouter doctor` and Settings say so once.
+- Seed rate limits in presets.
+
+### Fixed
+
+- Timestamps printed as `…+00:00Z` in UTC.
+- Test calls used `max_tokens=1`, so a reasoning model always looked broken;
+  an empty reply from a caller's own tiny budget no longer counts against
+  the model.
+- Inline `<think>` / `<thought>` reasoning is split out of the reply.
+- Pages wider than the window at 1014px and unusable at phone width; a live
+  refresh replacing the row under your cursor.
+- Pinned models listed as buckets on Requests and Overview.
+- The Logs page without `--log` now says logging is off and how to turn it on.
+
 ## [2.2.0] - 2026-09-23
 
 ### Added

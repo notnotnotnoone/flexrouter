@@ -44,10 +44,11 @@ def test_text_escapes_every_part_not_only_the_first():
 
 
 def test_areas_lists_all_nine_in_menu_order():
+    # What's broken and Error brain became one Status page (Session 8).
     slugs = [slug for slug, _, _, _ in render.AREAS]
     assert slugs == [
         "overview", "providers", "models", "buckets",
-        "requests", "playground", "broken", "brain", "allowance", "settings",
+        "requests", "playground", "status", "allowance", "settings",
     ]
 
 
@@ -93,7 +94,7 @@ def test_page_carries_the_motion_preference(tmp_path, monkeypatch):
 
 
 def test_page_shows_the_wordmark_and_a_badge():
-    html = render.page("Overview", "overview", "", badges={"broken": 2})
+    html = render.page("Overview", "overview", "", badges={"status": 2})
     assert 'class="wordmark">flexrouter<' in html
     assert 'class="nav-badge"' in html and ">2<" in html
 

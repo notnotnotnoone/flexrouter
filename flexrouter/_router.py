@@ -400,7 +400,7 @@ class LocalRouter:
             self._conversations.save(trace_id, messages, reply, reasoning)
             self._traces.write({
                 "id": trace_id,
-                "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds") + "Z",
+                "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
                 "asked": {
                     "bucket": tier, "stream": False,
                     "needs": ["vision"] if vision else [],
@@ -726,7 +726,7 @@ class LocalRouter:
             self._conversations.save(trace_id, messages, reply, reasoning)
             self._traces.write({
                 "id": trace_id,
-                "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds") + "Z",
+                "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
                 "asked": {
                     "bucket": tier, "stream": True,
                     "needs": ["vision"] if vision else [],

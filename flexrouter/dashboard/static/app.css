@@ -1,13 +1,14 @@
 /* flexrouter dashboard.
 
-   Dark only, square, mono labels - the look of the README banner and of
+   Dark by default, light when the OS asks (or html[data-theme] pins it);
+   square, mono labels - the look of the README banner and of
    Command Code's usage page. Every colour is a token below; nothing else in
    this file writes a hex value. The design spec (§2) is the source of these
    numbers: docs/superpowers/specs/2026-09-22-dashboard-redesign-design.md
 
    Sections: fonts · tokens · base · shell · page head · boxes · small parts
    · stats · meter · tables · forms · overview · legacy pages · toasts ·
-   motion. */
+   good news · narrow screens · motion. */
 
 /* ── fonts ─────────────────────────────────────────────── */
 
@@ -51,6 +52,11 @@
   --warn-wash: rgba(251, 191, 36, .09);
   --bad-wash: rgba(248, 113, 113, .09);
 
+  --hot: #fb923c;                        /* Struggling */
+  --hot-wash: rgba(251, 146, 60, .09);
+  --move: cubic-bezier(.25, 1, .5, 1);   /* slides; --ease stays the enter curve */
+  --shadow: rgba(0, 0, 0, .6);
+
   /* Chart series. The names are fixed by charts.py; the order is spec §2. */
   --s1: var(--green);
   --s2: var(--blue);
@@ -66,6 +72,39 @@
   --nav-w: 220px;
 }
 
+/* Light: the same names, different values. Follows the OS unless the page
+   pins a theme with html[data-theme]. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ground: #f6f6f5; --panel: #ffffff; --raise: #f1f1f0; --rule: #e4e4e2;
+    --rule-2: #cfcfcc; --cell-off: #e9e9e7;
+    --ink: #0a0a0a; --ink-2: #3f3f46; --ink-3: #6b7280; --ink-4: #74747d;
+    --green: #059669; --blue: #0369a1; --violet: #6d28d9; --warn: #b45309;
+    --bad: #dc2626; --hot: #c2410c;
+    --green-wash: rgba(5, 150, 105, .09); --blue-wash: rgba(3, 105, 161, .08);
+    --violet-wash: rgba(109, 40, 217, .07); --warn-wash: rgba(180, 83, 9, .09);
+    --bad-wash: rgba(220, 38, 38, .08); --hot-wash: rgba(194, 65, 12, .09);
+    --shadow: rgba(0, 0, 0, .14);
+  }
+  :root:not([data-theme="dark"]) { color-scheme: light; }
+}
+:root[data-theme="light"] {
+  --ground: #f6f6f5; --panel: #ffffff; --raise: #f1f1f0; --rule: #e4e4e2;
+  --rule-2: #cfcfcc; --cell-off: #e9e9e7;
+  --ink: #0a0a0a; --ink-2: #3f3f46; --ink-3: #6b7280; --ink-4: #74747d;
+  --green: #059669; --blue: #0369a1; --violet: #6d28d9; --warn: #b45309;
+  --bad: #dc2626; --hot: #c2410c;
+  --green-wash: rgba(5, 150, 105, .09); --blue-wash: rgba(3, 105, 161, .08);
+  --violet-wash: rgba(109, 40, 217, .07); --warn-wash: rgba(180, 83, 9, .09);
+  --bad-wash: rgba(220, 38, 38, .08); --hot-wash: rgba(194, 65, 12, .09);
+  --shadow: rgba(0, 0, 0, .14);
+  color-scheme: light;
+}
+html[data-theme="light"] { background: var(--ground); }
+/* No colour fades while the theme flips. */
+html[data-theme-switching] *, html[data-theme-switching] *::before,
+html[data-theme-switching] *::after { transition: none !important; }
+
 /* ── base ──────────────────────────────────────────────── */
 
 * { box-sizing: border-box; }
@@ -74,7 +113,6 @@ html { background: var(--ground); color-scheme: dark; }
 
 body {
   margin: 0;
-  min-width: 1100px;
   background:
     radial-gradient(var(--rule) 1px, transparent 1.2px) 0 0 / 24px 24px,
     var(--ground);
@@ -230,6 +268,9 @@ html:not(.js) .nav a.nav-link[aria-current]::before {
   max-width: 1480px;
 }
 
+/* Only a narrow screen needs it (see "narrow screens"). */
+.nav .nav-toggle { display: none; }
+
 /* ── page head ─────────────────────────────────────────── */
 
 .page-head {
@@ -338,12 +379,168 @@ html:not(.js) .nav a.nav-link[aria-current]::before {
   transition: border-color 160ms var(--ease), background-color 160ms var(--ease),
               transform 120ms var(--ease);
 }
-.btn:hover { border-color: var(--ink-3); }
-.btn:active { transform: scale(.97); }
-.btn.primary { color: var(--green); border-color: rgba(52, 211, 153, .45); background: var(--green-wash); }
-.btn.primary:hover { border-color: var(--green); }
 .btn.ghost { background: transparent; }
 .btn .icon { width: 14px; height: 14px; }
+
+/* ── buttons: kinds ────────────────────────────────────── */
+/* Replaces the .btn block in `small parts`. The base .btn rule stays;
+   these add kinds and states. Every button is ui.button() output:
+   <button class="btn KIND"><svg class="icon">…</svg><span>Label</span></button> */
+
+.btn { position: relative; justify-content: center; }
+.btn:disabled, .btn[aria-disabled="true"] {
+  opacity: .4;
+  cursor: not-allowed;
+  transform: none;
+  border-color: var(--rule-2);
+}
+@media (hover: hover) and (pointer: fine) {
+  .btn:not(:disabled):hover { border-color: var(--ink-3); }
+}
+.btn:not(:disabled):active { transform: scale(.97); }
+
+/* main action: green, the one per screen */
+.btn.primary { color: var(--green); border-color: rgba(52, 211, 153, .45); background: var(--green-wash); }
+.btn.primary:not(:disabled):hover { border-color: var(--green); }
+
+/* one-click fix: blue, and it keeps a model ID's real case */
+.btn.fix {
+  color: var(--blue);
+  border-color: rgba(125, 211, 252, .4);
+  background: var(--blue-wash);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+  max-width: 100%;
+}
+.btn.fix:not(:disabled):hover { border-color: var(--blue); }
+
+/* run a test / copy: quiet until they have news */
+.btn.test, .btn.copy { background: transparent; }
+.btn.copy { padding: 6px 9px; color: var(--ink-2); }
+.btn.copy:not(:disabled):hover { color: var(--ink); }
+
+/* dangerous: red text; the undo toast is the safety net, not a dialog */
+.btn.danger { color: var(--bad); border-color: rgba(248, 113, 113, .4); background: transparent; }
+.btn.danger:not(:disabled):hover { border-color: var(--bad); background: var(--bad-wash); }
+
+/* ── buttons: states ───────────────────────────────────── */
+/* app.js sets data-state="working|done|failed" and swaps the icon slot
+   (.btn-glyph). The width is pinned while working so nothing jumps. */
+
+.btn .btn-glyph { width: 14px; height: 14px; flex: none; }
+.btn[data-state="working"] { cursor: progress; }
+.btn[data-state="working"] .btn-glyph { animation: spin 700ms linear infinite; }
+.btn[data-state="done"] { color: var(--green); border-color: var(--green); background: var(--green-wash); }
+.btn[data-state="done"] .btn-glyph { stroke-dasharray: 24; animation: draw 260ms var(--ease) both; }
+.btn[data-state="failed"] { color: var(--bad); border-color: var(--bad); background: var(--bad-wash); }
+.btn[data-state="failed"] .btn-glyph { stroke-dasharray: 24; animation: draw 200ms var(--ease) both; }
+.btn.is-shake { animation: shake 320ms var(--ease); }
+
+/* The reason a button failed, beside it. */
+.btn-note {
+  display: inline-block;
+  margin-left: 10px;
+  font: 400 12px/1.4 var(--mono);
+  color: var(--bad);
+  vertical-align: middle;
+}
+.btn-note:empty { display: none; }
+.btn-note.is-in { animation: note-in 200ms var(--ease); }
+.btn-note.ok { color: var(--green); }
+/* What a slow write is doing (a form's data-busy sentence). */
+.btn-note.wait { color: var(--ink-3); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes draw { from { stroke-dashoffset: 24; } to { stroke-dashoffset: 0; } }
+@keyframes shake {
+  0%, 100% { transform: none; }
+  20% { transform: translateX(-4px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-2px); }
+  80% { transform: translateX(2px); }
+}
+@keyframes note-in { from { opacity: 0; transform: translateX(-4px); } }
+@keyframes pulse { 50% { opacity: .35; } }
+
+/* ── toggle ────────────────────────────────────────────── */
+/* <button class="switch" role="switch" aria-checked="true"><span class="switch-track"><i></i></span><span>Label</span></button> */
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  background: none;
+  border: 0;
+  color: var(--ink);
+  font: 400 13px var(--sans);
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+.switch:active { transform: none; }
+.switch-track {
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 16px;
+  background: var(--cell-off);
+  border: 1px solid var(--rule-2);
+  transition: background-color 160ms var(--ease), border-color 160ms var(--ease);
+}
+.switch-track i {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  background: var(--ink-3);
+  transition: transform 200ms var(--move), background-color 160ms var(--ease);
+}
+.switch[aria-checked="true"] .switch-track { background: var(--green-wash); border-color: var(--green); }
+.switch[aria-checked="true"] .switch-track i { transform: translateX(14px); background: var(--green); }
+.switch:not(:disabled):active .switch-track i { transform: scaleX(1.3); transform-origin: left; }
+.switch[aria-checked="true"]:not(:disabled):active .switch-track i { transform: translateX(14px) scaleX(1.3); transform-origin: right; }
+.switch[data-state="working"] .switch-track i { animation: pulse 700ms ease-in-out infinite; }
+.switch[data-state="failed"] .switch-track { border-color: var(--bad); }
+.switch.is-shake .switch-track { animation: shake 320ms var(--ease); }
+.switch:disabled { opacity: .4; cursor: not-allowed; }
+@media (hover: hover) and (pointer: fine) {
+  .switch:not(:disabled):hover .switch-track { border-color: var(--ink-3); }
+  .switch[aria-checked="true"]:not(:disabled):hover .switch-track { border-color: var(--green); }
+}
+
+/* ── status pill ───────────────────────────────────────── */
+/* Glyph + word, never colour alone. Busy carries a live countdown. */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 500 11px/1 var(--mono);
+  letter-spacing: .04em;
+  padding: 5px 8px;
+  border: 1px solid;
+  white-space: nowrap;
+  transition: color 200ms var(--ease), background-color 200ms var(--ease), border-color 200ms var(--ease);
+}
+.pill-dot { font-size: 10px; width: 10px; text-align: center; }
+.pill-word { white-space: nowrap; }
+.pill .countdown { color: inherit; opacity: .8; font-size: 11px; }
+.pill .countdown::before { content: "· "; }
+.pill[data-status="ready"] { color: var(--green); border-color: rgba(52, 211, 153, .35); background: var(--green-wash); }
+.pill[data-status="busy"] { color: var(--warn); border-color: rgba(251, 191, 36, .35); background: var(--warn-wash); }
+.pill[data-status="struggling"] { color: var(--hot); border-color: rgba(251, 146, 60, .4); background: var(--hot-wash); }
+.pill[data-status="needs"] { color: var(--bad); border-color: rgba(248, 113, 113, .4); background: var(--bad-wash); }
+.pill[data-status="off"] { color: var(--ink-3); border-color: var(--rule-2); background: transparent; }
+.pill[data-status="busy"] .pill-dot { animation: breathe 2.4s ease-in-out infinite; }
+.pill.is-pop { animation: pop 320ms var(--ease); }
+@keyframes pop { 40% { transform: scale(1.08); } }
 
 .icon {
   width: 16px;
@@ -632,10 +829,6 @@ textarea { resize: vertical; }
 }
 .tip[hidden] { display: none; }
 
-/* Stands in for window.confirm(); app.js opens it for form[data-confirm]. */
-.confirm-box { padding: 18px; max-width: 440px; }
-.confirm-box p { margin: 0 0 16px; color: var(--ink); line-height: 1.5; }
-.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
 textarea { font-family: var(--mono); font-size: 12px; width: 100%; line-height: 1.5; }
 
 button {
@@ -665,6 +858,7 @@ button:active { transform: scale(.97); }
 /* verdict: the one loose, sentence-shaped block */
 .verdict { padding: 2px 0 4px; }
 .verdict-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.verdict-tags { display: inline-flex; flex-wrap: wrap; gap: 6px; text-decoration: none; border: 0 !important; }
 .verdict-line strong { font: 600 18px var(--mono); letter-spacing: -.01em; }
 .verdict-ok .verdict-line strong::before { content: "● "; color: var(--green); }
 .verdict-warn .verdict-line strong::before { content: "◆ "; color: var(--warn); }
@@ -689,8 +883,10 @@ button:active { transform: scale(.97); }
 
 /* chart */
 .plot { padding: 4px 0 0; }
-.chart { display: block; width: 100%; height: auto; }
-.chart-tick { font: 400 10px var(--mono); fill: var(--ink-4); }
+.chart { display: block; width: 100%; height: auto; --tick: 12px; }
+/* app.js sets --tick so a label is 11 screen pixels however far the
+   chart is scaled; 12 viewBox units without it. */
+.chart-tick { font: 400 var(--tick) var(--mono); fill: var(--ink-3); }
 .chart-axis { stroke: var(--rule-2); stroke-width: 1; }
 .chart-grid { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 2 3; }
 .chart-sep { fill: none; stroke: var(--panel); stroke-width: 1.5; }
@@ -788,6 +984,85 @@ table.matrix th { padding: 9px 14px; }
 .feed-model { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .feed-ms { text-align: right; font-variant-numeric: tabular-nums; }
 .hop { color: var(--blue); }
+
+/* ── quickstart ────────────────────────────────────────── */
+
+.qs-bar { display: flex; gap: 2px; height: 4px; margin-bottom: 4px; }
+.qs-bar i { flex: 1; background: var(--cell-off); transition: background-color 300ms var(--ease); }
+.qs-bar i.on { background: var(--green); }
+.qs-steps { list-style: none; margin: 0; padding: 0; counter-reset: qs; }
+.qs-step {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  align-items: center;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.qs-step:last-child { border-bottom: 0; }
+.qs-mark {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--rule-2);
+  font: 500 10px var(--mono);
+  color: var(--ink-3);
+}
+.qs-mark .icon { width: 12px; height: 12px; }
+.qs-step[data-step="done"] .qs-mark { color: var(--ground); background: var(--green); border-color: var(--green); }
+.qs-step[data-step="done"] .qs-mark .icon { stroke-dasharray: 24; animation: draw 300ms var(--ease) both; }
+.qs-step[data-step="now"] .qs-mark { color: var(--green); border-color: var(--green); }
+.qs-title { font-weight: 500; }
+.qs-step[data-step="done"] .qs-title { color: var(--ink-3); }
+.qs-sub { display: block; margin-top: 2px; font-size: 12px; color: var(--ink-3); }
+.qs-sub.ok { color: var(--green); font-family: var(--mono); font-size: 11px; }
+.qs-act { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.qs-step[data-step="done"] .qs-act { display: none; }
+.qs-step.is-ticked { animation: tick-row 700ms var(--ease); }
+@keyframes tick-row { from { background-color: var(--green-wash); } to { background-color: transparent; } }
+.qs-progress { grid-column: 2 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font: 400 11px var(--mono); color: var(--ink-3); }
+.qs-progress:empty { display: none; }
+.qs-hidden { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px dashed var(--rule-2); color: var(--ink-3); font-size: 12px; }
+.qs-hidden[hidden] { display: none; }
+.qs-done-line { display: flex; align-items: center; gap: 10px; padding: 4px 0 12px; color: var(--green); font: 500 13px var(--mono); }
+.qs-done-line[hidden] { display: none; }
+
+.qs-preset { white-space: nowrap; }
+.qs-preset a + a { font-size: 11px; }
+.qs-sub b { font-weight: 500; color: var(--ink-2); }
+.qs-sub code { font-size: 11px; }
+.qs-progress > .fold, .qs-progress > .ta-head { flex-basis: 100%; }
+.qs-progress > .fold { margin-top: 4px; }
+.ta-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ta-head .meter { flex: 1; min-width: 120px; }
+
+/* ── test-all progress ─────────────────────────────────── */
+/* The meter lights one cell per model as its test finishes; a failed
+   test lights red. Each row says what happened. */
+
+.meter i.bad { background: var(--bad); }
+.meter i.run { background: var(--ink-4); animation: pulse 700ms ease-in-out infinite; }
+.tests { list-style: none; margin: 12px 0 0; padding: 0; }
+.test-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) minmax(0, max-content);
+  gap: 10px;
+  align-items: center;
+  padding: 6px 0;
+  font: 400 12px var(--mono);
+  border-top: 1px solid var(--rule);
+}
+.test-mark { color: var(--ink-4); display: grid; place-items: center; }
+.test-mark .icon { width: 14px; height: 14px; }
+.test-row[data-state="working"] .test-mark .icon { animation: spin 700ms linear infinite; }
+.test-row[data-state="done"] .test-mark { color: var(--green); }
+.test-row[data-state="failed"] .test-mark { color: var(--bad); }
+.test-row[data-state="done"] .test-mark .icon, .test-row[data-state="failed"] .test-mark .icon { stroke-dasharray: 24; animation: draw 240ms var(--ease) both; }
+.test-out { color: var(--ink-3); text-align: right; min-width: 0; overflow-wrap: anywhere; }
+.test-row > span:nth-child(2) { min-width: 0; overflow-wrap: anywhere; }
+.test-row[data-state="done"] .test-out { color: var(--green); }
+.test-row[data-state="failed"] .test-out { color: var(--bad); }
 
 /* ── requests ──────────────────────────────────────────── */
 
@@ -899,6 +1174,109 @@ table.log td { padding: 8px 12px; }
   font-size: 12px;
 }
 .countdown { font: 500 11px var(--mono); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+
+/* ── status ─────────────────────────────────────────────── */
+/* One row, one sentence, at most one button. Detail behind a click. */
+
+.st { display: block; }
+.st-says { margin: -14px 0 14px; }
+.st-top { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px; margin-bottom: 16px; }
+.st-top .st-strip { margin-bottom: 0; }
+.st > .box { margin-top: 24px; }
+.st-detail .correct-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.st-detail > .btn { margin-top: 8px; }
+.st-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.st-count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font: 500 11px/1 var(--mono);
+  text-transform: none;
+  letter-spacing: .02em;
+  padding: 7px 10px;
+  background: transparent;
+  border: 1px solid var(--rule-2);
+  color: var(--ink-2);
+}
+.st-count b { font: 600 14px/1 var(--mono); font-variant-numeric: tabular-nums; }
+.st-count[data-status="ready"] b { color: var(--green); }
+.st-count[data-status="busy"] b { color: var(--warn); }
+.st-count[data-status="struggling"] b { color: var(--hot); }
+.st-count[data-status="needs"] b { color: var(--bad); }
+.st-count[data-status="off"] b { color: var(--ink-3); }
+.st-count[aria-pressed="true"] { border-color: var(--ink-2); background: var(--raise); color: var(--ink); }
+
+.st-group + .st-group { margin-top: 18px; }
+.st-group[hidden] { display: none; }
+.st-group > .st-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 0 0 6px;
+  border-bottom: 1px solid var(--rule);
+  font: 500 11px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .12em;
+}
+.st-group[data-group="needs"] > .st-head { color: var(--bad); }
+.st-group[data-group="busy"] > .st-head { color: var(--warn); }
+.st-group[data-group="struggling"] > .st-head { color: var(--hot); }
+.st-group[data-group="ready"] > .st-head { color: var(--green); }
+.st-group[data-group="off"] > .st-head { color: var(--ink-3); }
+.st-empty { padding: 10px 0; color: var(--ink-3); font-size: 12px; }
+
+.st-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto 26px;
+  gap: 4px 12px;
+  align-items: center;
+  padding: 10px 6px;
+  border-bottom: 1px solid var(--rule);
+  cursor: pointer;
+  transition: background-color 160ms var(--ease);
+}
+.st-row:hover { background: var(--raise); }
+.st-row > .pill-dot { font: 500 11px var(--mono); }
+.st-row[data-status="needs"] > .pill-dot { color: var(--bad); }
+.st-row[data-status="busy"] > .pill-dot { color: var(--warn); }
+.st-row[data-status="struggling"] > .pill-dot { color: var(--hot); }
+.st-row[data-status="ready"] > .pill-dot { color: var(--green); }
+.st-row[data-status="off"] > .pill-dot { color: var(--ink-3); }
+.st-what { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
+.st-name { font: 500 12px var(--mono); overflow-wrap: anywhere; }
+.st-why { color: var(--ink-2); font-size: 12px; }
+.st-why .countdown { color: var(--warn); }
+.st-act { display: flex; align-items: center; }
+.st-act .btn-note { margin-left: 8px; }
+.st-open {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-4);
+}
+.st-open .icon { width: 14px; height: 14px; transition: transform 200ms var(--ease); }
+.st-row.is-open .st-open .icon { transform: rotate(90deg); }
+.st-row:hover .st-open { color: var(--ink-2); }
+.st-detail { padding: 10px 6px 14px 32px; border-bottom: 1px solid var(--rule); background: var(--ground); }
+.st-detail[hidden] { display: none; }
+.st-detail:not([hidden]) { animation: fold-in 200ms var(--ease); }
+.st-detail pre {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.st-past { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; font: 400 11px var(--mono); color: var(--ink-3); }
+.st-foot { margin: 14px 0 0; color: var(--ink-4); font-size: 11px; }
+.st-row.is-leaving { opacity: 0; transform: translateX(12px); transition: opacity 180ms var(--ease), transform 180ms var(--ease); }
 
 /* ── what's broken ─────────────────────────────────────── */
 
@@ -1112,7 +1490,7 @@ tbody tr.m-detail:hover td { background: var(--ground); }
   padding: 4px 6px;
   border: 1px solid transparent;
 }
-.cap-published { background: var(--green); border-color: var(--green); color: var(--ground); font-style: normal; font-weight: 600; }
+.cap-published { background: var(--green-wash); border-color: var(--green); color: var(--green); font-style: normal; font-weight: 600; }
 .cap-observed { border-color: var(--green); color: var(--green); }
 .cap-guessed { border-color: var(--rule-2); color: var(--ink-4); border-style: dashed; font-style: normal; }
 .cap-manual { border-color: var(--ink-2); color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
@@ -1185,6 +1563,39 @@ tbody tr.m-detail:hover td { background: var(--ground); }
 /* a bucket box while a model card is dragged over it */
 [data-dropzone].drag-over { border-color: var(--green); }
 [data-dropzone].drag-over::before, [data-dropzone].drag-over::after { opacity: 1; }
+
+/* ── drag ──────────────────────────────────────────────── */
+/* Pointer events, so it works with a finger too. The ghost follows the
+   pointer 1:1; only the drop / snap-back is eased. */
+
+.model-card { touch-action: none; }
+.model-card[aria-pressed="true"] { border-color: var(--green); background: var(--green-wash); }
+.model-card .icon { width: 12px; height: 12px; color: var(--ink-4); }
+.drag-ghost {
+  position: fixed;
+  z-index: 70;
+  margin: 0;
+  pointer-events: none;
+  border-color: var(--green);
+  background: var(--panel);
+  box-shadow: 0 14px 30px var(--shadow);
+  will-change: transform;
+}
+[data-dropzone].drop-ready { border-style: dashed; border-color: var(--rule-2); }
+[data-dropzone].drop-ready:focus-visible { border-color: var(--green); }
+[data-dropzone].drag-over { border-style: solid; background: var(--green-wash); }
+[data-dropzone].is-shake { animation: shake 320ms var(--ease); }
+.drop-list { list-style: none; margin: 0; padding: 0; min-height: 30px; }
+.drop-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  font: 500 12px var(--mono);
+  border-top: 1px solid var(--rule);
+}
+.drop-list li:first-child { border-top: 0; }
+.drop-list li.is-new { animation: enter 260ms var(--ease), flash-up 900ms var(--ease); }
 
 /* ── playground ────────────────────────────────────────── */
 
@@ -1520,12 +1931,6 @@ p.state-ok { background: var(--green-wash); }
 p.state-warn { background: var(--warn-wash); }
 p.state-bad { background: var(--bad-wash); }
 
-.cap-published { color: var(--ink); font-weight: 500; }
-.cap-observed { color: var(--green); }
-.cap-guessed { color: var(--ink-3); font-style: italic; }
-.cap-manual { text-decoration: underline; text-underline-offset: 3px; }
-.cap-unknown { color: var(--ink-4); }
-
 .button-link {
   display: inline-flex;
   align-items: center;
@@ -1586,8 +1991,6 @@ main > form.table-form > .scroll {
 .field { display: contents; }
 .field > label, .field > span:first-child { font: 500 10px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--ink-3); }
 .check-field { display: flex; align-items: center; gap: 8px; grid-column: 2; font-size: 12px; color: var(--ink-2); }
-button.danger, .danger { color: var(--bad); border-color: rgba(248, 113, 113, .4); }
-button.danger:hover { border-color: var(--bad); background: var(--bad-wash); }
 
 /* keys on a provider's page */
 .key-row { border: 1px solid var(--rule); background: var(--panel); margin: 0 0 10px; }
@@ -1665,6 +2068,214 @@ button.danger:hover { border-color: var(--bad); background: var(--bad-wash); }
 .toast.warn { border-left-color: var(--warn); }
 .toast.bad { border-left-color: var(--bad); }
 .toast-seed { display: none; }
+/* ── toast ─────────────────────────────────────────────── */
+/* Adds to the toast rules in `toasts`. A toast may carry one action
+   (Undo) and shows how long it will stay; hovering holds it. */
+
+.toast {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  overflow: hidden;
+  box-shadow: 0 12px 32px var(--shadow);
+}
+.toast-msg { flex: 1; min-width: 0; }
+.toast-act {
+  padding: 5px 9px;
+  color: var(--green);
+  border-color: rgba(52, 211, 153, .45);
+  background: var(--green-wash);
+}
+.toast.bad .toast-act { color: var(--ink); border-color: var(--rule-2); background: var(--raise); }
+.toast-x {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-4);
+}
+.toast-x:hover { color: var(--ink); border-color: var(--rule-2); }
+.toast-x .icon { width: 12px; height: 12px; }
+.toast-timer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--rule-2);
+  transform-origin: left;
+}
+.toast.ok .toast-timer { background: rgba(52, 211, 153, .5); }
+.toast.warn .toast-timer { background: rgba(251, 191, 36, .5); }
+.toast.bad .toast-timer { background: rgba(248, 113, 113, .5); }
+
+/* ── good news ─────────────────────────────────────────── */
+/* Only for rare, good moments. Everyday buttons stay quiet. */
+
+.btn.is-pop, .st-count.is-pop { animation: pop 340ms var(--ease); }
+
+/* a Needs-you fix: the ▲ spins down and comes back as a green ●, with a ring */
+.st-row > .pill-dot { position: relative; display: inline-block; }
+.pill-dot.is-morph { animation: morph 460ms var(--ease); }
+.pill-dot.is-morph::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border: 1px solid var(--green);
+  border-radius: 50%;
+  opacity: 0;
+  animation: ring 620ms 140ms var(--ease);
+}
+@keyframes morph {
+  0% { transform: none; }
+  32% { transform: scale(0) rotate(-90deg); }
+  33% { transform: scale(0); }
+  70% { transform: scale(1.5); }
+  100% { transform: none; }
+}
+@keyframes ring { from { opacity: 1; transform: scale(.4); } to { opacity: 0; transform: scale(2.4); } }
+
+.fly-dot {
+  position: fixed;
+  z-index: 80;
+  width: 8px;
+  height: 8px;
+  background: var(--green);
+  box-shadow: 0 0 10px var(--green);
+  pointer-events: none;
+}
+
+/* nothing needs you any more */
+.st-empty.is-clear {
+  position: relative;
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--green);
+  font: 500 12px var(--mono);
+  animation: enter 320ms var(--ease);
+}
+.st-empty.is-clear .icon { width: 14px; height: 14px; stroke-dasharray: 24; animation: draw 360ms 120ms var(--ease) both; }
+.st-empty.is-clear::before {
+  content: "";
+  position: absolute;
+  inset: -2px -8px;
+  z-index: -1;
+  background: radial-gradient(ellipse at 12% 50%, rgba(52, 211, 153, .2), transparent 70%);
+  opacity: .35;
+  animation: glow 1800ms var(--ease);
+}
+@keyframes glow { 0% { opacity: 0; } 25% { opacity: 1; } 100% { opacity: .35; } }
+
+/* app.js sets --i per cell / tick for the stagger; 0 until it does. */
+.meter i, .qs-mark { --i: 0; }
+
+/* Test all, every model answered */
+.meter.is-wave i { transform-origin: bottom; animation: wave 420ms var(--ease) both; animation-delay: calc(var(--i, 0) * 40ms); }
+@keyframes wave { 45% { transform: scaleY(1.8); } }
+
+/* the quickstart, finished */
+.qs.is-complete { border-color: rgba(52, 211, 153, .45); }
+.qs.is-complete::before, .qs.is-complete::after { opacity: 1; }
+.qs.is-celebrating .qs-mark { animation: pop 380ms var(--ease) both; animation-delay: calc(var(--i, 0) * 90ms); }
+.qs-sweep { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.qs-sweep i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--green-wash) 30%, rgba(52, 211, 153, .2) 50%, var(--green-wash) 70%, transparent);
+  transform: translateX(-100%);
+  animation: sweep 1200ms var(--move) forwards;
+}
+@keyframes sweep { to { transform: translateX(250%); } }
+.qs-done-line:not([hidden]) { animation: enter 320ms 500ms var(--ease) both; }
+
+/* ── narrow screens ────────────────────────────────────── */
+/* No page is wider than the window (papercuts 28-29). Under 760px the
+   sidebar becomes a bar across the top whose links fold behind Menu. */
+
+@media (max-width: 1100px) {
+  .main { padding: 22px 20px 64px; }
+  .ov-row { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Grids of cards never ask for more than the screen has. */
+.allow-grid { grid-template-columns: repeat(auto-fill, minmax(min(460px, 100%), 1fr)); }
+.bucket-grid { grid-template-columns: repeat(auto-fill, minmax(min(480px, 100%), 1fr)); }
+.key-head { flex-wrap: wrap; }
+
+@media (max-width: 760px) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .nav {
+    position: sticky;
+    z-index: 40;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 10px 16px;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+    overflow: visible;
+  }
+  .nav-brand { padding: 0; }
+  .nav .nav-toggle { display: inline-flex; margin-left: auto; }
+  .nav-links, .nav-foot, .nav-marker { display: none; }
+  .nav.is-open .nav-links {
+    display: flex;
+    flex-basis: 100%;
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+    padding: 8px 0 4px;
+  }
+  .nav.is-open .nav-group:first-child { margin-top: 6px; }
+  .main { padding: 18px 16px 56px; }
+
+  /* Everything side by side goes one above the other. */
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ov-duo, .cols, .pg-layout, .set-layout, .set-row { grid-template-columns: minmax(0, 1fr); }
+  .set-layout .toc { display: none; }
+  .page-actions { margin-left: 0; flex-wrap: wrap; }
+  .bucket-row { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; }
+  .bucket-row .meter { grid-column: 1 / -1; grid-row: 2; }
+  .bucket-row .spacer { display: none; }
+  .ladder-row { grid-template-columns: 22px minmax(0, 1fr) auto; }
+  .ladder-row > :nth-child(n+4) { grid-column: 2 / -1; }
+  .log-row { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  main > form:not(.table-form), .grouped-form { grid-template-columns: minmax(0, 1fr); }
+  main > form:not(.table-form) > button, .grouped-form > button { grid-column: 1; }
+  .btn { white-space: normal; text-align: left; }
+  .set-keys table { display: block; overflow-x: auto; }
+}
+
+
+@media (max-width: 560px) {
+  .st-row { grid-template-columns: 14px minmax(0, 1fr) 26px; }
+  .st-act { grid-column: 2 / 3; grid-row: 2; }
+  .st-open { grid-column: 3; grid-row: 1; }
+  .st-detail { padding-left: 12px; }
+  .qs-step { grid-template-columns: 22px minmax(0, 1fr); }
+  .qs-act { grid-column: 2; justify-content: flex-start; }
+  .allow-group .lim-row { grid-template-columns: minmax(0, 1fr) 76px; }
+  .allow-group .lim-row .meter { grid-column: 1 / -1; grid-row: 2; }
+  .allow-group .lim-note { grid-row: 3; }
+  .rq-msg { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .btn-note { display: block; margin: 6px 0 0; }
+  .test-row { grid-template-columns: 16px minmax(0, 1fr); gap: 2px 10px; }
+  .test-out { grid-column: 2; text-align: left; }
+  .toasts { left: 16px; right: 16px; bottom: 16px; }
+  .toast { min-width: 0; max-width: none; width: 100%; }
+}
 
 /* ── motion ────────────────────────────────────────────── */
 /* Triggers (spec §4): first paint once per load, on change after a morph,
@@ -1729,3 +2340,26 @@ html[data-motion="reduced"] [data-enter] { opacity: 1 !important; transform: non
 .allow-reset { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 12px; color: var(--ink-2); padding-bottom: 10px; border-bottom: 1px solid var(--rule); }
 .allow-foot { margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--rule); color: var(--ink-3); font-size: 11px; }
 .allow-group .fold { margin-top: 6px; }
+
+/* ── motion preferences ────────────────────────────────── */
+/* Reduced: nothing travels or shakes; spinners become a slow pulse;
+   colour and text still change, so every state is still visible. */
+
+@media (prefers-reduced-motion: reduce) {
+  .btn[data-state="working"] .btn-glyph,
+  .test-row[data-state="working"] .test-mark .icon { animation: pulse 1.2s ease-in-out infinite; }
+  .is-shake, .is-shake .switch-track, .pill.is-pop, .btn-note.is-in, .qs-step.is-ticked,
+  .fold[open] > .fold-body, .st-detail:not([hidden]), .drop-list li.is-new,
+  .pill[data-status="busy"] .pill-dot, .btn.is-pop, .st-count.is-pop, .pill-dot.is-morph,
+  .pill-dot.is-morph::after, .st-empty.is-clear, .st-empty.is-clear::before, .meter.is-wave i,
+  .qs.is-celebrating .qs-mark, .qs-done-line:not([hidden]) { animation: none; }
+  .switch-track i, .st-row.is-leaving, .st-open .icon { transition: none; }
+}
+html[data-motion="reduced"] .btn[data-state="working"] .btn-glyph,
+html[data-motion="reduced"] .test-row[data-state="working"] .test-mark .icon { animation: pulse 1.2s ease-in-out infinite; }
+html[data-motion="reduced"] :is(.is-shake, .is-shake .switch-track, .pill.is-pop, .btn-note.is-in,
+  .qs-step.is-ticked, .fold[open] > .fold-body, .st-detail:not([hidden]), .drop-list li.is-new,
+  .pill[data-status="busy"] .pill-dot, .btn.is-pop, .st-count.is-pop, .pill-dot.is-morph,
+  .pill-dot.is-morph::after, .st-empty.is-clear, .st-empty.is-clear::before, .meter.is-wave i,
+  .qs.is-celebrating .qs-mark, .qs-done-line:not([hidden])) { animation: none; }
+html[data-motion="reduced"] :is(.switch-track i, .st-row.is-leaving, .st-open .icon) { transition: none; }

@@ -482,6 +482,53 @@ With the OpenAI Python SDK, pass them as `extra_headers={...}`; with the Node SD
 
 Every response carries `x-flexrouter-request-id`, the id to look the request up by.
 
+### Errors
+
+A failed call uses the usual OpenAI error shape. The HTTP status says what
+kind of failure it was:
+
+| Status | When |
+|---|---|
+| 502 | every model that was tried failed |
+| 503 | nothing could be tried right now (all busy), or a pinned model is busy |
+| 504 | the whole call ran out of time |
+| 404 | the name is neither a bucket nor a configured model |
+
+`message` states what went wrong in the providers' own words, and
+flexrouter adds its own block beside it:
+
+```json
+{
+  "error": {
+    "message": "Every model in \"fast\" failed. googleai/gemini-3-flash: 404 ...",
+    "type": "server_error",
+    "flexrouter": {
+      "request_id": "req_51ed0c9a2b",
+      "attempts": [
+        {"model": "googleai/gemini-3-flash", "status": 404,
+         "provider_message": "models/gemini-3-flash is not found for API version v1beta",
+         "ms": 212, "waited_ms": 0, "verdict": "model_gone"},
+        {"model": "groq/llama-3.1-8b-instant", "status": 429,
+         "provider_message": "Rate limit reached", "ms": 88, "waited_ms": 0,
+         "verdict": "too_fast"}
+      ]
+    }
+  }
+}
+```
+
+- `request_id` matches the `x-flexrouter-request-id` header and the request's
+  row on the dashboard's Requests page.
+- `attempts` lists every model tried, in order: its status (`null` when it
+  couldn't be reached), the provider's message, how long it took, how long
+  the request waited before trying it, and what the error brain made of it.
+- A bucket call tries every model in the bucket at once, without sleeping,
+  and gives up after `failover_budget_seconds` (30 by default). A pinned
+  call (`"model": "provider/model"`) never falls back: a busy model answers
+  429 at once, saying when to retry.
+- The words "tier" and "bucket" never appear as an error of their own. A
+  name that is neither a bucket nor a configured model says so plainly.
+
 ### `GET /v1/models`
 
 Lists all available routing tiers as models:
@@ -610,13 +657,9 @@ Same as `flexrouter serve`, but also opens the dashboard in your browser for you
 - Provides `/api/*` endpoints for the dashboard's own use
 - With `--log`: writes a server activity log (`flexrouter.log` in the state directory) and adds a **Logs** page to the dashboard, under *System*, that tails it live (see [Logging and the Logs page](4-Advanced-Usage.md#logging-and-the-logs-page))
 
-**Tabs:**
-- Live Telemetry
-- Chat
-- Request Logs
-- Account Status
-- Settings
-- Setup
+**Pages:** Overview (with the Get started card), Providers & keys, Models,
+Buckets, Requests, Playground, Status, Allowance, Settings, and Logs with
+`--log`. See [Dashboard: Live Monitoring](4-Advanced-Usage.md#dashboard-live-monitoring).
 
 ---
 
@@ -648,27 +691,9 @@ terminal, with no browser and no port.
 flexrouter status
 ```
 
-Print tier health to terminal (no browser needed).
-
-**Output:**
-
-```
-flexrouter Status (as of 2026-05-27T12:34:56Z)
-
-Tier: low
-  ✓ groq / llama-3.1-8b (score 85)
-    RPM: 45/60  TPM: 28000/60000  Status: available
-  
-  ✓ openrouter / mistral-small (score 70)
-    RPM: 15/40  TPM: 12000/80000  Status: available
-
-Tier: medium
-  ✗ groq / llama-3.3-70b (score 90)
-    RPM: 30/30  TPM: 45000/60000  Status: rate-limited (20s penalty)
-  
-  ✓ openai / gpt-4o-mini (score 80)
-    RPM: 120/500  TPM: 80000/200000  Status: available
-```
+Prints the router's totals and today's spend per provider to the terminal,
+the same numbers as the TUI's Overview tab. For each model's status, open
+the dashboard's **Status** page, or `GET /api/statuses`.
 
 ---
 
@@ -775,8 +800,8 @@ tiers:
     - provider: <provider_key>
       model: <model_name>
       score: <1-100>
-      rpm: <int or null>                 # null = unknown, learned from the provider
-      tpm: <int or null>                 # null = unknown, learned from the provider
+      rpm: <int>
+      tpm: <int>
       context_window: <int>
       vision: <bool>  # optional, default false
 
@@ -794,14 +819,15 @@ providers:
 settings:
   state_dir: <path>                    # default: .flexrouter/
   window_seconds: <int>                # default: 60
-  failover_budget_seconds: <float>     # default: 30
+  failover_budget_seconds: <float>     # default: 30 ("Give up after")
   session_ttl_minutes: <int>           # default: 30
   port: <int>                          # default: 4891 (dashboard_port also works, as an older alias)
-
-  # Saved conversations (prompt, reply, reasoning), read back on the request sheet
+  
   save_conversations: <bool>           # default: true
   save_conversations_days: <int>       # default: 7
-
+  auto_add_models: <bool>              # default: false
+  show_quickstart: <bool>              # default: true
+  
   # Cost budgets
   provider_budget:
     <provider_key>: <float>            # max USD per day
@@ -855,21 +881,16 @@ JSON summary of current state:
       "daily_cost_usd": 2.00,
       "budget_usd": 5.00
     }
-  },
-  "models": {
-    "groq/llama-3.1-8b": {
-      "rpm_current": 45,
-      "tpm_current": 28000,
-      "penalty_until": null
-    },
-    "openai/gpt-4o": {
-      "rpm_current": 120,
-      "tpm_current": 80000,
-      "penalty_until": "2026-05-27T12:02:15Z"
-    }
   }
 }
 ```
+
+### `.flexrouter/status.json`
+
+Each model's one status (Ready, Busy, Struggling, Needs you) with its
+reason, when it clears (`until`, empty for Needs you) and its one action.
+The same data is served live at `GET /api/statuses`; see ADR 0020.
+
 
 ---
 
@@ -973,7 +994,7 @@ guessing on its own.
 
 **Q: What if a provider is down?**
 
-A: The model is marked Busy and flexrouter tries the next-best model in the tier. If nothing answers before `failover_budget_seconds` (30s by default) runs out, it raises `RouterBusy`.
+A: Its models turn Busy (or Needs you, for a refusal) and flexrouter moves to the next model in the bucket at once. If every model fails, the error lists each one with the provider's own words (see [Errors](#errors)).
 
 **Q: Can I cache responses?**
 

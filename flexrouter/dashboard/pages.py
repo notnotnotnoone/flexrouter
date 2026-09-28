@@ -15,7 +15,7 @@ from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from flexrouter import keys as keystore
 from flexrouter import model_reset
@@ -31,7 +31,7 @@ from flexrouter.probe import probe_key
 from flexrouter import score_facts
 from flexrouter import service_keys
 from flexrouter.dashboard import (add_models, facts, keytest, overview,
-                                  pending_actions, ranking, settings_write, ui)
+                                  pending_actions, quickstart, ranking, settings_write, ui, undo)
 from flexrouter.dashboard import allowance_page as allowance_page_mod
 from dataclasses import asdict
 
@@ -40,8 +40,7 @@ from fastapi.responses import Response
 from flexrouter import app_password
 from flexrouter.dashboard import prefs as dashboard_prefs
 from flexrouter.dashboard import settings_page as settings_page_mod
-from flexrouter.dashboard import brain_page as brain_page_mod
-from flexrouter.dashboard import broken_page as broken_page_mod
+from flexrouter.dashboard import status_page as status_page_mod
 from flexrouter.dashboard import logs_page as logs_page_mod
 from flexrouter.dashboard import requests_page as requests_page_mod
 from flexrouter.dashboard.render import attrs, esc, page, tag
@@ -82,9 +81,18 @@ def _live_router():
     return router
 
 
-def _redirect_with_message(path: str, ok: bool, message: str) -> RedirectResponse:
+def _redirect_with_message(path: str, ok: bool, message: str,
+                           undo_token: str = "") -> RedirectResponse:
+    """Back to `path` with the outcome in the querystring. `undo_token`
+    (from undo.snapshot) makes app.js offer Undo in the success toast."""
     qs = f"ok={'1' if ok else '0'}&message={quote(message)}"
+    if undo_token:
+        qs += f"&undo={quote(undo_token)}"
     return RedirectResponse(url=f"{path}?{qs}", status_code=303)
+
+
+def _overrides_file():
+    return ov._path(None)
 
 
 # The Overview's ranges and formatting helpers live in overview.py; these
@@ -174,7 +182,7 @@ def _add_provider_form() -> str:
               placeholder="optional"))
         + _field("Key label", _input(type="text", name="key_label",
               placeholder="optional"))
-        + tag("button", "Add provider", type="submit"),
+        + ui.submit("Add provider", kind="primary", **{"data-working": "Adding"}),
         method="post", action="/providers", cls="grouped-form",
     )
 
@@ -191,7 +199,7 @@ def _key_counts(s) -> str:
 def _provider_row(s) -> str:
     return tag("tr", "".join([
         tag("td", tag("a", esc(s.name), href=f"/providers/{quote(s.name)}")),
-        tag("td", ui.status(s.state)),
+        tag("td", ui.pill(s.pill)),
         tag("td", esc(s.base_url), cls="dim"),
         tag("td", esc(_key_counts(s))),
         tag("td", _num(s.models_total), cls="num"),
@@ -269,17 +277,17 @@ def _providers_body(router, banner: str = "") -> str:
         + tag("p", "Every provider you've configured, and every key it "
                    "holds. Click a provider for its keys.", cls="lede")
         + tag("div", providers_panel + add_panel + custom_panel, cls="panel-page")
-        + _danger_zone("/providers/reset-all", "the models of every provider", "reset all",
-                       model_reset.preview(router._cfg.state_dir))
     )
 
 
 def _danger_zone(action: str, what: str, phrase: str, counts: dict) -> str:
     """A reset form that only works once `phrase` is typed exactly
-    (flexrouter/model_reset.py does the work, and backs up first)."""
+    (flexrouter/model_reset.py does the work, and backs up first). Folded
+    shut, at the bottom, away from the everyday buttons (US-99); the
+    success toast offers Undo."""
     found = (f"{counts.get('models', 0):,} model(s), {counts.get('field_edits', 0):,} "
              f"field edit(s) and {counts.get('facts', 0):,} learned fact(s) would be deleted.")
-    return tag("div", _panel(
+    return tag("div", ui.fold("Danger zone", _panel(
         "Danger zone",
         tag("div",
             tag("p", esc(f"Deletes {what}: models in every bucket, field edits, parked "
@@ -291,10 +299,16 @@ def _danger_zone(action: str, what: str, phrase: str, counts: dict) -> str:
             + tag("form",
                   tag("label", esc(f"Type {phrase} to confirm "))
                   + f"<input{attrs({'name': 'confirm', 'autocomplete': 'off', 'aria-label': 'Confirmation'})}>"
-                  + " " + tag("button", "Reset models and scores", type="submit", cls="danger"),
+                  + " " + ui.submit("Reset models and scores", kind="danger", **{"data-working": "Resetting"}),
                   method="post", action=action, cls="set-actions"),
             cls="pb"),
-    ), cls="danger-zone")
+    )), cls="danger-zone")
+
+
+def reset_all_zone(router) -> str:
+    """Settings' Danger zone: every provider's models at once."""
+    return _danger_zone("/providers/reset-all", "the models of every provider", "reset all",
+                        model_reset.preview(router._cfg.state_dir))
 
 
 def _key_fact(label: str, value: object) -> str:
@@ -305,21 +319,18 @@ def _key_row(detail, k) -> str:
     until = f", back in {int(k.until - time.time())}s" if k.until else ""
     status = f"{k.status}{until}"
     status_cls = {"ready": "ok", "busy": "warn", "off": "dim"}.get(k.status, "bad")
-    last_used = (
-        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(k.last_used_at))
-        if k.last_used_at else "never"
-    )
+    last_used = overview.clock(k.last_used_at) if k.last_used_at else "never"
     latency = f"{k.ema_latency_ms:.0f} ms" if k.ema_latency_ms else "-"
     test_form = tag(
         "form",
-        tag("button", "Test", type="submit"),
+        ui.submit("Test", kind="test", **{"data-working": "Testing"}),
         method="post",
         action=f"/providers/{quote(detail.name, safe=':')}/keys/{quote(k.id, safe=':')}/test",
         cls="key-test",
     )
     remove_form = tag(
         "form",
-        tag("button", "Remove", type="submit", cls="danger"),
+        ui.submit("Remove", kind="danger", **{"data-working": "Removing"}),
         method="post",
         action=f"/providers/{quote(detail.name, safe=':')}/keys/{quote(k.id, safe=':')}/remove",
         cls="key-remove",
@@ -342,9 +353,9 @@ def _key_row(detail, k) -> str:
                   _input(type="checkbox", name="enabled",
                          **({"checked": True} if k.enabled else {}))
                   + "enabled", cls="check-field")
-              + tag("button", "Save", type="submit")
-              + tag("button", "Save & copy to all keys", type="submit",
-                    formaction=copy_action, cls="ghost",
+              + ui.submit("Save", **{"data-working": "Saving", "data-done": "Saved"})
+              + ui.submit("Save & copy to all keys", kind="ghost",
+                    formaction=copy_action,
                     title="Save this key, then copy its weight, allowed models, "
                           "caps and enabled state onto every other key for this provider"),
               cls="key-edit-actions"),
@@ -398,12 +409,12 @@ def _provider_edit_form(detail, editable: dict) -> str:
         for name in ("base_url", "header_parser", "key_strategy")
     )
     edit = tag(
-        "form", inputs + tag("button", "Save", type="submit"),
+        "form", inputs + ui.submit("Save", **{"data-working": "Saving", "data-done": "Saved"}),
         method="post", action=f"/providers/{quote(detail.name, safe=':')}/edit",
         cls="grouped-form",
     )
     clear = (
-        tag("form", tag("button", "Put it all back", type="submit"),
+        tag("form", ui.submit("Put it all back", kind="ghost", **{"data-working": "Putting back"}),
             method="post", action=f"/providers/{quote(detail.name, safe=':')}/clear")
         if editable["overridden_at_all"] else ""
     )
@@ -428,7 +439,7 @@ def _provider_add_model_form(provider: str, bucket_names: list) -> str:
         + _field("Gen tokens/s", _input(type="number", name="tokens_per_second", step="any",
               placeholder="optional"))
         + tag("label", _input(type="checkbox", name="vision") + "vision", cls="check-field")
-        + tag("button", "Add model", type="submit"),
+        + ui.submit("Add model", kind="primary", **{"data-working": "Adding"}),
         method="post", action=f"/providers/{quote(provider, safe=':')}/models",
         cls="grouped-form",
     )
@@ -477,7 +488,7 @@ def _provider_detail_body(detail, editable: dict, bucket_names: list,
                                        placeholder="paste it here"))
                   + _field("Label", _input(type="text", name="label",
                                            placeholder="which account this is"))
-                  + tag("button", "Add key", type="submit"),
+                  + ui.submit("Add key", kind="primary", **{"data-working": "Adding"}),
                   method="post", action=f"/providers/{quote(detail.name, safe=':')}/keys",
                   cls="grouped-form",
               ),
@@ -510,6 +521,9 @@ _CAP_SOURCE_WORDS = {
 }
 
 
+_CAP_MARKS = {"observed": " ✓", "guessed": " ~", "manual": " ✎"}
+
+
 def _cap_cell(fact, name: str = "") -> str:
     """One capability as a tag. The tag's style says where the fact came
     from (solid published, outlined observed, faded guessed, underlined
@@ -520,7 +534,9 @@ def _cap_cell(fact, name: str = "") -> str:
     if fact.status == "no":
         return ""
     word = name or fact.status
-    mark = "?" if fact.status == "doubted" else ""
+    # Where the fact came from, in the chip itself and not only its style
+    # (papercut 24): ✓ seen working, ~ guessed, ✎ you set it.
+    mark = "?" if fact.status == "doubted" else _CAP_MARKS.get(fact.source, "")
     return tag("span", esc(word + mark), cls=f"cap cap-{fact.source}",
                title=f"{fact.status} - {_CAP_SOURCE_WORDS.get(fact.source, fact.source)}")
 
@@ -539,7 +555,7 @@ def _pending_action_form(action: str, url: str, extra: str = "") -> str:
         "form",
         _input(type="hidden", name="action", value=action)
         + extra
-        + tag("button", label, type="submit"),
+        + ui.submit(label),
         method="post", action=url,
     )
 
@@ -601,13 +617,13 @@ def _model_edit_form(r) -> str:
         + tag("label", _input(type="checkbox", name="vision",
                               **{"checked": True} if vision_checked else {})
               + "Can see images", cls="check-field")
-        + tag("button", "Save", type="submit"),
+        + ui.submit("Save", **{"data-working": "Saving", "data-done": "Saved"}),
         method="post", action=f"/models_catalog/{ident}", cls="grouped-form",
     )
     disable = tag(
         "form",
         _input(type="hidden", name="action", value="disable")
-        + tag("button", "Disable this model", type="submit", cls="danger"),
+        + ui.submit("Disable this model", kind="danger", **{"data-working": "Disabling"}),
         method="post", action=f"/models_catalog/{ident}",
     )
     return edit + disable
@@ -627,7 +643,6 @@ def _models_body(router, banner: str = "") -> str:
     for n, r in enumerate(rows_data):
         caps = (_cap_cell(r.vision, "vision") + _cap_cell(r.tools, "tools")
                 + _cap_cell(r.reasoning, "reason") + _size_tag(r.learned_context or r.context_window))
-        state = {"ready": "ok", "busy": "warn", "struggling": "warn"}.get(r.state, "bad")
         search = f"{r.provider} {r.model} {' '.join(r.buckets)}".lower()
         rows.append(tag("tr", "".join([
             tag("td", tag("span", esc(r.provider), cls="m-prov") + tag("span", esc(r.model),
@@ -636,10 +651,10 @@ def _models_body(router, banner: str = "") -> str:
             tag("td", tag("div", tag("span", "", cls="m-bar",
                                      style=f"width:{r.score / top_score * 100:.0f}%"),
                           cls="m-track") + tag("span", esc(r.score), cls="m-score")),
-            tag("td", esc(f"{r.response_rate:.0%} ({r.requests:,} reqs)")
+            tag("td", esc(f"{r.response_rate:.0%} ({ui.plural(r.requests, 'request')})")
                 if r.response_rate is not None else tag("span", "no data yet", cls="dim")),
             tag("td", tag("div", caps, cls="caps")),
-            tag("td", ui.status(state)
+            tag("td", ui.pill({"needs_you": "needs"}.get(r.state, r.state))
                 + (tag("div", esc(r.why), cls="m-why") if r.why else "")),
             tag("td", tag("button", ui.icon("arrow-right"), type="button", cls="m-open",
                           **{"aria-label": f"Details for {r.model}", "data-toggle": f"m-{n}"})),
@@ -684,7 +699,7 @@ def _models_body(router, banner: str = "") -> str:
         tag("td", tag(
             "form",
             _input(type="hidden", name="action", value="clear")
-            + tag("button", "Put it back", type="submit"),
+            + ui.submit("Put it back", kind="ghost", **{"data-working": "Putting back"}),
             method="post",
             action=f"/models_catalog/{_model_ident_path(*ident.split('/', 1))}",
         )),
@@ -709,27 +724,27 @@ def _models_body(router, banner: str = "") -> str:
 
     n_pending = sum(len(b.get(kind) or []) for b in pending.values() if isinstance(b, dict)
                     for kind in ("appeared", "vanished", "changed"))
-    status = f"{len(rows_data)} models in use · {len(disabled)} disabled"
+    status = f"{ui.plural(len(rows_data), 'model')} in use · {len(disabled)} disabled"
     if n_pending:
         status += f" · {n_pending} catalogue changes waiting"
     head = tag("div",
                tag("div", tag("h1", "Models", cls="page-title")
                    + tag("p", esc(status), cls="page-status"), cls="page-head-text")
-               + tag("div", ui.button("Rank models with an AI", href="/models_catalog/rank",
+               + tag("div", ui.button("Rank models with AI", href="/models_catalog/rank",
                                       icon_name="brain")
-                     + ui.button("Get rate limits with an AI", href="/models_catalog/rate-limits",
+                     + ui.button("Find rate limits with AI", href="/models_catalog/rate-limits",
                                 icon_name="gauge")
                      + ui.button("Add models with AI", href="/models_catalog/add-with-ai",
                                 icon_name="plus"), cls="page-actions"),
                cls="page-head")
-    legend = tag("div", tag("span", "Tag styles say where a fact came from:")
-                 + "".join(tag("span", tag("span", label, cls=f"cap cap-{kind}") + esc(meaning),
+    legend = tag("div", tag("span", "Where a fact came from:")
+                 + "".join(tag("span", tag("span", esc(label), cls=f"cap cap-{kind}") + esc(meaning),
                                cls="cap-item")
                            for label, kind, meaning in [
-                               ("solid", "published", "the provider says so"),
-                               ("outlined", "observed", "seen working"),
-                               ("faded", "guessed", "a guess"),
-                               ("underlined", "manual", "set by you")]),
+                               ("vision", "published", "the provider says so"),
+                               ("vision ✓", "observed", "seen working"),
+                               ("vision ~", "guessed", "a guess"),
+                               ("vision ✎", "manual", "set by you")]),
                  cls="note cap-legend")
     pending_tray = (
         ui.box("Pending catalogue changes",
@@ -761,7 +776,7 @@ def _import_all_form(bucket_names: list) -> str:
         tag("label", "Discover and import every model from every provider with a valid "
                      "key, straight into ")
         + f"<select{attrs({'name': 'bucket'})}>{bucket_options}</select>"
-        + " " + tag("button", "Discover and import everything", type="submit"),
+        + " " + ui.submit("Discover and import everything"),
         method="post", action="/models_catalog/import-all", cls="set-actions",
         **{"data-busy": "Checking every provider and scoring what it finds..."},
     )
@@ -772,7 +787,7 @@ def _rank_body(prompt: str, notes: str) -> str:
         "form",
         _textarea(esc(notes), name="notes", rows="6",
                  placeholder="benchmark material or notes (optional)")
-        + " " + tag("button", "Build prompt", type="submit"),
+        + " " + ui.submit("Build prompt", **{"data-working": "Building"}),
         method="get", action="/models_catalog/rank",
     )
     paste_form = tag(
@@ -780,11 +795,11 @@ def _rank_body(prompt: str, notes: str) -> str:
         _textarea("", name="answer", rows="10",
                   placeholder="paste the AI's reply here, one line per "
                               "model: provider | model | score")
-        + " " + tag("button", "Show proposed changes", type="submit"),
+        + " " + ui.submit("Show proposed changes", **{"data-working": "Checking"}),
         method="post", action="/models_catalog/rank/proposal",
     )
     return (
-        tag("h1", "Rank models with an AI", cls="page-title")
+        tag("h1", "Rank models with AI", cls="page-title")
         + tag("p", "Builds a ready-made prompt from the current model "
                    "list plus whatever benchmark material you supply. "
                    "Send it yourself, or copy it into whatever chat "
@@ -830,7 +845,7 @@ def _rank_proposal_body(changes: list, skipped_manual: list) -> str:
             ])))
         body = tag(
             "form", tag("table", "".join(rows_html))
-            + tag("button", "Apply checked scores", type="submit"),
+            + ui.submit("Apply checked scores", kind="primary"),
             method="post", action="/models_catalog/rank/apply", cls="table-form",
         )
 
@@ -856,11 +871,11 @@ def _rate_limits_body(prompt: str, docs: str) -> str:
         "form",
         _textarea(esc(docs), name="docs", rows="10",
                  placeholder="paste the provider's rate-limit documentation here")
-        + " " + tag("button", "Build prompt", type="submit"),
+        + " " + ui.submit("Build prompt", **{"data-working": "Building"}),
         method="post", action="/models_catalog/rate-limits/build",
     )
     body = (
-        tag("h1", "Get rate limits with an AI", cls="page-title")
+        tag("h1", "Find rate limits with AI", cls="page-title")
         + tag("p", "Same idea as ranking models: builds a ready-made prompt "
                    "from the current model list plus whatever docs text you "
                    "paste in. Send it to whichever model you actually use, "
@@ -877,7 +892,7 @@ def _rate_limits_body(prompt: str, docs: str) -> str:
             _textarea("", name="answer", rows="10",
                       placeholder="paste the AI's reply here, one line per "
                                   "model: provider | model | rpm | tpm")
-            + " " + tag("button", "Show proposed changes", type="submit"),
+            + " " + ui.submit("Show proposed changes", **{"data-working": "Checking"}),
             method="post", action="/models_catalog/rate-limits/proposal",
         )
         body += (
@@ -917,7 +932,7 @@ def _rate_limits_proposal_body(changes: list, skipped_manual: list) -> str:
             ])))
         body = tag(
             "form", tag("table", "".join(rows_html))
-            + tag("button", "Apply checked limits", type="submit"),
+            + ui.submit("Apply checked limits", kind="primary"),
             method="post", action="/models_catalog/rate-limits/apply", cls="table-form",
         )
 
@@ -951,7 +966,7 @@ def _add_with_ai_step1_form(providers: list[str], provider: str, notes: str) -> 
         + _field("Docs or model list (optional)",
                  _textarea(esc(notes), name="notes", rows="6",
                           placeholder="paste provider docs or a model list here (optional)"))
-        + tag("button", "Build prompt", type="submit"),
+        + ui.submit("Build prompt", **{"data-working": "Building"}),
         method="get", action="/models_catalog/add-with-ai", cls="grouped-form",
     )
 
@@ -973,7 +988,7 @@ def _add_with_ai_body(providers: list[str], provider: str, notes: str, prompt: s
     if prompt:
         parts.append(tag("h3", "2. The prompt - copy this"))
         parts.append(_textarea(esc(prompt), rows="16", readonly=True, id="add-ai-prompt"))
-        parts.append(ui.button("Copy prompt", icon_name="check", **{"data-copy": "#add-ai-prompt"}))
+        parts.append(ui.button("Copy prompt", kind="copy", icon_name="copy", **{"data-copy": "#add-ai-prompt"}))
         parts.append(tag("h3", "3. Paste the answer back"))
         parts.append(tag(
             "form",
@@ -981,7 +996,7 @@ def _add_with_ai_body(providers: list[str], provider: str, notes: str, prompt: s
             + _textarea("", name="answer", rows="10",
                        placeholder="paste the AI's reply here: a JSON array, one object per "
                                    "model")
-            + " " + tag("button", "Show what would be added", type="submit"),
+            + " " + ui.submit("Show what would be added", **{"data-working": "Checking"}),
             method="post", action="/models_catalog/add-with-ai/review",
         ))
     return "".join(parts)
@@ -1108,9 +1123,9 @@ def _add_with_ai_review_body(rows_info: list, issues: list, bucket_names: list,
             "form",
             _input(type="hidden", name="row_count", value=str(len(rows_info)))
             + table
-            + tag("script", known_json.replace("</", "<\/"), type="application/json",
+            + tag("script", known_json.replace("</", "<\\/"), type="application/json",
                   id="known-ids")
-            + tag("button", "Apply checked rows", type="submit", id="apply-rows")
+            + ui.submit("Apply checked rows", kind="primary", id="apply-rows")
             + tag("span", "", cls="state-bad", id="apply-block"),
             method="post", action="/models_catalog/add-with-ai/apply", cls="table-form",
             **{"data-id-check": ""},
@@ -1145,7 +1160,7 @@ def _add_model_form(bucket: str) -> str:
         + "".join(_input(type="number", name=name, placeholder=name) + " "
                  for name, _ in _QUOTA_FIELDS)
         + tag("label", _input(type="checkbox", name="vision") + "vision") + " "
-        + tag("button", "Add model", type="submit"),
+        + ui.submit("Add model", kind="primary", **{"data-working": "Adding"}),
         method="post", action=f"/buckets/{quote(bucket, safe=':')}/models",
     )
 
@@ -1154,7 +1169,7 @@ def _add_bucket_form() -> str:
     return tag(
         "form",
         _input(type="text", name="name", placeholder="bucket name") + " "
-        + tag("button", "Add bucket", type="submit"),
+        + ui.submit("Add bucket", kind="primary", **{"data-working": "Adding"}),
         method="post", action="/buckets",
     )
 
@@ -1173,14 +1188,22 @@ _BOOL_SETTINGS = frozenset({
 
 
 def _cast_setting(field: str, raw_value: str):
-    if field in _INT_SETTINGS:
-        return int(raw_value)
-    if field in _FLOAT_SETTINGS:
-        return float(raw_value)
-    if field in _JSON_SETTINGS:
-        if not raw_value.strip():
-            return {} if field == "provider_budget" else []
-        return json.loads(raw_value)
+    """The typed value, or a ValueError whose message is the plain reason
+    shown beside the Save button."""
+    try:
+        if field in _INT_SETTINGS:
+            return int(raw_value)
+        if field in _FLOAT_SETTINGS:
+            return float(raw_value)
+        if field in _JSON_SETTINGS:
+            if not raw_value.strip():
+                return {} if field == "provider_budget" else []
+            return json.loads(raw_value)
+    except json.JSONDecodeError:
+        raise ValueError(f"Not saved: {raw_value!r} isn't valid JSON") from None
+    except ValueError:
+        kind = "a whole number" if field in _INT_SETTINGS else "a number"
+        raise ValueError(f"Not saved: this needs {kind}, not {raw_value!r}") from None
     if field in _BOOL_SETTINGS:
         return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
     return raw_value
@@ -1198,11 +1221,11 @@ def _service_key_row(name: str, label: str, env_var: str) -> str:
     save_form = tag(
         "form",
         _input(type="text", name="secret", placeholder="paste key") + " "
-        + tag("button", "Save", type="submit"),
+        + ui.submit("Save", **{"data-working": "Saving", "data-done": "Saved"}),
         method="post", action=f"/settings/keys/{quote(name, safe=':')}",
     )
     remove_form = (
-        tag("form", tag("button", "Remove", type="submit"),
+        tag("form", ui.submit("Remove", kind="danger", **{"data-working": "Removing"}),
             method="post", action=f"/settings/keys/{quote(name, safe=':')}/remove")
         if current else ""
     )
@@ -1223,7 +1246,7 @@ def _service_keys_section() -> str:
         for name, (label, env_var) in service_keys.SERVICES.items()
     ]
     rescore = tag("form",
-                  tag("button", "Re-score every model with Artificial Analysis", type="submit"),
+                  ui.submit("Re-score every model with Artificial Analysis", kind="test"),
                   method="post", action="/settings/rescore-models", cls="set-actions",
                   **{"data-busy": "Fetching Artificial Analysis' latest scores..."})
     return (
@@ -1357,7 +1380,8 @@ async def playground_chat(request: Request):
         return {"target": pin, "ok": False, "outcome": "failed", "answered_by": None}
 
     async def stream_single():
-        async for piece in _stream_chat(router, messages, tier, target, kwargs, new_trace_id()):
+        async for piece in _stream_chat(router, messages, tier, target, kwargs, new_trace_id(),
+                                        {"client": "playground"}):
             yield piece
         last = facts.recent_requests(router, limit=1)
         if last:
@@ -1373,7 +1397,8 @@ async def playground_chat(request: Request):
         queue: asyncio.Queue = asyncio.Queue()
 
         async def run_one(pin: str) -> None:
-            async for piece in _stream_chat(router, messages, pin, pin, kwargs, new_trace_id()):
+            async for piece in _stream_chat(router, messages, pin, pin, kwargs, new_trace_id(),
+                                            {"client": "playground"}):
                 await queue.put(piece)
             info = await one_target_trace(pin)
             await queue.put(f"event: flexrouter\ndata: {json.dumps(info)}\n\n")
@@ -1420,12 +1445,54 @@ def overview_page(range: str = DEFAULT_RANGE, fragment: str = "") -> HTMLRespons
     return HTMLResponse(page("Overview", "overview", overview.body(router, key)))
 
 
-@pages.get("/broken", response_class=HTMLResponse, include_in_schema=False)
-def broken_page(fragment: str = "") -> HTMLResponse:
+@pages.get("/status", response_class=HTMLResponse, include_in_schema=False)
+def status_page(fragment: str = "", ok: str = "", message: str = "") -> HTMLResponse:
+    """Every model's one status (§3-§4). `fragment=1` is the live list alone."""
     router = _live_router()
     if fragment:
-        return HTMLResponse(broken_page_mod.inner(router))
-    return HTMLResponse(page("What's broken", "broken", broken_page_mod.body(router)))
+        return HTMLResponse(status_page_mod.inner(router))
+    return HTMLResponse(page("Status", "status",
+                             _message_banner(ok, message) + status_page_mod.body(router)))
+
+
+@pages.get("/broken", include_in_schema=False)
+@pages.get("/brain", include_in_schema=False)
+def old_status_pages(request: Request) -> RedirectResponse:
+    """What's broken and Error brain became Status (PLAN-V2.3.md Session 8)."""
+    qs = request.url.query
+    return RedirectResponse(url="/status" + (f"?{qs}" if qs else ""), status_code=301)
+
+
+@pages.post("/status/{action}/{provider}/{model:path}", include_in_schema=False)
+async def status_action(action: str, provider: str, model: str) -> JSONResponse:
+    """A Status row's one button: [Use X], [Retry] / [Try now], [Remove]
+    (turns the model off: config.yaml is never rewritten, ADR 0002) and
+    [Turn on]. Answers with the status the row settles into."""
+    router = _live_router()
+    try:
+        if action == "use":
+            current = router._status.get(provider, model)
+            if not (current.action or "").startswith("use:"):
+                raise ValueError("there's no suggestion for this model any more")
+            settings_write.use_suggested_model(router._cfg, provider, model,
+                                               current.action.removeprefix("use:"))
+            router.reload()
+            return JSONResponse({"ok": True, "status": "ready",
+                                 "message": f"Using {current.action[4:]}"})
+        if action == "retry":
+            router._status.clear(provider, model)
+            return JSONResponse({"ok": True, "status": "ready", "message": "Will try it next"})
+        if action == "remove":
+            settings_write.set_model_fields(provider, model, {"enabled": False})
+            router.reload()
+            return JSONResponse({"ok": True, "status": "off", "message": "Turned off"})
+        if action == "turn_on":
+            settings_write.set_model_fields(provider, model, {"enabled": True})
+            router.reload()
+            return JSONResponse({"ok": True, "status": "ready", "message": "Turned on"})
+    except ValueError as e:
+        return JSONResponse({"ok": False, "message": str(e)}, status_code=400)
+    return JSONResponse({"ok": False, "message": f"unknown action {action!r}"}, status_code=404)
 
 
 def toast_trigger(message: str, kind: str = "ok") -> dict[str, str]:
@@ -1448,7 +1515,6 @@ def _message_banner(ok: str, message: str) -> str:
                    **{"data-kind": "ok"})
     return (tag("div", esc(message), cls="toast-seed", hidden=True, **{"data-kind": "bad"})
             + tag("p", esc(message), cls="state-bad"))
-
 
 @pages.get("/models_catalog", response_class=HTMLResponse, include_in_schema=False)
 def models_page(ok: str = "", message: str = "") -> HTMLResponse:
@@ -1555,7 +1621,7 @@ async def models_rank_apply(request: Request) -> RedirectResponse:
 
 @pages.get("/models_catalog/rate-limits", response_class=HTMLResponse, include_in_schema=False)
 def models_rate_limits_page() -> HTMLResponse:
-    return HTMLResponse(page("Rate limits with an AI", "models", _rate_limits_body("", "")))
+    return HTMLResponse(page("Find rate limits with AI", "models", _rate_limits_body("", "")))
 
 
 @pages.post("/models_catalog/rate-limits/build", response_class=HTMLResponse, include_in_schema=False)
@@ -1564,7 +1630,7 @@ async def models_rate_limits_build(request: Request) -> HTMLResponse:
     docs = form.get("docs") or ""
     idents = [f"{r.provider}/{r.model}" for r in facts.models(_live_router())]
     prompt = ranking.build_rate_limit_prompt(idents, docs) if docs.strip() else ""
-    return HTMLResponse(page("Rate limits with an AI", "models", _rate_limits_body(prompt, docs)))
+    return HTMLResponse(page("Find rate limits with AI", "models", _rate_limits_body(prompt, docs)))
 
 
 @pages.post("/models_catalog/rate-limits/proposal", response_class=HTMLResponse, include_in_schema=False)
@@ -1591,7 +1657,7 @@ async def models_rate_limits_proposal(request: Request) -> HTMLResponse:
             continue
         changes.append((row, rpm, tpm))
 
-    return HTMLResponse(page("Rate limits with an AI", "models",
+    return HTMLResponse(page("Find rate limits with AI", "models",
                              _rate_limits_proposal_body(changes, skipped_manual)))
 
 
@@ -1881,6 +1947,7 @@ async def model_write(ident: str, request: Request) -> RedirectResponse:
     provider, _, model = ident.partition("/")
     form = await request.form()
     action = form.get("action", "")
+    token = undo.snapshot([_overrides_file()]) if action in ("disable", "clear") else ""
     try:
         if action == "disable":
             settings_write.set_model_fields(provider, model, {"enabled": False})
@@ -1910,7 +1977,8 @@ async def model_write(ident: str, request: Request) -> RedirectResponse:
             raise ValueError(f"unknown action {action!r}")
     except ValueError as e:
         return _redirect_with_message("/models_catalog", ok=False, message=str(e))
-    return _redirect_with_message("/models_catalog", ok=True, message=f"{ident} updated")
+    return _redirect_with_message("/models_catalog", ok=True, message=f"{ident} updated",
+                                  undo_token=token)
 
 
 @pages.get("/requests", response_class=HTMLResponse, include_in_schema=False)
@@ -1956,20 +2024,16 @@ def logs_page(fragment: str = "", limit: int = logs_page_mod.PAGE) -> HTMLRespon
     """The server's activity log. Only here when started with --log:
     without it the route answers 404 and the menu shows no link."""
     if not log_setup.enabled():
-        return HTMLResponse(
-            ui.empty("The server was started without logging. Restart it with "
-                     "--log to get an activity log and this page."),
-            status_code=404)
+        # A whole page, not a bare fragment (§10): say it's off and how
+        # to turn it on. Still a 404, since there is no log to show.
+        body = (tag("div", tag("h1", "Logs", cls="page-title"), cls="page-head")
+                + ui.empty("Logging is off. Start flexrouter with --log "
+                           "(flexrouter serve --log) to see its activity log here."))
+        return HTMLResponse(page("Logs", "logs", body), status_code=404)
     limit = max(10, min(int(limit or 0), 2000))
     if fragment:
         return HTMLResponse(logs_page_mod.rows(limit))
     return HTMLResponse(page("Logs", "logs", logs_page_mod.body(limit)))
-
-
-@pages.get("/brain", response_class=HTMLResponse, include_in_schema=False)
-def brain_page(ok: str = "", message: str = "") -> HTMLResponse:
-    return HTMLResponse(page("Error brain", "brain",
-                             brain_page_mod.body(_live_router(), _message_banner(ok, message))))
 
 
 @pages.post("/brain/{fp}/verdict", include_in_schema=False)
@@ -1981,11 +2045,11 @@ async def brain_correct(fp: str, request: Request) -> RedirectResponse:
     try:
         _live_router()._error_brain.correct(fp, verdict)
     except KeyError:
-        return _redirect_with_message("/brain", False, "That error is no longer on record.")
+        return _redirect_with_message("/status", False, "That error is no longer on record.")
     except ValueError as exc:
-        return _redirect_with_message("/brain", False, str(exc))
-    label = brain_page_mod.LABELS.get(verdict, verdict)
-    return _redirect_with_message("/brain", True, f"Saved: that error now means \"{label}\".")
+        return _redirect_with_message("/status", False, str(exc))
+    label = status_page_mod.LABELS.get(verdict, verdict)
+    return _redirect_with_message("/status", True, f"Saved: that error now means \"{label}\".")
 
 
 @pages.get("/allowance", response_class=HTMLResponse, include_in_schema=False)
@@ -2180,7 +2244,7 @@ def _preset_connect(p) -> str:
                                placeholder="paste it here"))
         + _field("Label", _input(type="text", name="label",
                                  placeholder="which account this is"))
-        + tag("button", "Add and look for models", type="submit"),
+        + ui.submit("Add and look for models", kind="primary"),
         method="post", action="/providers/add", cls="grouped-form",
         **{"data-busy": "Checking the key and asking for models..."},
     )
@@ -2308,7 +2372,7 @@ def _discovered_body(provider: str, preset, result, bucket_names: list) -> str:
             _input(type="hidden", name="model", value=esc(model_id))
             + _input(type="hidden", name="score", value="50")
             + picker
-            + tag("button", "Import", type="submit"),
+            + ui.submit("Import", kind="primary", **{"data-working": "Importing"}),
             method="post",
             action=f"/providers/{quote(provider, safe=':')}/models",
         )
@@ -2318,7 +2382,7 @@ def _discovered_body(provider: str, preset, result, bucket_names: list) -> str:
         cls="matrix"), cls="scroll")
     return (
         head
-        + tag("p", esc(f"{len(result.models)} models reachable with this key, "
+        + tag("p", esc(f"{ui.plural(len(result.models), 'model')} reachable with this key, "
                        f"answered in {result.latency_ms} ms"), cls="lede")
         + tag("div", _panel(
             "What this key can reach", table,
@@ -2344,6 +2408,8 @@ async def provider_edit(provider: str, request: Request) -> RedirectResponse:
 
 def _reset_models(provider: str | None, dest: str) -> RedirectResponse:
     router = _live_router()
+    changes, _ = model_reset._plan(router._cfg.state_dir, None, provider)
+    token = undo.snapshot(changes) if changes else ""
     result = model_reset.reset(router._cfg.state_dir, provider=provider)
     model_reset.forget_live(router, provider)
     router.reload()
@@ -2351,16 +2417,16 @@ def _reset_models(provider: str | None, dest: str) -> RedirectResponse:
     message = (f"deleted {c['models']:,} model(s), {c['field_edits']:,} field edit(s) and "
                f"{c['facts']:,} learned fact(s)"
                + (f"; backup in {result.backup_dir}" if result.backup_dir else ""))
-    return _redirect_with_message(dest, ok=True, message=message)
+    return _redirect_with_message(dest, ok=True, message=message, undo_token=token)
 
 
 @pages.post("/providers/reset-all", include_in_schema=False)
 async def providers_reset_all(request: Request) -> RedirectResponse:
     form = await request.form()
     if (form.get("confirm") or "").strip() != "reset all":
-        return _redirect_with_message("/providers", ok=False,
+        return _redirect_with_message("/settings", ok=False,
                                       message="Nothing reset: type reset all to confirm")
-    return _reset_models(None, "/providers")
+    return _reset_models(None, "/settings")
 
 
 @pages.post("/providers/{provider}/reset", include_in_schema=False)
@@ -2375,14 +2441,19 @@ async def provider_reset(provider: str, request: Request) -> RedirectResponse:
 
 @pages.post("/providers/{provider}/clear", include_in_schema=False)
 async def provider_clear(provider: str) -> RedirectResponse:
+    token = undo.snapshot([_overrides_file()])
     settings_write.clear_provider(provider)
     return _redirect_with_message(
-        f"/providers/{quote(provider, safe=':')}", ok=True, message="changes put back")
+        f"/providers/{quote(provider, safe=':')}", ok=True, message="changes put back",
+        undo_token=token)
 
 
 @pages.post("/providers/{provider}/keys/{key_id}/test", include_in_schema=False)
 async def provider_key_test(provider: str, key_id: str) -> RedirectResponse:
-    result = await keytest.test_key(_live_router(), provider, key_id)
+    router = _live_router()
+    result = await keytest.test_key(router, provider, key_id)
+    if result.ok:
+        quickstart.record_key_ok(router._cfg.state_dir, provider)
     qs = (
         f"tested={quote(key_id)}"
         f"&ok={'1' if result.ok else '0'}"
@@ -2419,10 +2490,12 @@ async def provider_key_add(provider: str, request: Request) -> RedirectResponse:
 @pages.post("/providers/{provider}/keys/{key_id}/remove", include_in_schema=False)
 async def provider_key_remove(provider: str, key_id: str) -> RedirectResponse:
     dest = f"/providers/{quote(provider, safe=':')}"
+    token = undo.snapshot([keystore._path(None)])
     removed = keystore.remove_key(provider, key_id)
     return _redirect_with_message(
         dest, ok=removed,
-        message="key removed" if removed else "that key is already gone")
+        message="key removed" if removed else "that key is already gone",
+        undo_token=token if removed else "")
 
 
 def _parse_key_edit_form(form) -> dict:
@@ -2485,8 +2558,9 @@ async def provider_key_copy_to_all(provider: str, key_id: str,
 @pages.get("/settings", response_class=HTMLResponse, include_in_schema=False)
 def settings_page(ok: str = "", message: str = "") -> HTMLResponse:
     banner = _message_banner(ok, message)
+    router = _live_router()
     return HTMLResponse(page("Settings", "settings", settings_page_mod.body(
-        _live_router(), banner, _service_keys_section())))
+        router, banner, _service_keys_section(), danger=reset_all_zone(router))))
 
 
 # These fixed addresses are registered before `/settings/{field}` below,
@@ -2497,11 +2571,32 @@ async def settings_app_password() -> HTMLResponse:
     """Make a new random app password and show it exactly once. Nothing in
     the request is read: the password is never typed in (ADR 0015)."""
     secret = app_password.generate()
-    body = settings_page_mod.body(_live_router(),
+    router = _live_router()
+    body = settings_page_mod.body(router,
                                   _message_banner("1", "New app password made"),
-                                  _service_keys_section(), shown_password=secret)
+                                  _service_keys_section(), shown_password=secret,
+                                  danger=reset_all_zone(router))
     return HTMLResponse(page("Settings", "settings", body),
                         headers={"Cache-Control": "no-store"})
+
+
+@pages.post("/test-model/{provider}/{model:path}", include_in_schema=False)
+async def test_one_model(provider: str, model: str) -> JSONResponse:
+    """Test all's one request: say hi to this model, remember the answer
+    for the quickstart, and hand the row its result (§13)."""
+    router = _live_router()
+    result = await keytest.test_model(router, provider, model)
+    quickstart.record_test(router._cfg.state_dir, f"{provider}/{model}", result.ok, result.message)
+    return JSONResponse({"ok": result.ok, "message": result.message})
+
+
+@pages.post("/undo/{token}", include_in_schema=False)
+async def undo_write(token: str) -> JSONResponse:
+    """Put back the files a dangerous button just changed (US-87)."""
+    if not undo.restore(token):
+        return JSONResponse({"ok": False, "message": "Too late to undo that"}, status_code=410)
+    _live_router().reload()
+    return JSONResponse({"ok": True, "message": "Put back"})
 
 
 @pages.post("/settings/app-password/clear", include_in_schema=False)
@@ -2564,9 +2659,11 @@ async def settings_restore(request: Request) -> RedirectResponse:
 
 @pages.post("/settings/reset-all", include_in_schema=False)
 async def settings_reset_all() -> RedirectResponse:
+    token = undo.snapshot([_overrides_file()])
     ov.save_overrides({})
     return _redirect_with_message("/settings", ok=True,
-                                  message="Every dashboard change undone; your settings file applies")
+                                  message="Every dashboard change undone; your settings file applies",
+                                  undo_token=token)
 
 
 @pages.post("/settings/refresh-models", include_in_schema=False)
@@ -2629,7 +2726,7 @@ async def settings_rescore_models() -> RedirectResponse:
             changed += 1
     return _redirect_with_message(
         "/settings", ok=True,
-        message=f"Artificial Analysis matched {matched} of {len(seen)} models; "
+        message=f"Artificial Analysis matched {matched} of {ui.plural(len(seen), 'model')}; "
                 f"{changed} score(s) updated, {unmatched} kept their old score")
 
 
@@ -2661,7 +2758,7 @@ async def settings_test_rate_limits() -> RedirectResponse:
             # 512, not 1: see keytest.py - a reasoning model needs room to
             # finish thinking before it can answer at all (§13).
             await router.agenerate([{"role": "user", "content": "hi"}], pin,
-                                   wait=False, max_tokens=512)
+                                   wait=False, client="dashboard-test", max_tokens=512)
         except (RouterBusy, RouterError):
             return "failed"
         return "learned" if store.has_limits(provider, model) else "silent"
@@ -2713,7 +2810,9 @@ async def settings_key_set(name: str, request: Request) -> RedirectResponse:
 async def settings_key_remove(name: str) -> RedirectResponse:
     if name not in service_keys.SERVICES:
         return _redirect_with_message("/settings", ok=False, message=f"unknown service {name!r}")
+    token = undo.snapshot([keystore._path(None)])
     service_keys.clear_key(name)
-    return _redirect_with_message("/settings", ok=True, message=f"{name} key removed")
+    return _redirect_with_message("/settings", ok=True, message=f"{name} key removed",
+                                  undo_token=token)
 
 

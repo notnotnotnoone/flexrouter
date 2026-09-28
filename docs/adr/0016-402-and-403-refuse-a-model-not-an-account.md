@@ -1,7 +1,7 @@
 # 0016. 402 and 403 refuse a model, not an account
 
 Date: 2026-09-23
-Status: Accepted. Supersedes the 402 and 403 rows of ADR 0012's context.
+Status: Accepted. Supersedes the 402 and 403 rows of ADR 0012's context. Amended by ADR 0020 (the model becomes Needs you, with no 24h quarantine).
 
 ## Context
 
