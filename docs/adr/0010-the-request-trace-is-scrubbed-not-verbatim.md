@@ -1,7 +1,7 @@
 # 0010. The request trace is scrubbed, not verbatim
 
 Date: 2026-09-19
-Status: Accepted
+Status: Accepted. Amended by ADR 0022 (conversations are saved verbatim, separately, for 7 days).
 
 ## Context
 

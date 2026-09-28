@@ -1,7 +1,7 @@
 # 0012. The error brain classifies; it does not decide
 
 Date: 2026-09-21
-Status: Accepted
+Status: Superseded by ADR 0019 (the error brain decides).
 
 ## Context
 

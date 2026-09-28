@@ -1,7 +1,7 @@
 # 0014. Catalogue refresh runs on startup; applying a pending change is deferred
 
 Date: 2026-09-21
-Status: Accepted
+Status: Accepted. Amended by ADR 0021 (the model list is always read; auto-add is optional).
 
 ## Context
 
