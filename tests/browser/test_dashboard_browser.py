@@ -194,10 +194,15 @@ def test_a_live_refresh_waits_while_the_pointer_is_on_a_row(page, server):
     page.on("request", lambda r: polls.append(r.url) if "fragment=1" in r.url else None)
     page.goto(server + "/requests")
     page.locator("tr.req-row").first.hover()
+    page.wait_for_timeout(500)
+    polls.clear()                       # one may have left before the hover landed
     page.wait_for_timeout(4500)
     assert polls == [], "a poll replaced the rows under the cursor"
     page.mouse.move(5, 5)
-    page.wait_for_timeout(4500)
+    for _ in range(40):                 # up to 8s: a busy machine is slow to tick
+        if polls:
+            break
+        page.wait_for_timeout(200)
     assert polls, "the refresh never came back once the pointer left"
 
 

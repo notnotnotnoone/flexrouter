@@ -416,7 +416,9 @@
 
   function writeForm(detail) {
     var elt = detail && detail.requestConfig ? detail.requestConfig.elt : detail && detail.elt;
-    if (!elt || elt.tagName !== "FORM" || (elt.getAttribute("method") || "").toLowerCase() !== "post") return null;
+    /* POSTs, and GET forms submitted by a button ("Build prompt"); a
+       filter form that re-fetches on change has no submitter and no button. */
+    if (!elt || elt.tagName !== "FORM") return null;
     return elt;
   }
 
@@ -424,7 +426,9 @@
     var form = writeForm(e.detail);
     if (!form) return;
     var ev = e.detail.requestConfig && e.detail.requestConfig.triggeringEvent;
-    var btn = (ev && ev.submitter) || form.querySelector("button[type=submit], button:not([type])");
+    var btn = (ev && ev.submitter) ||
+      ((form.getAttribute("method") || "get").toLowerCase() === "post"
+        ? form.querySelector("button[type=submit], button:not([type])") : null);
     form.__btn = btn || null;
     if (btn) press(btn, "working", { note: form.getAttribute("data-busy") || undefined });
   });
