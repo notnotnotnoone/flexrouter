@@ -13,7 +13,7 @@ from flexrouter.decider import VERDICTS
 from flexrouter.dashboard import explain, facts, ui
 from flexrouter.dashboard.brain_page import LABELS as VERDICT_LABELS
 from flexrouter.dashboard.overview import KIND_LABELS, clock
-from flexrouter.dashboard.render import esc, tag
+from flexrouter.dashboard.render import attrs, esc, tag
 
 # kind -> (button label, where it goes). The provider is filled in per card.
 _FIX = {
@@ -40,13 +40,15 @@ def _chip(verdict: str, guess: str, probs: dict) -> str:
     p = float(probs.get(verdict) or 0)
     star = tag("span", "★", cls="chip-star", **{"aria-hidden": "true"}) if verdict == guess else ""
     body = tag("span", star + esc(VERDICT_LABELS.get(verdict, verdict)), cls="chip-name")
-    if probs:
+    if p > 0:          # an answer the classifier never weighed shows no number
         body += tag("span", esc(f"{p:.0%}"), cls="chip-pct n")
         body += tag("span", tag("i", "", style=f"--p:{p:.3f}", **{"data-p": f"{p:.3f}"}),
                     cls="chip-bar", **{"aria-hidden": "true"})
     extra = {"title": "flexrouter's best guess"} if verdict == guess else {}
-    return tag("button", body + _CHECK, type="submit", name="verdict", value=verdict,
-               cls="verdict-chip" + (" is-guess" if verdict == guess else ""), **extra)
+    # Written out, not tag(): `name` is tag()'s own first parameter.
+    cls = "verdict-chip" + (" is-guess" if verdict == guess else "")
+    return (f'<button type="submit" name="verdict"'
+            f'{attrs({"value": verdict, "class": cls, **extra})}>{body}{_CHECK}</button>')
 
 
 def _resolver(item, entry, ident: str) -> str:
@@ -60,7 +62,9 @@ def _resolver(item, entry, ident: str) -> str:
     guess = entry.verdict if entry else ""
     order = sorted(VERDICTS, key=lambda v: (-float(probs.get(v) or 0), v != guess,
                                             VERDICTS.index(v)))
-    sample = (entry.raw or entry.sample) if entry else item.detail
+    # The card already quotes the short sample; the panel adds the full
+    # provider response only when there is more to read.
+    raw = entry.raw if entry and entry.raw and entry.raw != entry.sample else ""
     form = tag("form",
                '<input type="hidden" name="next" value="/broken">'
                + tag("div", "".join(_chip(v, guess, probs) for v in order),
@@ -73,7 +77,8 @@ def _resolver(item, entry, ident: str) -> str:
                + tag("a", "Full details in Error brain", href="/brain", cls="resolver-more"),
                cls="resolver-head")
     return tag("div",
-               tag("div", tag("pre", esc(sample), cls="resolver-sample") + head + form,
+               tag("div", (tag("pre", esc(raw), cls="resolver-sample") if raw else "")
+                   + head + form,
                    cls="resolver"),
                id=ident, cls="resolver-wrap", inert="")
 

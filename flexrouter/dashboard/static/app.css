@@ -1003,6 +1003,7 @@ table.log td { padding: 8px 12px; }
   word-break: break-word;
 }
 .resolver-head { display: flex; align-items: baseline; gap: 10px; margin: 12px 0 8px; }
+.resolver-sample + .resolver-head { margin-top: 12px; }
 .resolver-q { font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--ink); }
 .resolver-more { font: 400 11px var(--mono); color: var(--ink-3); }
 .resolver-more:hover { color: var(--ink-2); }
@@ -1023,17 +1024,19 @@ table.log td { padding: 8px 12px; }
   color: var(--ink-2);
   background: var(--raise);
   border: 1px solid var(--rule-2);
-  border-radius: 3px;
+  border-radius: 2px;
   cursor: pointer;
+  --x: 50%;                       /* where the pick's flood starts; app.js sets it */
+  --y: 50%;
   transition: transform 140ms var(--ease), opacity 180ms var(--ease),
               border-color 160ms ease, color 160ms ease;
 }
 .verdict-chip.is-guess { color: var(--ink); border-color: rgba(52, 211, 153, .45); background: var(--green-wash); }
-.chip-name { flex: 1; min-width: 0; }
+.chip-name { flex: 1; min-width: 0; white-space: normal; line-height: 1.35; }
 .chip-star { color: var(--green); margin-right: 6px; }
-.chip-pct { font-size: 11px; color: var(--ink-3); transition: opacity 120ms ease; }
+.chip-pct { flex: none; font-size: 11px; color: var(--ink-3); transition: opacity 120ms ease; }
 .chip-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--rule); }
-.chip-bar i { display: block; height: 100%; background: var(--ink-3); transform-origin: left; transform: scaleX(var(--p)); }
+.chip-bar i { --p: 0; display: block; height: 100%; background: var(--ink-3); transform-origin: left; transform: scaleX(var(--p)); }
 .is-guess .chip-bar i { background: var(--green); }
 @media (hover: hover) and (pointer: fine) {
   .verdict-chip:hover { transform: translateY(-1px); border-color: var(--ink-3); color: var(--ink); }
@@ -1050,7 +1053,7 @@ table.log td { padding: 8px 12px; }
   inset: 0;
   z-index: -1;
   background: rgba(52, 211, 153, .16);
-  clip-path: circle(0 at var(--x, 50%) var(--y, 50%));
+  clip-path: circle(0 at var(--x) var(--y));
   transition: clip-path 360ms var(--ease);
 }
 .chip-check {
@@ -1069,7 +1072,7 @@ table.log td { padding: 8px 12px; }
 }
 .chip-check path { stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset 280ms cubic-bezier(.65, 0, .35, 1) 150ms; }
 .verdict-chip.is-picked { color: var(--green); border-color: var(--green); transform: none; }
-.verdict-chip.is-picked::before { clip-path: circle(150% at var(--x, 50%) var(--y, 50%)); }
+.verdict-chip.is-picked::before { clip-path: circle(150% at var(--x) var(--y)); }
 .is-picked .chip-check { opacity: 1; }
 .is-picked .chip-check path { stroke-dashoffset: 0; }
 .is-picked .chip-pct { opacity: 0; }

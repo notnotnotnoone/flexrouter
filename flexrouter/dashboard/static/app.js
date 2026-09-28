@@ -1051,17 +1051,18 @@
       if (first) first.focus({ preventScroll: true });
     }
     if (!rich(ev)) return;
-    M.animate(chips, { opacity: [0, 1], transform: ["translateY(6px) scale(.97)", "none"] },
-      { duration: 0.26, delay: M.stagger(0.035, { startDelay: 0.08 }), ease: EASE })
-      .finished.then(function () {
-        /* Hand transform back to CSS, or hover and press stop working. */
-        each(chips, function (c) { c.style.transform = ""; c.style.opacity = ""; });
-      });
+    /* Plain WAAPI with fill "backwards", not Motion: Motion leaves its end
+       values inline, which would take transform away from the CSS hover and
+       press states. These leave nothing behind. */
+    var curve = "cubic-bezier(" + EASE.join(",") + ")";
     each(chips, function (c, i) {
+      c.animate({ opacity: [0, 1], transform: ["translateY(6px) scale(.97)", "none"] },
+        { duration: 260, delay: 80 + i * 35, easing: curve, fill: "backwards" });
       var bar = c.querySelector(".chip-bar i");
-      if (!bar) return;
-      M.animate(bar, { transform: ["scaleX(0)", "scaleX(" + bar.getAttribute("data-p") + ")"] },
-        { duration: 0.5, delay: 0.2 + i * 0.035, ease: EASE });
+      if (bar) {
+        bar.animate({ transform: ["scaleX(0)", "scaleX(" + bar.getAttribute("data-p") + ")"] },
+          { duration: 500, delay: 200 + i * 35, easing: curve, fill: "backwards" });
+      }
     });
   }
 
@@ -1116,7 +1117,8 @@
       }
     }
     if (!fancy) { drop(); return; }
-    M.animate(card, { opacity: 0, transform: "translateX(28px) scale(.98)" },
+    M.animate(card, { opacity: [1, 0],
+                      transform: ["translateX(0px) scale(1)", "translateX(28px) scale(.98)"] },
       { duration: 0.22, ease: EASE }).finished.then(drop);
   }
 

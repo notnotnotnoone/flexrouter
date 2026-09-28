@@ -195,7 +195,7 @@ def _unclear_error() -> str:
 
     brain = app_module.get_router()._error_brain
     brain._decider = _Unsure()
-    brain.classify("the quota widget is sulking today", 400)
+    brain.classify("the quota widget is sulking today", None)
     return next(fp for fp, e in brain._entries.items() if e.flagged_for_review)
 
 
@@ -205,10 +205,12 @@ def test_an_unclear_error_is_resolved_without_leaving_whats_broken(page, server,
     page.goto(server + "/broken")
     expect(page.locator(".col-you .col-count")).to_have_text("1")
     chips = page.locator(".resolver-wrap .verdict-chip")
-    expect(chips.first).not_to_be_visible()          # closed until asked
+    # Closed until asked: folded to nothing and out of reach of Tab.
+    expect(page.locator(".resolver-wrap")).to_have_attribute("inert", "")
+    assert page.locator(".resolver").evaluate("e => e.getBoundingClientRect().height") < 1
     page.click("[data-resolve-toggle]")
     expect(page.locator("[data-resolve-toggle]")).to_have_attribute("aria-expanded", "true")
-    expect(chips.first).to_be_visible()
+    expect(page.locator(".resolver-wrap")).not_to_have_attribute("inert", "")
     expect(chips.first).to_contain_text("Bad request")
     page.click(".verdict-chip[value='message_too_long']")
     expect(page.locator(".verdict-chip.is-picked")).to_have_count(1)

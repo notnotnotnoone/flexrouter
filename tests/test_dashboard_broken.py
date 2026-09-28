@@ -67,7 +67,7 @@ class _Unsure:
 def _unclear() -> str:
     brain = app_module.get_router()._error_brain
     brain._decider = _Unsure()
-    brain.classify("the quota widget is sulking today", 400)
+    brain.classify("the quota widget is sulking today", None)
     [fp] = [fp for fp, e in brain._entries.items() if e.flagged_for_review]
     return fp
 
@@ -76,14 +76,15 @@ def test_an_unclear_error_resolves_on_its_card(client):
     fp = _unclear()
     body = client.get("/broken").text
     assert "data-resolve-toggle" in body
-    assert f'action="/brain/{fp}/verdict"' in body
+    from urllib.parse import quote
+    assert f'action="/brain/{quote(fp, safe="")}/verdict"' in body
     assert "Review in Error brain" not in body
     # Every verdict is a chip, the classifier's best guess first and starred.
-    assert body.count('class="verdict-chip') == 8
-    first = body.index('class="verdict-chip')
+    assert body.count('<button type="submit" name="verdict"') == 8
+    first = body.index('<button type="submit" name="verdict"')
     assert body.index('value="bad_request"') < body.index('value="message_too_long"') \
         < body.index('value="bad_key"') < body.index('value="unknown"')
-    assert 'verdict-chip is-guess' in body[first:first + 40]
+    assert 'verdict-chip is-guess' in body[first:first + 120]
     assert "41%" in body
 
 
