@@ -85,7 +85,7 @@ jobs:
         # `sonnet` is Claude Code's alias for the newest Sonnet model.
         run: |
           claude -p "$PROMPT" \
-            --model sonnet \
+            --model haiku \
             --max-turns 100 \
             --allowedTools Read,Edit,Write,Glob,Grep
         env:
