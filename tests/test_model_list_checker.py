@@ -8,8 +8,7 @@ from flexrouter.catalogue import KNOWN_MODEL_IDS_FILENAME, did_you_mean, is_real
 from flexrouter.store import write_json
 
 GOOGLE_IDS_FILE = (
-    Path(__file__).parent.parent
-    / ".scratch" / "polish" / "evidence" / "google-live-model-ids-2026-09-25.txt"
+    Path(__file__).parent / "fixtures" / "google-live-model-ids-2026-09-25.txt"
 )
 
 
