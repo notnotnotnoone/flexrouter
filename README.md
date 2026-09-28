@@ -145,66 +145,38 @@ If you're moving from an older, per-project settings file, see [Moving from an o
 
 ## Quickstart
 
-**1. Set up your settings file:**
-
-Open `config.yaml` in your flexrouter folder and fill it in. To find the folder,
-run `flexrouter doctor` — it prints the exact path. A small one looks like this
-(mixing a free bucket and a paid one — for an all-free setup, see [Free tier stacking](#free-tier-stacking)):
-
-```yaml
-settings:
-  port: 4891
-
-providers:
-  groq:
-    base_url: https://api.groq.com/openai/v1
-
-  openai:
-    base_url: https://api.openai.com/v1
-
-buckets:
-  low:
-    - provider: groq
-      model: llama-3.1-8b-instant
-      score: 85
-      rpm: 60
-      tpm: 60000
-      context_window: 131072
-
-  high:
-    - provider: openai
-      model: gpt-4o
-      score: 95
-      rpm: 60
-      tpm: 150000
-      context_window: 128000
-      vision: true
-```
-
-**2. Save your API keys:**
+**1. Start it:**
 
 ```bash
-flexrouter keys add groq
-flexrouter keys add openai
+flexrouter dashboard
 ```
 
-Each command asks you to paste the key in without showing it on screen, and saves it to your own user account on this machine — never into the settings file above. (You can still fall back to an environment variable, or type a key straight into the settings file, but the second one is discouraged and flexrouter will warn you if you do it.)
+This starts the service and opens `http://localhost:4891`. The Overview has a
+**Get started** card whose five steps tick themselves as you go:
 
-**3. Start it, then point your apps at it:**
+1. **Add a provider.** Every preset is listed Free or Paid, with a **Get a key ↗** link.
+2. **Paste its key**, then press **Test**. (`flexrouter keys add groq` works too.) Keys are saved to your user account, never into a settings file.
+3. **Add models with AI.** The prompt carries the provider's real list of model IDs, and every row is checked against it before anything is saved.
+4. **Test all.** It says "hi" to every model once and shows what each one answered, or why it didn't.
+5. **Point your app at it.** **Copy Python** and **Copy curl** buttons give you the snippet.
 
-```bash
-flexrouter serve
-```
+**2. Point your apps at it:**
 
-Anything that can talk to OpenAI's API can now talk to flexrouter — just change its base address to `http://localhost:4891/v1` and use a bucket name (like `low` or `high`) wherever it asks for a model. No flexrouter-specific code needed.
+Anything that can talk to OpenAI's API can now talk to flexrouter: change its
+base address to `http://localhost:4891/v1` and use a bucket name (like `fast`)
+wherever it asks for a model. No flexrouter-specific code needed.
 
-If you're writing Python, you can also skip the web address entirely and call it directly — see [Using it directly from Python](#using-it-directly-from-python).
+Prefer to write the settings file by hand? The
+[Configuration Guide](docs/2-Configuration-Guide.md) has the YAML, and the
+[Config reference](#config-reference) below lists every field. If you're
+writing Python, you can also call flexrouter directly — see
+[Using it directly from Python](#using-it-directly-from-python).
 
 ## How routing works
 
-Your models are grouped into named lists — the quickstart above calls them `low` and `high`, but you can name them anything, e.g. `cheap`, `smart`, `nuclear`. flexrouter calls each of these a **bucket**, and each model in it has a score from 1–100 (higher means "prefer this one"). On each request:
+Your models are grouped into named lists — for example `fast` and `smart`, but you can name them anything, e.g. `cheap`, `smart`, `nuclear`. flexrouter calls each of these a **bucket**, and each model in it has a score from 1–100 (higher means "prefer this one"). On each request:
 
-1. Models that recently failed are skipped for a while.
+1. Models that aren't Ready are skipped: Busy ones until their countdown ends, Needs-you ones until you fix them on the **Status** page.
 2. Models that have used up today's spending cap for their provider are skipped.
 3. Models that have hit their per-minute request or token limit are skipped.
 4. Models too small to fit the message are skipped (you'll get a `ContextWindowWarning`).
@@ -213,6 +185,10 @@ Your models are grouped into named lists — the quickstart above calls them `lo
 If nothing in a bucket is available: by default flexrouter waits until something frees up. Pass `wait=False` and it will raise `RouterBusy` immediately instead.
 
 Buckets don't spill into each other — if everything in `low` is busy, flexrouter will not quietly reach into `high` on your behalf.
+
+**When a model fails**, flexrouter moves to the next one in the bucket straight away. It never sleeps between tries, tries every model in the bucket, and gives up after 30 seconds ("Give up after" in Settings). A request that names one exact model (`groq/llama-3.1-8b-instant`, with a `/`) is **pinned**: if that model is busy or broken you get the error at once, with no fallback.
+
+**Errors are honest.** A failed request returns the provider's own status and exact words in the usual OpenAI `error.message`, plus `error.flexrouter.request_id` (a `req_…` ID, also sent as a header on every response) and `error.flexrouter.attempts[]`, with one entry per model tried: its status, the provider's message, and how long it took. See [the API reference](docs/5-API-Reference.md).
 
 ## Config reference
 
@@ -407,32 +383,19 @@ flexrouter tui
 
 The same router, in your terminal, split into four tabs — and it works whether or not the service is running, because it reads your flexrouter home directly rather than talking to a live service:
 
-| Tab | Shows |
+| Page | Shows |
 |---|---|
-| **Overview** | Totals and today's spend per provider, straight from what the service has recorded |
-| **Keys** | Every provider, with the keys you have added (masked, never in full). Add a key, remove one, or switch one off without leaving the screen |
-| **Requests** | Your recent requests, newest first |
-| **Doctor** | Where your settings, keys, and records live, and which key each provider will use |
+| **Overview** | The Get started checklist, whether things are fine, who answered hour by hour, buckets, providers, recent requests |
+| **Providers & keys** | Add a provider, paste and Test its keys |
+| **Models** | Every model's status, score and answer rate; Add / Rank / Find rate limits with AI |
+| **Buckets** | Each bucket's order; drag a model onto a bucket; Try it |
+| **Requests** | Every request; press one for the prompt, reply, thinking and every model tried |
+| **Playground** | Chat with any bucket or model |
+| **Status** | Every model's one status, one fix button each, and Test all |
+| **Allowance** | Free-tier headroom per provider, on each provider's own clock |
+| **Settings** | Every setting in plain words, backup and restore, the Danger zone |
 
-Press `a` to add a key, `d` to remove the selected one, `r` to refresh, `q` to quit. The tabs refresh on their own every couple of seconds.
-
-## Dashboard
-
-```bash
-flexrouter dashboard
-# → http://localhost:4891
-```
-
-| Tab | Shows |
-|---|---|
-| **Live Telemetry** | Request/token rates, countdowns for anything cooling down, search/filter |
-| **Chat** | Try any bucket live |
-| **Request Logs** | Your last 50 requests |
-| **Account Status** | Spending per provider |
-| **Settings** | View/edit config |
-| **Setup** | Getting-started guide |
-
-Dark/light theme toggle included. The API, the dashboard, and the dashboard's own data all run on this one port (`4891` unless you set a different one under `settings: port:`).
+Dark or light follows your system, and it works at phone width. The API, the dashboard, and the dashboard's own data all run on this one port (`4891` unless you set a different one under `settings: port:`).
 
 ## Request log
 

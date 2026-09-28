@@ -131,64 +131,59 @@ Each request uses the next key in the list. If a key hits a 429 (rate limit), th
 - **Burst handling** if one key is rate-limited
 - **Credential rotation** for security (periodically add/remove keys)
 
-### Key Penalty Box
+### When a Key Is Busy
 
-Each key has its own penalty box, separate from model penalties:
-
-```
-Key 1: hits 429 → penalized 30s, skipped
-Key 2: next in rotation, gets the request
-Key 3: ...
-```
-
-After the penalty expires, Key 1 is available again.
+Each key has its own status, separate from the model's. A key that hits a
+429 is **Busy** until the provider says it can be used again (its
+`Retry-After` or rate-limit headers, else 60 seconds), and the next key in
+rotation takes the request. A key the provider rejects (401) is **Needs
+you**, on that key only; the other keys keep working.
 
 ---
 
-## Retry Policies
+## Failover and Statuses
 
-Configure how many times flexrouter retries after a failure.
+When a model fails, flexrouter moves to the next model in the bucket
+straight away. It doesn't sleep between tries or count retries:
 
-### Presets
+| What came back | What happens |
+|---|---|
+| 429 or 503 (busy, overloaded) | next model now; this one is **Busy** until its retry time |
+| 404 (no such model) | next model now; this one **Needs you**, with "Did you mean X?" when the provider's real list has a close match |
+| 402 / 403 / a 429 whose quota is 0 | next model now; this one **Needs you**: "Not on your plan" / "Balance empty" |
+| message too long | the next model with a bigger context window |
+| an empty reply | next model now; this one is **Struggling** for about an hour |
+| a genuine bad request (your request's fault) | returned to you at once |
 
-```yaml
-settings:
-  retry_policy: balanced  # conservative | balanced | aggressive
-```
+It tries every model in the bucket and gives up after 30 seconds
+(`failover_budget_seconds`, "Give up after" in Settings). If every model
+fails, the error lists each one with the provider's own words.
 
-| Preset | Retries | Backoff | Best For |
-|--------|---------|---------|----------|
-| `conservative` | 2 | 5s | Stability > speed |
-| `balanced` | 3 | 2s | Most apps |
-| `aggressive` | 5 | 1s | Real-time, exhaustive |
+**Pinned requests** name one exact model (`groq/llama-3.1-8b-instant`, with
+a `/`). There's no fallback: if that model is Busy you get "429: busy, retry
+in 40s" at once.
 
-### Manual Override
+**The five statuses.** Every model and key is always exactly one of:
 
-```yaml
-settings:
-  retries: 4
-  backoff_seconds: 1.5
-```
+| Status | Means | Button on the Status page |
+|---|---|---|
+| ● Ready | will be used | none |
+| ◐ Busy | rate limit or overload; clears on its own, with a countdown | none |
+| ◆ Struggling | failing in odd ways; clears after about an hour | Try now |
+| ▲ Needs you | wrong ID, not on plan, no balance, key rejected; never expires on a timer | the one fix: Use X / Retry / Remove / Replace key |
+| ○ Off | you turned it off | Turn on |
 
-This overrides the preset. Retry logic:
+**The error brain decides** what an unfamiliar error means. With a
+classifier configured (Settings → Error brain), a bare 400 or text the
+built-in rules don't know is classified once per kind of error, and the
+verdict sets the status. An error it isn't sure about fails over and shows
+under **Not sure** on the Status page, where you say what it means once.
 
-1. Try model A
-2. If it fails, wait `backoff_seconds`, try model B
-3. If it fails, wait `backoff_seconds`, try model C
-4. ... up to `retries` attempts
-5. If all fail, raise `RouterError`
-
-### Example: Aggressive Retry
-
-```python
-router = FlexRouter()  # The service applies the retry policy from your settings
-
-# This will retry up to 5 times with 1s backoff between retries
-response = router.generate(
-    messages=[{"role": "user", "content": "test"}],
-    tier="low",
-)
-```
+**Google counts failed attempts.** Google's free tier counts a request that
+failed (a 503 "high demand", say) against your daily allowance, the same as
+one that worked. flexrouter's Allowance page counts them too, so its numbers
+match AI Studio's. It's also why failing over at once, instead of retrying
+the same busy model, saves real daily quota.
 
 ---
 
@@ -218,7 +213,7 @@ Cost per token varies by model and provider. flexrouter uses standard pricing.
 
 ### View Budget Status
 
-Check the dashboard **Account Status** tab (or the TUI's **Overview** tab), or read the health file:
+Check the dashboard's **Allowance** page (or the TUI's **Overview** tab), or read the health file:
 
 ```python
 import json
@@ -311,81 +306,46 @@ When `vision=True` is requested, only models with `vision: true` are considered.
 
 ## Dashboard: Live Monitoring
 
-The dashboard is the main interface to a running flexrouter — telemetry, chat,
-logs, spending and settings on one port. Start it:
+The dashboard is the main interface to a running flexrouter. Start it:
 
 ```bash
 flexrouter dashboard
 ```
 
-Opens `http://localhost:4891`.
+Opens `http://localhost:4891`. The pages, in menu order:
 
-### Tab 1: Live Telemetry
+- **Overview**: the Get started card (until you hide it), one line saying
+  whether things are fine, the same status counts as the Status page, who
+  answered hour by hour, buckets, providers, recent requests and latency.
+- **Providers & keys**: add a provider, paste and **Test** a key, and edit
+  or remove keys. Removing a key offers **Undo** for a few seconds instead of
+  asking first.
+- **Models**: every model with its status, score, how often it answered and
+  what it can do. From here: **Add models with AI**, **Rank models with AI**
+  and **Find rate limits with AI**, plus the folded "Not chat models yet" list.
+- **Buckets**: each bucket's models in the order they'd be picked. Drag a
+  model onto a bucket (or tap it, then tap the bucket; or press Enter twice)
+  to add it there. **Try it** sends one small request through the bucket.
+- **Requests**: every request, newest first. Press one for its sheet: the
+  model that answered, the Thinking, what you sent and the reply (see
+  [Saved conversations](#saved-conversations)), and every model tried first,
+  with the provider's words and the time spent waiting.
+- **Playground**: chat through any bucket or model, with the reasoning in a
+  folded Thinking section and replies rendered as markdown.
+- **Status**: every model's one status. Needs you on top, one sentence and
+  one button each; Busy with a countdown; Not sure; Ready and Off folded
+  away. Press a row for what the provider actually said. **Explain errors
+  with AI** copies a prompt describing every problem, and **Test all** says hi
+  to every model.
+- **Allowance**: free-tier headroom per provider, when each provider's day
+  starts over (in your own time), and the provider's own figures when it
+  sends them.
+- **Settings**: every setting in plain words, with on/off switches that save
+  themselves, backup and restore, and the Danger zone.
 
-Real-time model status:
-
-- **Model name, score, tier**
-- **RPM bar** — requests used / limit
-- **TPM bar** — tokens used / limit
-- **Status dot** — green (available), yellow (penalized), red (rate-limited)
-- **Penalty countdown** — time until model recovers
-
-**Interactions:**
-- Search by model name or provider
-- Filter by tier or status
-- Click a row to see full details in the drawer
-- Hover-pause live updates
-
-### Tab 2: Chat
-
-Test the router interactively:
-
-1. Pick a tier from the dropdown
-2. Type your message
-3. flexrouter picks a model and sends the request
-4. Response appears with model name and token count
-
-### Tab 3: Request Logs
-
-Last 50 audit entries:
-
-- Timestamp, tier, provider, model
-- Token count and cost
-- Latency
-- Status (ok, rate_limited, error, etc.)
-
-**Interactions:**
-- Toggle card view ↔ table view
-- Pause live updates while scrolling
-- Export logs
-
-### Tab 4: Account Status
-
-Per-provider cost tracking:
-
-- Daily cost so far
-- Budget limit (if set)
-- Remaining budget
-
-- API key usage (round-robin index)
-- Budget reset time
-
-### Tab 5: Settings
-
-View and edit config:
-
-- Full parsed YAML
-- Retry policy and manual overrides
-- Provider budgets
-- Hooks and session TTL
-
-Changes apply immediately (hot-reload).
-
-### Tab 6: Setup
-
-A reminder of how flexrouter is set up: where it keeps your settings and keys (`flexrouter doctor`), how to add a key (`flexrouter keys add <provider>`), and what a `buckets:` entry looks like. It is a page to read, not a wizard — nothing on it changes anything.
-
----
+Every button shows it's working, then Done or the reason it failed. The
+layout works from a phone (the menu folds behind **Menu**) to a wide screen,
+and follows your system's light or dark theme.
 
 ## Logging and the Logs page
 
@@ -407,8 +367,24 @@ just a file, so `Get-Content`/`tail -f` on it works too.
 shows where that is). The file rotates at 5 MB and keeps three backups, so it
 can never grow past roughly 20 MB.
 
-**Without the flag**, nothing writes a log file, the menu shows no Logs link,
-and `/logs` answers 404 — the dashboard looks exactly as it always did.
+**Without the flag**, nothing writes a log file and the menu shows no Logs
+link. Opening `/logs` anyway says "Logging is off" and how to turn it on.
+
+---
+
+## Saved conversations
+
+flexrouter keeps each request's prompt, reply and reasoning for 7 days, so
+the request sheet can show what was asked and answered. They live in
+`state/conversations/`, one file per day, with long messages cut at about
+20 KB. Files older than `save_conversations_days` are deleted.
+
+**The privacy trade-off:** anything an app puts in a prompt, including
+anything sensitive, sits in that folder on this machine for up to 7 days.
+Keys flexrouter holds are masked, but nothing else in the text is. The
+request trace is scrubbed and safe to share; the conversations folder is
+not. Turn it off with **Save conversations** in Settings (or
+`save_conversations: false`).
 
 ---
 
