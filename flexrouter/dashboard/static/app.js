@@ -1027,6 +1027,172 @@
   document.addEventListener("focusout", hideTip);
   document.addEventListener("scroll", hideTip, true);
 
+  /* ── What's broken: resolve an unclear error in place ─────── */
+  /* Resolve opens the verdict chips on the card itself, and one chip saves
+     the owner's answer to the Error brain without leaving the page. The
+     pick floods the chip and draws a check; then the card leaves its
+     column, the cards under it close the gap and the counts roll down.
+     Keyboard picks and reduced motion get the same result, no flourish. */
+
+  function rich(ev) { return !!M && motion() === "full" && !(ev && ev.detail === 0); }
+
+  function setResolver(btn, open, ev) {
+    var wrap = document.getElementById(btn.getAttribute("aria-controls"));
+    if (!wrap) return;
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    var label = btn.querySelector("span");
+    if (label) label.textContent = open ? "Close" : "Resolve";
+    wrap.classList.toggle("is-open", open);
+    if (open) wrap.removeAttribute("inert"); else wrap.setAttribute("inert", "");
+    if (!open) return;
+    var chips = wrap.querySelectorAll(".verdict-chip");
+    if (ev && ev.detail === 0) {          /* opened from the keyboard: go to the best guess */
+      var first = wrap.querySelector(".verdict-chip.is-guess") || chips[0];
+      if (first) first.focus({ preventScroll: true });
+    }
+    if (!rich(ev)) return;
+    M.animate(chips, { opacity: [0, 1], transform: ["translateY(6px) scale(.97)", "none"] },
+      { duration: 0.26, delay: M.stagger(0.035, { startDelay: 0.08 }), ease: EASE })
+      .finished.then(function () {
+        /* Hand transform back to CSS, or hover and press stop working. */
+        each(chips, function (c) { c.style.transform = ""; c.style.opacity = ""; });
+      });
+    each(chips, function (c, i) {
+      var bar = c.querySelector(".chip-bar i");
+      if (!bar) return;
+      M.animate(bar, { transform: ["scaleX(0)", "scaleX(" + bar.getAttribute("data-p") + ")"] },
+        { duration: 0.5, delay: 0.2 + i * 0.035, ease: EASE });
+    });
+  }
+
+  function tick(el, n, fancy) {
+    if (!el) return;
+    if (!fancy) { el.textContent = n; return; }
+    M.animate(el, { opacity: [1, 0], transform: ["none", "translateY(-5px)"] }, { duration: 0.12 })
+      .finished.then(function () {
+        el.textContent = n;
+        M.animate(el, { opacity: [0, 1], transform: ["translateY(5px)", "none"] },
+          { duration: 0.22, ease: EASE });
+      });
+  }
+
+  function recount(col, fancy) {
+    var left = col.querySelectorAll(".col-body > .card").length;
+    tick(col.querySelector(".col-count"), left, fancy);
+    if (!col.classList.contains("col-you")) return;
+    var status = document.querySelector(".page-status");
+    if (status) {
+      status.textContent = left
+        ? left + (left === 1 ? " thing needs you" : " things need you")
+        : "Nothing needs you right now.";
+    }
+    var badge = document.querySelector('a[href="/broken"] .nav-badge');
+    if (badge && !left) badge.remove(); else tick(badge, left, fancy);
+  }
+
+  function removeCard(card, fancy) {
+    var col = card.closest(".col"), list = card.parentNode;
+    var below = [], el = card.nextElementSibling;
+    while (el) { below.push(el); el = el.nextElementSibling; }
+    var hadFocus = card.contains(document.activeElement);
+    function drop() {
+      var was = below.map(function (s) { return s.getBoundingClientRect().top; });
+      card.remove();
+      if (fancy) {
+        each(below, function (s, i) {
+          var dy = was[i] - s.getBoundingClientRect().top;
+          if (dy) M.animate(s, { transform: ["translateY(" + dy + "px)", "none"] },
+            { duration: 0.32, ease: [0.25, 1, 0.5, 1] });
+        });
+      }
+      if (col) recount(col, fancy);
+      if (hadFocus) {
+        var next = list.querySelector("[data-resolve-toggle], .card .btn");
+        if (next) next.focus({ preventScroll: true });
+      }
+      /* The column is empty: let the server draw its empty state. */
+      if (!list.querySelector(".card") && window.htmx) {
+        htmx.ajax("GET", "/broken?fragment=1", { target: "#broken", swap: "morph:innerHTML" });
+      }
+    }
+    if (!fancy) { drop(); return; }
+    M.animate(card, { opacity: 0, transform: "translateX(28px) scale(.98)" },
+      { duration: 0.22, ease: EASE }).finished.then(drop);
+  }
+
+  function resolve(form, chip, ev) {
+    var card = form.closest(".card");
+    var fancy = rich(ev);
+    if (ev.clientX || ev.clientY) {
+      var r = chip.getBoundingClientRect();
+      chip.style.setProperty("--x", (ev.clientX - r.left) + "px");
+      chip.style.setProperty("--y", (ev.clientY - r.top) + "px");
+    }
+    form.classList.add("is-deciding");
+    chip.classList.add("is-picked");
+    if (card) card.setAttribute("data-resolving", "");
+    var data = new FormData(form);
+    data.set("verdict", chip.value);
+    var save = fetch(form.action, {
+      method: "POST", body: data, credentials: "same-origin",
+      headers: { Accept: "application/json" }
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (j) {
+        if (!res.ok || !j.ok) throw new Error(j.message || "Could not save that answer.");
+        return j;
+      });
+    });
+    /* Let the flood and the check finish before the card goes. */
+    var beat = new Promise(function (done) { setTimeout(done, fancy ? 620 : 0); });
+    Promise.all([save, beat]).then(function (out) {
+      toast(out[0].message, "ok");
+      if (card) removeCard(card, fancy);
+    }).catch(function (err) {
+      form.classList.remove("is-deciding");
+      chip.classList.remove("is-picked");
+      if (card) card.removeAttribute("data-resolving");
+      if (card && M && motion() !== "off") {
+        M.animate(card, { transform: ["translateX(0)", "translateX(-6px)", "translateX(5px)",
+          "translateX(-3px)", "translateX(2px)", "translateX(0)"] }, { duration: 0.36 });
+      }
+      toast(err.message, "bad");
+    });
+  }
+
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest) return;
+    var toggle = e.target.closest("[data-resolve-toggle]");
+    if (toggle) {
+      setResolver(toggle, toggle.getAttribute("aria-expanded") !== "true", e);
+      return;
+    }
+    var chip = e.target.closest(".verdict-chip");
+    var form = chip && chip.closest("form[data-resolve]");
+    if (!form || !window.fetch) return;   /* the plain form post still works */
+    e.preventDefault();
+    if (!form.classList.contains("is-deciding")) resolve(form, chip, e);
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape" || !e.target.closest) return;
+    var wrap = e.target.closest(".resolver-wrap.is-open");
+    var btn = wrap && document.querySelector('[aria-controls="' + wrap.id + '"]');
+    if (!btn) return;
+    e.stopPropagation();
+    setResolver(btn, false);
+    btn.focus();
+  });
+
+  /* A live refresh would close an open resolver, or bring back a card
+     that is on its way out. Skip it; the next one catches up. */
+  document.addEventListener("htmx:beforeSwap", function (e) {
+    var t = e.detail.target;
+    if (isPoll(e.detail) && t && t.querySelector &&
+        t.querySelector(".resolver-wrap.is-open, [data-resolving]")) {
+      e.detail.shouldSwap = false;
+    }
+  });
+
   /* ── confirm ─────────────────────────────────────────────── */
   /* form[data-confirm] asks first in a themed box, not window.confirm(). */
 

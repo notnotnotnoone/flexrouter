@@ -36,6 +36,7 @@ class BrokenItem:
     action: Optional[str] = None
     model: str = ""
     provider_text: str = ""  # the provider's own words, for the click-through
+    fp: str = ""  # unclear_error: the Error brain fingerprint the resolver saves to
 
 
 @dataclass
@@ -833,12 +834,12 @@ def broken(router, now: Optional[float] = None) -> dict:
                     pile="service", kind="key_busy", provider=name,
                     detail=label, reason=state.reason, until=state.until, status=value))
 
-    for entry in router._error_brain._entries.values():
+    for fp, entry in router._error_brain._entries.items():
         if entry.flagged_for_review:
             needs_you.append(BrokenItem(
                 pile="you", kind="unclear_error", provider="", detail=entry.sample,
                 reason=f'guessed "{entry.verdict}", only {entry.confidence:.0%} sure',
-                since=entry.first_at,
+                since=entry.first_at, fp=fp,
             ))
 
     return {"needs_you": needs_you, "handling_itself": handling_itself}

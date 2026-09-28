@@ -1,12 +1,17 @@
 """What's broken: what only the owner can fix, and what flexrouter is
 already handling. Each card says what is wrong in plain words and carries
 the one button that fixes it; "handling it" cards count down to recovery.
+
+An unclear error is fixed right on its card: Resolve opens the verdict
+chips, and one click saves the owner's answer to the Error brain.
 """
 from __future__ import annotations
 
 from urllib.parse import quote
 
+from flexrouter.decider import VERDICTS
 from flexrouter.dashboard import explain, facts, ui
+from flexrouter.dashboard.brain_page import LABELS as VERDICT_LABELS
 from flexrouter.dashboard.overview import KIND_LABELS, clock
 from flexrouter.dashboard.render import esc, tag
 
@@ -14,9 +19,11 @@ from flexrouter.dashboard.render import esc, tag
 _FIX = {
     "provider_needs_you": ("Open provider", "/providers/{p}"),
     "key_needs_you": ("Replace key", "/providers/{p}"),
-    "unclear_error": ("Review in Error brain", "/brain"),
     "model_needs_you": ("See models", "/models_catalog"),
 }
+
+_CHECK = ('<svg class="chip-check" viewBox="0 0 16 16" aria-hidden="true">'
+          '<path d="M3.5 8.5l3 3 6-7" pathLength="1"/></svg>')
 
 
 def _explain_button(prompt: str, label: str, ident: str, small: bool = False) -> str:
@@ -29,7 +36,49 @@ def _explain_button(prompt: str, label: str, ident: str, small: bool = False) ->
                               "title": "Copy a prompt that explains this to a chatbot"})
 
 
-def _card(item, prompt: str = "", n: int = 0) -> str:
+def _chip(verdict: str, guess: str, probs: dict) -> str:
+    p = float(probs.get(verdict) or 0)
+    star = tag("span", "★", cls="chip-star", **{"aria-hidden": "true"}) if verdict == guess else ""
+    body = tag("span", star + esc(VERDICT_LABELS.get(verdict, verdict)), cls="chip-name")
+    if probs:
+        body += tag("span", esc(f"{p:.0%}"), cls="chip-pct n")
+        body += tag("span", tag("i", "", style=f"--p:{p:.3f}", **{"data-p": f"{p:.3f}"}),
+                    cls="chip-bar", **{"aria-hidden": "true"})
+    extra = {"title": "flexrouter's best guess"} if verdict == guess else {}
+    return tag("button", body + _CHECK, type="submit", name="verdict", value=verdict,
+               cls="verdict-chip" + (" is-guess" if verdict == guess else ""), **extra)
+
+
+def _resolver(item, entry, ident: str) -> str:
+    """The verdict chips for one unclear error, most likely first.
+
+    Each chip is a submit button, so the form still saves without
+    JavaScript (and lands back here); app.js turns the click into an
+    in-place save.
+    """
+    probs = ((entry.decision or {}).get("probabilities") or {}) if entry else {}
+    guess = entry.verdict if entry else ""
+    order = sorted(VERDICTS, key=lambda v: (-float(probs.get(v) or 0), v != guess,
+                                            VERDICTS.index(v)))
+    sample = (entry.raw or entry.sample) if entry else item.detail
+    form = tag("form",
+               '<input type="hidden" name="next" value="/broken">'
+               + tag("div", "".join(_chip(v, guess, probs) for v in order),
+                     cls="verdict-chips", role="group",
+                     **{"aria-label": "What this error means"}),
+               method="post", action=f"/brain/{quote(item.fp, safe='')}/verdict",
+               cls="resolver-form", **{"data-resolve": ""})
+    head = tag("div", tag("span", "What does this mean?", cls="resolver-q")
+               + tag("span", "", cls="spacer")
+               + tag("a", "Full details in Error brain", href="/brain", cls="resolver-more"),
+               cls="resolver-head")
+    return tag("div",
+               tag("div", tag("pre", esc(sample), cls="resolver-sample") + head + form,
+                   cls="resolver"),
+               id=ident, cls="resolver-wrap", inert="")
+
+
+def _card(item, prompt: str = "", n: int = 0, entry=None) -> str:
     where = item.provider or ""
     if item.detail:
         where = f"{where} - {item.detail}" if where else item.detail
@@ -38,21 +87,29 @@ def _card(item, prompt: str = "", n: int = 0) -> str:
                + (tag("span", esc(where), cls="card-where") if where else ""),
                cls="card-head")
     since = tag("span", esc(f"since {clock(item.since)}"), cls="n") if item.since else ""
-    fix = ""
+    fix = resolver = ""
     if item.kind in _FIX:
         label, href = _FIX[item.kind]
         fix = ui.button(label, href=href.format(p=quote(item.provider or "")),
                         kind="primary" if item.pile == "you" else "ghost")
+    if item.kind == "unclear_error" and item.fp:
+        panel = f"resolve-{n}"
+        fix = ui.button("Resolve", kind="primary",
+                        **{"data-resolve-toggle": "", "aria-expanded": "false",
+                           "aria-controls": panel})
+        resolver = _resolver(item, entry, panel)
     wait = ui.countdown(item.until, prefix="Back in") if item.until else ""
     ask = _explain_button(prompt, "Explain with AI", f"explain-{n}", small=True)
     foot = tag("div", since + wait + tag("span", "", cls="spacer") + ask + fix, cls="card-foot")
     key = f"{item.kind}:{item.provider}:{item.detail}"
-    return tag("div", head + tag("p", esc(item.reason), cls="card-why") + foot,
+    return tag("div", head + tag("p", esc(item.reason), cls="card-why") + foot + resolver,
                cls=f"card card-{item.pile}", **{"data-row": key, "data-value": item.reason})
 
 
-def _column(title: str, items: list, empty: str, pile: str, prompts: dict) -> str:
-    body = ("".join(_card(i, prompts.get(id(i), ""), n=f"{pile}-{k}")
+def _column(title: str, items: list, empty: str, pile: str, prompts: dict,
+            entries: dict | None = None) -> str:
+    entries = entries or {}
+    body = ("".join(_card(i, prompts.get(id(i), ""), n=f"{pile}-{k}", entry=entries.get(i.fp))
                     for k, i in enumerate(items)) if items else ui.empty(empty))
     count = tag("span", esc(len(items)), cls=f"col-count col-count-{pile}")
     return tag("section", tag("div", tag("h2", esc(title)) + count, cls="col-head")
@@ -76,7 +133,8 @@ def inner(router) -> str:
               + _explain_button(everything, "Explain errors with AI", "explain-all"),
               cls="explain-bar") if everything else ""
     return top + tag("div",
-                     _column("Needs you", you, "Nothing needs you.", "you", prompts)
+                     _column("Needs you", you, "Nothing needs you.", "you", prompts,
+                             router._error_brain._entries)
                      + _column("Handling it", service, "Nothing in progress.", "service",
                                prompts),
                      cls="cols")
@@ -94,7 +152,7 @@ def _prompts(router, items: list) -> dict:
     return out
 
 
-def body(router) -> str:
+def body(router, banner: str = "") -> str:
     data = facts.broken(router)
     n = len(data["needs_you"])
     status = (f"{n} thing{'s' if n != 1 else ''} need{'s' if n == 1 else ''} you"
@@ -102,6 +160,6 @@ def body(router) -> str:
     head = tag("div", tag("div", tag("h1", "What's broken", cls="page-title")
                           + tag("p", esc(status), cls="page-status"), cls="page-head-text"),
                cls="page-head")
-    return head + tag("div", inner(router), id="broken", **{
+    return head + banner + tag("div", inner(router), id="broken", **{
         "data-live": "", "hx-get": "/broken?fragment=1",
         "hx-trigger": "every 10s [!document.hidden]", "hx-swap": "morph:innerHTML"})

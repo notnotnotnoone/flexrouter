@@ -979,6 +979,111 @@ table.log td { padding: 8px 12px; }
 .correct-form { display: flex; gap: 6px; align-items: center; }
 .correct-form select { font-size: 12px; padding: 5px 8px; }
 
+/* ── What's broken: resolve an unclear error in place ───── */
+/* The panel opens with the grid-rows trick: one element, interruptible,
+   and the cards below follow it instead of jumping. */
+.card .resolver-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-top: -8px;               /* the card's gap, while closed */
+  transition: grid-template-rows 180ms cubic-bezier(.25, 1, .5, 1);
+}
+.card .resolver-wrap.is-open { grid-template-rows: 1fr; transition-duration: 260ms; }
+.resolver { min-height: 0; overflow: hidden; }
+.resolver-sample {
+  margin: 12px 0 0;
+  max-height: 132px;
+  overflow: auto;
+  padding: 8px 10px;
+  background: var(--ground);
+  border: 1px solid var(--rule);
+  font: 400 11px/1.5 var(--mono);
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.resolver-head { display: flex; align-items: baseline; gap: 10px; margin: 12px 0 8px; }
+.resolver-q { font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--ink); }
+.resolver-more { font: 400 11px var(--mono); color: var(--ink-3); }
+.resolver-more:hover { color: var(--ink-2); }
+.resolver-form { margin: 0 0 2px; }
+.verdict-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+
+.verdict-chip {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 9px 10px 11px;
+  text-align: left;
+  font: 500 12px var(--mono);
+  color: var(--ink-2);
+  background: var(--raise);
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: transform 140ms var(--ease), opacity 180ms var(--ease),
+              border-color 160ms ease, color 160ms ease;
+}
+.verdict-chip.is-guess { color: var(--ink); border-color: rgba(52, 211, 153, .45); background: var(--green-wash); }
+.chip-name { flex: 1; min-width: 0; }
+.chip-star { color: var(--green); margin-right: 6px; }
+.chip-pct { font-size: 11px; color: var(--ink-3); transition: opacity 120ms ease; }
+.chip-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--rule); }
+.chip-bar i { display: block; height: 100%; background: var(--ink-3); transform-origin: left; transform: scaleX(var(--p)); }
+.is-guess .chip-bar i { background: var(--green); }
+@media (hover: hover) and (pointer: fine) {
+  .verdict-chip:hover { transform: translateY(-1px); border-color: var(--ink-3); color: var(--ink); }
+  .verdict-chip.is-guess:hover { border-color: var(--green); }
+}
+.verdict-chip:active { transform: scale(.96); transition-duration: 80ms; }
+.verdict-chip:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+
+/* The pick: green floods out from where the chip was clicked, a check
+   draws itself, and the other answers step back. */
+.verdict-chip::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: rgba(52, 211, 153, .16);
+  clip-path: circle(0 at var(--x, 50%) var(--y, 50%));
+  transition: clip-path 360ms var(--ease);
+}
+.chip-check {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  margin-top: -9px;
+  fill: none;
+  stroke: var(--green);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0;
+}
+.chip-check path { stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset 280ms cubic-bezier(.65, 0, .35, 1) 150ms; }
+.verdict-chip.is-picked { color: var(--green); border-color: var(--green); transform: none; }
+.verdict-chip.is-picked::before { clip-path: circle(150% at var(--x, 50%) var(--y, 50%)); }
+.is-picked .chip-check { opacity: 1; }
+.is-picked .chip-check path { stroke-dashoffset: 0; }
+.is-picked .chip-pct { opacity: 0; }
+.resolver-form.is-deciding .verdict-chip { pointer-events: none; }
+.resolver-form.is-deciding .verdict-chip:not(.is-picked) { opacity: .3; transform: scale(.97); }
+
+html[data-motion="reduced"] .verdict-chip,
+html[data-motion="reduced"] .verdict-chip::before,
+html[data-motion="reduced"] .chip-check path,
+html[data-motion="reduced"] .card .resolver-wrap { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .verdict-chip, .verdict-chip::before, .chip-check path, .card .resolver-wrap { transition: none; }
+}
+
 .all-clear {
   padding: 40px 28px;
   border: 1px solid var(--rule);

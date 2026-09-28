@@ -177,3 +177,53 @@ def test_a_guessed_id_locks_apply_until_use_fixes_it(page, server, errors):
         assert errors == []
     finally:
         (state / catalogue.KNOWN_MODEL_IDS_FILENAME).unlink(missing_ok=True)
+
+
+def _unclear_error() -> str:
+    import flexrouter.app as app_module
+    from flexrouter.decider import ErrorVerdict
+
+    class _Unsure:
+        configured = True
+
+        def classify_error(self, text, status):
+            return ErrorVerdict("bad_request", "classifier", 0.41, insight={
+                "ok": True, "probabilities": {"bad_request": 0.41, "message_too_long": 0.38}})
+
+        def describe_model(self, *a, **kw):
+            return {}
+
+    brain = app_module.get_router()._error_brain
+    brain._decider = _Unsure()
+    brain.classify("the quota widget is sulking today", 400)
+    return next(fp for fp, e in brain._entries.items() if e.flagged_for_review)
+
+
+def test_an_unclear_error_is_resolved_without_leaving_whats_broken(page, server, errors):
+    import flexrouter.app as app_module
+    fp = _unclear_error()
+    page.goto(server + "/broken")
+    expect(page.locator(".col-you .col-count")).to_have_text("1")
+    chips = page.locator(".resolver-wrap .verdict-chip")
+    expect(chips.first).not_to_be_visible()          # closed until asked
+    page.click("[data-resolve-toggle]")
+    expect(page.locator("[data-resolve-toggle]")).to_have_attribute("aria-expanded", "true")
+    expect(chips.first).to_be_visible()
+    expect(chips.first).to_contain_text("Bad request")
+    page.click(".verdict-chip[value='message_too_long']")
+    expect(page.locator(".verdict-chip.is-picked")).to_have_count(1)
+    expect(page.locator("[data-resolve-toggle]")).to_have_count(0)
+    expect(page.locator(".toast")).to_contain_text("Message too long")
+    assert page.url.endswith("/broken")
+    assert app_module.get_router()._error_brain._entries[fp].verdict == "message_too_long"
+    assert errors == []
+
+
+def test_escape_closes_the_resolver(page, server):
+    _unclear_error()
+    page.goto(server + "/broken")
+    page.click("[data-resolve-toggle]")
+    page.locator(".verdict-chip").first.focus()
+    page.keyboard.press("Escape")
+    expect(page.locator("[data-resolve-toggle]")).to_have_attribute("aria-expanded", "false")
+    expect(page.locator("[data-resolve-toggle]")).to_be_focused()

@@ -15,7 +15,7 @@ from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from flexrouter import keys as keystore
 from flexrouter import model_reset
@@ -1421,11 +1421,12 @@ def overview_page(range: str = DEFAULT_RANGE, fragment: str = "") -> HTMLRespons
 
 
 @pages.get("/broken", response_class=HTMLResponse, include_in_schema=False)
-def broken_page(fragment: str = "") -> HTMLResponse:
+def broken_page(fragment: str = "", ok: str = "", message: str = "") -> HTMLResponse:
     router = _live_router()
     if fragment:
         return HTMLResponse(broken_page_mod.inner(router))
-    return HTMLResponse(page("What's broken", "broken", broken_page_mod.body(router)))
+    return HTMLResponse(page("What's broken", "broken",
+                             broken_page_mod.body(router, _message_banner(ok, message))))
 
 
 def toast_trigger(message: str, kind: str = "ok") -> dict[str, str]:
@@ -1973,19 +1974,31 @@ def brain_page(ok: str = "", message: str = "") -> HTMLResponse:
 
 
 @pages.post("/brain/{fp}/verdict", include_in_schema=False)
-async def brain_correct(fp: str, request: Request) -> RedirectResponse:
+async def brain_correct(fp: str, request: Request) -> Response:
     """Correct what one learned error means. Stored as the owner's own
-    answer, which nothing afterwards overrules."""
+    answer, which nothing afterwards overrules.
+
+    What's broken resolves errors in place: it asks for JSON and the owner
+    stays on the page. A plain form post redirects back to `next` - the
+    Error brain unless it names What's broken."""
     form = await request.form()
     verdict = str(form.get("verdict", ""))
+    back = "/broken" if form.get("next") == "/broken" else "/brain"
+    wants_json = "application/json" in request.headers.get("accept", "")
+
+    def answer(ok: bool, message: str, code: int = 200) -> Response:
+        if wants_json:
+            return JSONResponse({"ok": ok, "message": message}, status_code=code)
+        return _redirect_with_message(back, ok, message)
+
     try:
         _live_router()._error_brain.correct(fp, verdict)
     except KeyError:
-        return _redirect_with_message("/brain", False, "That error is no longer on record.")
+        return answer(False, "That error is no longer on record.", 404)
     except ValueError as exc:
-        return _redirect_with_message("/brain", False, str(exc))
+        return answer(False, str(exc), 400)
     label = brain_page_mod.LABELS.get(verdict, verdict)
-    return _redirect_with_message("/brain", True, f"Saved: that error now means \"{label}\".")
+    return answer(True, f"Saved: that error now means \"{label}\".")
 
 
 @pages.get("/allowance", response_class=HTMLResponse, include_in_schema=False)
