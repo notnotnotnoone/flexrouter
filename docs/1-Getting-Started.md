@@ -1,6 +1,6 @@
 # Getting Started with flexrouter
 
-**Goal:** Install flexrouter, configure it for your first LLM provider, and make your first routing call.
+**Goal:** Install flexrouter, set up your first provider from the dashboard, and make your first routing call. No settings file to write.
 
 **Time:** 10 minutes
 
@@ -10,9 +10,10 @@
 
 By the end of this tutorial, you'll have:
 - ✅ flexrouter installed
-- ✅ One provider set up, with its key saved safely
 - ✅ The flexrouter service running on your machine — the one process that does the routing for everything on it
-- ✅ Your first routed request, made from the **dashboard** in your browser
+- ✅ One provider set up from the dashboard, with its key saved safely
+- ✅ Its models added with AI, every ID checked against the provider's real list
+- ✅ Every model tested with one "hi"
 - ✅ The **terminal UI** open, watching the same service from your terminal
 - ✅ A working Python script that asks that service to route a request to the cheapest available model
 
@@ -24,119 +25,100 @@ By the end of this tutorial, you'll have:
 pip install flexrouter
 ```
 
-Verify the installation:
-
-```bash
-flexrouter --version
-```
-
----
-
-## Step 2: Set Up Your First Provider
-
-Choose one provider to start with. We'll use **Groq** as an example (free, fast, generous rate limits).
-
-### Get an API Key
-
-1. Go to [https://console.groq.com](https://console.groq.com)
-2. Sign up or log in
-3. Create an API key
-
-### Save the Key
-
-flexrouter keeps every key in one safe, shared place on your computer — never inside a settings file that might get shared or copied around. Save your new key with:
-
-```bash
-flexrouter keys add groq
-```
-
-It will ask you to paste the key without showing it on screen. You can check it saved correctly (without ever printing the full key) with `flexrouter keys list`.
-
----
-
-## Step 3: Point flexrouter at the Model
-
-flexrouter keeps one settings file for your whole computer, not one per project. Run this to see where it lives:
+Verify the installation (it also prints where your settings and keys will live):
 
 ```bash
 flexrouter doctor
 ```
 
-It prints the folder your settings live in, and confirms whether it can already see a usable key for each provider you've set up. Open the settings file it shows you and add:
-
-```yaml
-tiers:
-  cheap:
-    - provider: groq
-      model: llama-3.1-8b-instant
-      score: 100
-      rpm: 60
-      tpm: 60000
-      context_window: 131072
-
-providers:
-  groq:
-    base_url: https://api.groq.com/openai/v1
-```
-
-**What this means:**
-- **tiers**: Define routing tiers. Here we have one tier called `cheap`.
-- **models**: List models available in this tier. Score (1–100) determines preference.
-- **providers**: Define how to reach each provider (base URL). The key you saved in Step 2 is picked up automatically — it doesn't need to be written here.
-
-You never need to create or find this file yourself for a fresh setup — `flexrouter doctor` always tells you exactly where it is. It's a plain text file you write by hand, and flexrouter never rewrites it behind your back, so any notes or comments you leave in it stay put. Changes you make from the dashboard are kept separately and layered on top when flexrouter starts.
-
 ---
 
-## Step 4: Start the Service and Open the Dashboard
+## Step 2: Start the Service and Open the Dashboard
 
 flexrouter does all of its routing in **one background service** on your
 computer, so every project and every app on the machine shares the same
 settings, the same keys, and the same running total of what each provider has
-left. Nothing routes until it is running. The easiest way to start it is
-through the dashboard — it starts the service *and* opens your browser:
+left. Nothing routes until it is running. Start it and open your browser with:
 
 ```bash
 flexrouter dashboard
 ```
 
-This opens `http://localhost:4891`. Leave that terminal running. The dashboard
-is the main way to see what flexrouter is doing:
+This opens `http://localhost:4891`. Leave that terminal running.
 
-- **Live Telemetry**: Your model's RPM and TPM usage, with cooldown countdowns
-- **Chat**: Send a request through the router and watch it answer
-- **Request Logs**: Every call, newest first
-- **Account Status**: Spending per provider and budget tracking
-- **Settings**: View and edit your config without touching the file
+On the first start the Overview has a **Get started** card on top. It lists
+five steps and ticks each one itself as soon as it has really happened, so you
+never press Next. The rest of this page walks through the same five steps.
 
 > Prefer no browser? `flexrouter serve` starts the exact same service without
-> opening one. And if something fails later with *"flexrouter isn't running.
-> Start it with: flexrouter serve"* — that message is telling you the truth:
-> come back here and start it.
+> opening one. If something later fails with *"flexrouter isn't running.
+> Start it with: flexrouter serve"*, that message is telling you the truth.
 
 > Want the server's own diary? `flexrouter dashboard --log` also writes an
-> activity log (startup, warnings, provider errors) and adds a **Logs** page
-> under *System* that tails it live — see
+> activity log and adds a **Logs** page under *System*. Without `--log` that
+> page just says "Logging is off" — see
 > [Logging and the Logs page](4-Advanced-Usage.md#logging-and-the-logs-page).
 
 ---
 
-## Step 5: Make Your First Call — From the Dashboard
+## Step 3: Add a Provider and Paste Its Key
 
-With the dashboard open, go to the **Chat** tab:
+The card's first step lists every provider flexrouter knows, marked **Free**
+or **Paid**, each with a **Get a key ↗** link. Hover one for its free-tier
+note. We'll use **Groq** as an example (free and fast).
 
-1. Pick your tier (`cheap`) from the dropdown
-2. Type: `Say hello and tell me a one-sentence joke.`
-3. Send it
+1. Press **Get a key ↗** next to Groq, sign in, and create an API key.
+2. Press **Groq** (or go to **Providers & keys**) and paste the key.
+3. Press **Test** next to the key. It sends one small "hi" to a model. When it
+   answers, step 2 on the card ticks.
 
-The response appears with the model that served it and the token count. Flip
-to **Request Logs** and you'll see that call recorded, and **Live Telemetry**
-shows your usage against the model's per-minute limits. That's routing working
-end to end — no code yet.
+The key is saved to your own user account on this machine, never into a
+settings file that might get shared. From a terminal, `flexrouter keys add
+groq` does the same thing.
 
 ---
 
-## Step 6: Watch It From the Terminal — the TUI
+## Step 4: Add Models With AI
+
+Go to **Models → Add models with AI** (the card's step 3 has an **Open**
+button). flexrouter builds a prompt that already contains Groq's **real list
+of model IDs**. Paste it into any chatbot, paste the answer back, and review
+every row before anything is saved.
+
+- A row whose ID isn't on Groq's real list shows **"not a real ID, did you
+  mean X? [use]"** and can't be saved until you fix it.
+- A rate limit the AI doesn't know stays empty: flexrouter learns it from
+  the provider's own headers instead of guessing.
+- Speech, image and embedding models are kept in a folded **"Not chat models
+  yet"** list at the bottom of Models, because flexrouter only routes chat
+  models today.
+
+---
+
+## Step 5: Test All
+
+Press **Test all** on the card (it's also on the **Status** page). It says
+"hi" to every model once, two at a time, with room for up to 512 tokens so
+a model that thinks first still gets to answer. Each model shows how long it
+took, or the provider's reason for not answering. It only runs when you
+press it; flexrouter never pings models in the background.
+
+Anything that didn't answer shows up on **Status** with one sentence and at
+most one button, for example "Groq doesn't know this name. Did you mean
+llama-3.1-8b? **[Use llama-3.1-8b]**".
+
+---
+
+## Step 6: Point Your App at flexrouter
+
+The card's last step has **Copy Python** and **Copy curl** buttons. The
+address is `http://localhost:4891/v1`, and the "model" is the name of a
+bucket, such as `fast`. The step ticks when your app's first request
+arrives. Requests you send from the dashboard's own Playground don't count.
+
+---
+
+## Step 7: Watch It From the Terminal — the TUI
 
 If you live in your terminal, `flexrouter tui` gives you the same picture
 without a browser:
@@ -157,7 +139,7 @@ is currently running.
 
 ---
 
-## Step 7: Use Any OpenAI-Compatible App
+## Step 8: Use Any OpenAI-Compatible App
 
 Because the service speaks the OpenAI shape, any OpenAI SDK — or any chat app
 that lets you change the base URL — works by pointing at it:
@@ -187,7 +169,7 @@ List available models: `GET http://localhost:4891/v1/models`
 
 ---
 
-## Step 8: Call It From Python
+## Step 9: Call It From Python
 
 Last, the library itself — for Python code that wants to skip the web address
 and call flexrouter in-process. Create a file `hello_flexrouter.py`:
@@ -235,7 +217,7 @@ appears in the dashboard's Request Logs and the TUI's Requests tab.
 
 You've got the basics! Here's where to go next:
 
-- **Add more providers?** → Read [Configuration Guide](2-Configuration-Guide.md)
+- **Rather write the settings file by hand?** → Read [Configuration Guide](2-Configuration-Guide.md)
 - **Understand how routing works?** → Read [Concepts](3-Concepts.md)
 - **Handle multiple tiers or advanced scenarios?** → Read [Advanced Usage](4-Advanced-Usage.md)
 - **Look up a specific method or class?** → Read [API Reference](5-API-Reference.md)
@@ -257,8 +239,8 @@ If it's missing, save it again with `flexrouter keys add groq`.
 ### "flexrouter isn't running"
 The service isn't up. Start it with `flexrouter dashboard` (or `flexrouter serve` if you don't want a browser) and leave it running in its own terminal. The message names the address it tried, so if that address looks wrong, check the `port` in your settings file.
 
-### "No models available in tier"
-Run `flexrouter doctor` — it checks your settings file for problems and tells you plainly what's wrong, rather than a raw error.
+### "No models available" or a model keeps failing
+Open **Status** in the dashboard. Every model that isn't Ready is listed with one plain sentence and at most one button. Press a row to see exactly what the provider said. `flexrouter doctor` also checks your settings file for problems.
 
 ---
 
@@ -266,10 +248,10 @@ Run `flexrouter doctor` — it checks your settings file for problems and tells 
 
 | Term | Meaning |
 |------|---------|
-| **Tier** | A named group of models (e.g., `cheap`, `medium`, `high`) |
-| **Score** | Priority (1–100) within a tier; higher wins when available |
-| **RPM** | Requests per minute limit for a model |
-| **TPM** | Tokens per minute limit for a model |
+| **Bucket** | A named group of models (e.g. `fast`, `smart`); your app uses its name as the "model". The Python API still calls it `tier`. |
+| **Score** | Priority (1–100) within a bucket; higher wins when available |
+| **RPM / TPM** | A model's requests / tokens per minute. Leave them empty and flexrouter learns them from the provider |
+| **Status** | Every model is Ready, Busy, Struggling, Needs you or Off — see the Status page |
 | **state_dir** | Folder where audit logs and health data are stored |
 | `flexrouter doctor` | Shows where your settings and keys live, and which key each provider will use |
 | `flexrouter keys add/list/rm` | Save, view, or remove a provider's key |

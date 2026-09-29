@@ -401,7 +401,7 @@ class LocalRouter:
             self._conversations.save(trace_id, messages, reply, reasoning)
             self._traces.write({
                 "id": trace_id,
-                "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds") + "Z",
+                "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
                 "asked": {
                     "bucket": tier, "stream": False,
                     "needs": ["vision"] if vision else [],
@@ -727,7 +727,7 @@ class LocalRouter:
             self._conversations.save(trace_id, messages, reply, reasoning)
             self._traces.write({
                 "id": trace_id,
-                "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds") + "Z",
+                "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
                 "asked": {
                     "bucket": tier, "stream": True,
                     "needs": ["vision"] if vision else [],
@@ -1299,7 +1299,7 @@ class LocalRouter:
         for model_configs in self._cfg.tiers.values():
             for mc in model_configs:
                 pinned.setdefault(f"{mc.provider}/{mc.model}", [mc])
-        # The built-in `all` bucket (ADR 0019) lives here too, for the same
+        # The built-in `all` bucket (ADR 0025) lives here too, for the same
         # reason: it is a bucket the owner never wrote, so it has no place in
         # the real config. One entry per model, as the pins already are.
         if ALL_BUCKET not in self._cfg.tiers:

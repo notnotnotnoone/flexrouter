@@ -63,3 +63,44 @@ async def test_key(router, provider: str, key_id: str) -> KeyTestResult:
         return KeyTestResult(ok=True, message=f"{model} answered")
     finally:
         await client._client.aclose()
+
+
+async def test_model(router, provider: str, model: str) -> KeyTestResult:
+    """Say hi to one model with its provider's first working key (Test all,
+    §13). Direct, like `test_key`: it doesn't touch the model's status or
+    counters. The message is what the row shows: the time, or the reason."""
+    import time
+    pcfg = router._cfg.providers.get(provider)
+    if pcfg is None:
+        return KeyTestResult(ok=False, message=f"no provider called {provider}")
+    record = next((r for r in (pcfg.keys or [])
+                   if getattr(r, "enabled", True) and r.secret and allows(r, model)), None)
+    if record is None:
+        return KeyTestResult(ok=False, message=f"no {provider} key may use this model")
+    route = RouteResult(
+        provider=provider, model=model, api_key=record.secret,
+        base_url=pcfg.base_url, tier="dashboard-test",
+        header_parser=pcfg.header_parser,
+    )
+    client = AsyncClient()
+    started = time.monotonic()
+    try:
+        await client.chat(route, [{"role": "user", "content": "hi"}], max_tokens=512)
+    except RateLimitError:
+        return KeyTestResult(ok=False, message="busy right now (429), try again soon", status_code=429)
+    except ProviderError as exc:
+        return KeyTestResult(ok=False, message=_without_name(str(exc), provider, model),
+                             status_code=exc.status_code)
+    except RouterError as exc:
+        return KeyTestResult(ok=False, message=_without_name(str(exc), provider, model))
+    finally:
+        await client._client.aclose()
+    return KeyTestResult(ok=True, message=f"{time.monotonic() - started:.1f}s")
+
+
+def _without_name(message: str, provider: str, model: str) -> str:
+    """The row already names the model; don't say it twice."""
+    for prefix in (f"{provider}/{model}: ", f"{model}: "):
+        if message.startswith(prefix):
+            return message[len(prefix):]
+    return message

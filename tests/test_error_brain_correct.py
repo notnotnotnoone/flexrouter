@@ -82,10 +82,9 @@ def _seed_page_brain():
 
 def test_the_page_groups_cards_and_flags_review(client):
     _seed_page_brain()
-    body = client.get("/brain").text
+    body = client.get("/status").text
     assert "Their end, temporary" in body
-    assert "needs review" in body
-    assert 'class="meter"' in body
+    assert "Not sure" in body
 
 
 def test_the_page_can_correct_a_verdict(client):

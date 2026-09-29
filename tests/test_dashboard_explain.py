@@ -1,4 +1,5 @@
 """'Explain errors with AI': the copy-paste prompt (PLAN-V2.3.md Session 12, §8)."""
+import re
 import json
 import os
 
@@ -68,6 +69,6 @@ def test_one_row_narrows_the_prompt(client):
 
 def test_the_page_has_the_top_button_and_a_row_button(client):
     _gone()
-    body = client.get("/broken").text
+    body = client.get("/status").text
     assert "Explain errors with AI" in body and 'data-copy="#explain-all"' in body
-    assert "Explain with AI" in body and 'id="explain-you-0"' in body
+    assert "Explain with AI" in body and re.search(r'id="explain-\d+"', body)

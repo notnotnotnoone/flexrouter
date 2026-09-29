@@ -44,7 +44,7 @@ def _row(rank: int, row, top: float, cut: float | None, strategy: str) -> str:
     if row.in_the_running:
         state, word = "ok", "would answer"
     elif row.available:
-        state, word = "idle", "outranked"
+        state, word = "idle", "a better one goes first"
     else:
         state, word = "bad", _REASON.get(row.reason, (row.reason or "unavailable").replace("_", " "))
     label = "20% below the fastest: anything left of this line is not picked" if strategy == "fastest" \
@@ -71,7 +71,7 @@ def _strategy_form(bucket: str, strategy: str) -> str:
     select = f"<select{attrs({'name': 'strategy'})}>{opts}</select>"
     return tag(
         "form",
-        select + tag("button", "Set", type="submit", cls="ghost"),
+        select + ui.submit("Set", **{"data-working": "Saving", "data-done": "Saved"}),
         method="post", action=f"/buckets/{quote(bucket, safe=':')}/strategy", cls="inline-form",
     )
 
@@ -98,23 +98,25 @@ def _bucket(b, add_model_form: str) -> str:
             + tag("details", tag("summary", "Add a model to this bucket") + add_model_form,
                   cls="table-view"))
     return ui.box(b.name, body,
-                  sub=f"{len(b.models)} models · {running} could answer now",
+                  sub=f"{ui.plural(len(b.models), 'model')} · {running} could answer now",
                   action=try_it,
                   **{"data-enter": "", "data-box": f"bucket-{b.name}", "data-dropzone": b.name})
 
 
 def _model_card(row) -> str:
-    """One draggable card, carrying everything `add_model()` needs to file
+    """One card to drag (or tap, or Enter) onto a bucket, carrying everything `add_model()` needs to file
     this already-configured model into another bucket - so dropping it
     never has to ask the owner to retype a score or a rate limit it
     already knows.
     """
     return tag(
         "div",
-        tag("span", esc(f"{row.provider}/{row.model}"), cls="model-card-name")
+        ui.icon("grip")
+        + tag("span", esc(f"{row.provider}/{row.model}"), cls="model-card-name")
         + tag("span", esc(row.score), cls="model-card-score"),
-        cls="model-card", draggable="true", tabindex="0",
+        cls="model-card", tabindex="0", role="button",
         **{
+            "aria-pressed": "false",
             "data-provider": row.provider, "data-model": row.model,
             "data-score": row.score, "data-rpm": row.rpm, "data-tpm": row.tpm,
             "data-context-window": row.context_window or "",

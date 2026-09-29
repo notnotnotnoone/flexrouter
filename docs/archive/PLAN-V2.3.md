@@ -244,8 +244,18 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 
 **Done when:**
 - [ ] The owner has reviewed it in the browser.
-- [ ] Dashboard page tests and browser tests pass.
-- [ ] It matches the approved mockup.
+- [x] Dashboard page tests and browser tests pass.
+- [x] It matches the approved mockup.
+
+*Built 2026-09-27 (after Phase 4's other sessions, which had worked around its absence):*
+- **The page** is `dashboard/status_page.py` at `/status`. `/broken` and `/brain` answer 301 to it, and the menu has one "Status" entry. `broken_page.py` and `brain_page.py` are gone, and their tests were ported to `tests/test_dashboard_status.py`.
+- **The rows** come from `facts.broken()`, so Explain with AI (Session 12) and Test all (Session 18) moved over unchanged. Ready rows come from every configured model, and Off rows from `enabled: false`.
+- **Row buttons** go to `POST /status/<use|retry|remove|turn_on>/<provider>/<model>`. The JSON answer names the status the row settles into (`flex.settle`). [Remove] turns the model off, because config.yaml is never rewritten.
+- **"Not sure"** rows are error-brain entries flagged for review. Opening one shows where it happened, the requests it hit, and the classifier's odds, with a one-time "It means… [Tell it]" form (`/brain/<fp>/verdict`, which now redirects to Status).
+- **Classifier telemetry** is one footer line.
+- **Same statuses everywhere:**
+  - Overview's verdict tags are the same counts as Status: N ready · busy · struggling · N need you.
+  - Providers and Models show `ui.pill()` statuses. `ui.status()`'s "● OK / ▲ BROKEN" is no longer used on those pages.
 
 **Starter prompt:**
 > Do Session 8 of PLAN-V2.3.md. Read that block, the approved mockup in grill-log.md, and .scratch/polish/showcase/PORTING.md. Show me in the browser pane before finishing.
@@ -377,7 +387,7 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 
 ## Phase 4 · Polish, first run, docs
 
-### ☐ Session 15 — Port the showcase everywhere (after 1)
+### ☑ Session 15 — Port the showcase everywhere (after 1)
 **Model:** Sonnet
 **US:** 86–87. **P:** 20 (button parts), 36.
 - Replace every remaining button and form control on every page with the showcase kinds, following `showcase/PORTING.md`:
@@ -385,11 +395,24 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
   - undo on dangerous actions
   - Danger zone moved off Providers
 - Keep `tests/test_dashboard_css.py` green: add rules, don't loosen it.
+- *Done 2026-09-26:*
+  - Every form button is `ui.submit()` (kind + `data-working`/`data-done`).
+  - Forms stay htmx-boosted: `app.js` hooks `htmx:beforeRequest`/`beforeSwap`, so a write that failed (the redirect's `ok=0`) stays on the page and shows its reason beside the button, keeping what was typed. A write that worked swaps the page in as before.
+  - Undo:
+    - `dashboard/undo.py` keeps the exact bytes of the files a dangerous write is about to change, in memory for 60s.
+    - The redirect carries `undo=<token>`, the success toast offers Undo, and `POST /undo/<token>` puts the files back.
+    - It covers: key remove, service-key remove, disable/put back a model, a provider's "Put it all back", "Reset everything I changed" (its confirm dialog is gone) and the model resets.
+    - The typed-phrase guard on model resets stays: it's a typed guard, not a dialog.
+  - The reset-all Danger zone is on Settings. A provider's own reset is folded shut at the bottom of its page.
+  - Settings' on/off rows are `.switch`es that save themselves (`data-post`).
+  - Drag is pointer-based: drag, tap then tap, or Enter then Enter.
+  - The light theme is ported (it follows the OS). `test_dark_only` became a test that both light blocks redefine every colour token.
+  - The status list, Test all and quickstart JS is ported ahead of Sessions 8 and 18.
 
 **Starter prompt:**
 > Do Session 15 of PLAN-V2.3.md. Read that block and .scratch/polish/showcase/PORTING.md.
 
-### ☐ Session 16 — No jumping, no swapping, every width (after 15)
+### ☑ Session 16 — No jumping, no swapping, every width (after 15)
 **Model:** Sonnet
 **US:** 88–90. **P:** 26–30.
 - Overview layout shift under 0.1 (it's 0.32 today).
@@ -399,13 +422,23 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 - Readable chart axis labels, and traffic not squeezed into one bar.
 
 **Done when:**
-- [ ] Measured in the browser pane (layout-shift observer).
-- [ ] Browser tests added for the no-swap rule.
+- [x] Measured in the browser pane (layout-shift observer).
+- [x] Browser tests added for the no-swap rule.
+
+*Done 2026-09-26*, measured on a sandbox home with fake traffic:
+- **Before:** at 1014px every page was 1100px wide, because of `body { min-width: 1100px }`. At 375px six pages were 480–660px wide.
+- **After:** no page is wider than the window at 1014px or 375px.
+- **Layout shift:** 0.000 on every page. The 0.32 didn't reproduce with warm fonts; both fonts are now preloaded anyway.
+- **Phones:** under 760px the sidebar is a top bar with a Menu button.
+- **Live refresh:** a poll is skipped while the pointer rests on a row, while a field has focus, or for 400ms after a click. The next tick tries again.
+- **Chart labels:** sized in screen pixels by `app.js` (`--tick`, 11px).
+- **Chart start:** the chart begins at the first request, with at least 6 bars.
+- **Browser tests:** no-swap, no overflow at both widths, the Menu, label size, layout shift, failed save, and Undo.
 
 **Starter prompt:**
 > Do Session 16 of PLAN-V2.3.md. Read that block and papercuts.md items 26–30. Measure before and after in the browser pane.
 
-### ☐ Session 17 — Words and numbers ⚡ 🪶
+### ☑ Session 17 — Words and numbers ⚡ 🪶
 **Model:** Haiku or Sonnet
 **US:** 91–95, 100. **P:** 15, 16, 20, 21, 22, 24.
 - Timestamps in local time, one format (no more `+00:00Z`).
@@ -415,6 +448,17 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 - One name pattern for the three "…with AI" features.
 - Readable "Can do" chips.
 - The Logs page says "Logging is off. Start with `--log`" when it is (§10).
+- *Done 2026-09-27:*
+  - **Times.** The `+00:00Z` came from `_router.py` appending "Z" to an offset timestamp. The reader then failed to parse it and printed the raw text. Both ends are fixed, and `overview.parse_utc` still reads old traces. `overview.clock()` is the one format: local 24-hour, with the day only when it isn't today. Allowance and a key's "Last used" use it too.
+  - **Named models.** A pinned request is logged under `provider/model`. It now shows as "named model" on Requests and the request sheet. Overview's Buckets box sums these into one "Plus N requests that named one model" line.
+  - **Words.**
+    - "outranked" → "a better one goes first".
+    - The Error brain "overturned the rule" → "disagreed with the quick check".
+    - "resting", "parked" keys and "Sideline" were already gone.
+  - **Plurals.** A new `ui.plural()`.
+  - **Names.** The three features are "Add models with AI", "Rank models with AI" and "Find rate limits with AI", and all three are in Ctrl+K.
+  - **Chips.** Two rule sets fought: the later one put white text on the green "published" fill. The duplicate is gone, and each chip names its source with a mark: ✓ seen, ~ guessed, ✎ yours.
+  - **Logs off.** A full page, still a 404.
 
 **Starter prompt:**
 > Do Session 17 of PLAN-V2.3.md. Read that block and the listed papercuts.md items.
@@ -431,11 +475,23 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 - Steps tick themselves; no Next buttons.
 - Shown on first start and whenever no model works. [Hide], plus "Show quickstart" in Settings.
 - **[Test all]**: says hi to every model once (~512 tokens), with per-model progress and results. It also lives on the status page. Only runs on click, no background pings.
+- *Built 2026-09-27; waiting for the owner's look in the browser before the box is ticked.*
+  - **The card** (`dashboard/quickstart.py`) sits inside Overview's live block, so steps tick themselves on the next refresh. A refresh waits while Test all is running.
+  - **What ticks each step:**
+    - Step 1: any provider is configured. Until then it lists every preset as Free or Paid, with "Get a key ↗" and the preset's free-tier note on hover.
+    - Step 2: a key Test passed (kept in `state/quickstart.json`), or any request has been answered.
+    - Step 3: any bucket has a model.
+    - Step 4: every model was asked and at least one answered. A run where none answered says so and stays open.
+    - Step 5: a request arrived that wasn't the dashboard's own. Playground, Try it and the rate-limit probe are now tagged `client=playground` / `dashboard-test`.
+  - **Test all:**
+    - It is `POST /test-model/<provider>/<model>` (`keytest.test_model`, 512 tokens, direct, and it changes no model status). The last answer per model is remembered.
+    - It is on the card and in a box on What's broken, because the Session 8 status page doesn't exist yet.
+  - **Hide** posts `show_quickstart=false`, with Undo. The card comes back by itself when no model works.
 
 **Starter prompt:**
 > Do Session 18 of PLAN-V2.3.md. Read that block, the Q18 mockup in grill-log.md, and showcase/PORTING.md. Show me in the browser pane before finishing.
 
-### ☐ Session 19 — Docs, ADRs, release 🪶 (last)
+### ☑ Session 19 — Docs, ADRs, release 🪶 (last)
 **Model:** Sonnet for ADRs and glossary; Haiku is fine for README/CHANGELOG prose
 **Decisions:** §11, §16. **US:** 101–105.
 - **README** Quickstart + `docs/1-Getting-Started.md`: the dashboard path (add key → Add models with AI → Test all → point your app). YAML moves to `docs/2-Configuration-Guide.md` as the by-hand option.
@@ -456,10 +512,15 @@ Tokens: parallel sessions don't cost fewer tokens, they just finish sooner. Only
 > Do Session 19 of PLAN-V2.3.md. Read that block and grill-decisions.md §11 and §16. Use a cheap model for prose where possible.
 
 **End of phase 4:**
-- [ ] Full suite + browser suite green.
-- [ ] Final say-hi sweep.
-- [ ] Light mode checked.
-- [ ] Every write button checked for visible feedback (the two items the papercut sweep never covered).
+- [x] Full suite + browser suite green. On 2026-09-27: 1657 passed, 5 skipped; browser 27 passed. Browser runs on a loaded machine occasionally time out one test that passes alone. Two stale tests were fixed on the way. The did-you-mean tests read an untracked `.scratch` file, now a tracked fixture in `tests/fixtures/`. The discovery toggle test looked for the old checkbox.
+- [ ] Final say-hi sweep. **Not run:** it sends real requests with your keys to the running service, which is still the old code until you restart it from this branch.
+- [x] Light mode checked. A contrast scan of every page found the faintest grey at 2.6:1; the light `--ink-4` is now `#74747d`, and nothing is under 3:1.
+- [x] Every write button checked for visible feedback. All 62 POST forms across 14 pages use a `.btn` that `app.js` drives through working → done/failed (a failed write stays on the page with its reason). Test all, the Status fixes, switches, copy, drag and Undo have their own feedback, and the browser tests cover a failed save, Undo, Test all, a Status fix and the copy button.
+
+*Session 19 notes (2026-09-27):*
+- ADR 0018 was already taken ("request options are headers"), so v2.3's six ADRs are **0019–0024**, not 0018–0023: error brain decides, one status, model list always read, saved conversations, quickstart checklist, fastest = first word. The ADRs they supersede or amend (0007, 0010, 0012, 0013, 0014, 0016) have updated Status lines.
+- The version is bumped to 2.3.0 and the CHANGELOG has a `[2.3.0]` entry. It isn't tagged or pushed.
+- The plan stays in the repo root, not `docs/archive/`, until Sessions 8 and 18 get the owner's look.
 
 ---
 

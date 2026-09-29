@@ -29,7 +29,7 @@ router.generate(messages=[...], tier="low", wait=True)
   ├─ Filter models for tier "low"
   │
   ├─ Apply filtering rules:
-  │   ├─ Skip penalized models (in "penalty box")
+  │   ├─ Skip models that aren't Ready (Busy, Struggling, Needs you, Off)
   │   ├─ Skip models over daily provider budget
   │   ├─ Skip models exceeding RPM/TPM windows
   │   └─ Log ContextWindowWarning if context window too small
@@ -45,9 +45,11 @@ router.generate(messages=[...], tier="low", wait=True)
   │
   ├─ Check response:
   │   ├─ 2xx success → return response
-  │   ├─ 429 rate limit → penalty box, retry next model
-  │   ├─ 5xx server error → penalty box, retry next model
-  │   └─ empty/refusal → ContextWindowWarning, short penalty
+  │   ├─ 429 / 5xx → model is Busy until its retry time; next model now
+  │   ├─ 404 / 402 / 403 → model Needs you; next model now
+  │   ├─ empty reply → model is Struggling (~1h); next model now
+  │   └─ caller's own bad request → returned at once
+  │   (no sleeping between tries; gives up after failover_budget_seconds)
   │
   ├─ Log to audit.csv
   ├─ Update health.json
@@ -84,7 +86,7 @@ Within a tier, models have a **score** (1–100). Higher score = preferred.
 
 When you request a tier:
 
-1. Filter to available models (not penalized, not rate-limited, not over budget)
+1. Filter to available models (not Busy, Struggling or Needs you, not over budget)
 2. Score each: higher score wins
 3. **Avoid thundering herd:** Instead of always picking the #1 model, randomly select from the top 20% of available models
 
@@ -171,30 +173,29 @@ Both RPM and TPM use this same window. (You can't set them separately.)
 
 ---
 
-## Penalty Box: Exponential Backoff
+## Statuses: One Word per Model
 
-When a model fails (429, 5xx, or empty response), it goes into the **penalty box** for a duration, then gradually recovers.
+A model that fails isn't put in a "penalty box" any more. It gets exactly one
+status, and the Status page shows it with one sentence and at most one button:
 
-### How It Works
+| Status | Why | Clears |
+|---|---|---|
+| Ready | nothing wrong | — |
+| Busy | 429 or 5xx: rate limited or overloaded | on its own, at the provider's own retry time (else 60s), never doubling |
+| Struggling | empty replies or other odd failures | on its own after about an hour, or [Try now] |
+| Needs you | wrong model ID, not on your plan, balance empty, key rejected | only when you press its fix; no timer |
+| Off | you turned it off | [Turn on] |
 
-| Failure | Penalty | Next attempt |
-|---------|---------|--------------|
-| 1st | 30s | After 30s |
-| 2nd | 60s | After 60s |
-| 3rd | 120s | After 120s |
-| ... | doubles each time | ... |
-| max | 1800s (30 min) | After 30 min |
-
-Once a model is penalized, flexrouter skips it and tries the next-best model in the tier.
-
-### Recovery
-
-After the penalty expires, the model is un-penalized and available again.
+A 404 is checked against the provider's real model list: if there's a close
+match, the row says "Did you mean X?" and **[Use X]** files X as a new model
+in the same buckets and turns the old one off. Nothing is ever renamed
+without a click. See ADR 0020 and 0021.
 
 **Good for:**
-- Temporary provider outages (model recovers when provider is back)
-- Rate limit bursts (provider recovers when bucket refills)
-- Cascade failure prevention (if model is struggling, give others a chance)
+- Overloads clear by themselves and quickly: a busy model is back the moment
+  the provider says so, not after a doubling back-off.
+- Real problems don't flicker: a model that doesn't exist stays red until you
+  deal with it, instead of being retried every 24 hours.
 
 ---
 
@@ -268,7 +269,7 @@ Budgets reset at **00:00 UTC** each day. If you have multiple time zones, use UT
 
 ### View Remaining Budget
 
-Check the dashboard **Account Status** tab (or the TUI's **Overview** tab), or read `.flexrouter/health.json`:
+Check the dashboard's **Allowance** page (or the TUI's **Overview** tab), or read `.flexrouter/health.json`:
 
 ```json
 {
@@ -319,7 +320,7 @@ settings:
 
 ### Fallback on Unavailable
 
-If the pinned model becomes unavailable (penalized, rate-limited, over budget):
+If the pinned model becomes unavailable (Busy, Struggling, Needs you, over budget):
 - For that call only, flexrouter picks the next-best model
 - **The pin is NOT reset** — future calls continue using the original pinned model (if it recovers)
 
@@ -412,8 +413,8 @@ This gives you full visibility into:
 - Success vs. failure rates
 - Latency trends
 
-You don't have to open the CSV to see any of this: the dashboard's **Request
-Logs** and **Live Telemetry** tabs and the TUI's **Requests** and **Overview**
+You don't have to open the CSV to see any of this: the dashboard's
+**Requests** and **Overview** pages and the TUI's **Requests** and **Overview**
 tabs present the same data live.
 
 Use this for:
@@ -433,7 +434,7 @@ A reload that fails leaves the previously loaded settings in place and serving. 
 
 **Preserved on reload:**
 - ✅ Rate-limit windows
-- ✅ Penalty state
+- ✅ Model and key status (Busy/Struggling/Needs you)
 - ✅ Session pins
 - ✅ Audit logs
 
@@ -451,7 +452,7 @@ No restart needed. Your app stays running.
 1. **Tiers** isolate models by cost/quality. You pick per-call.
 2. **Scoring** and **thundering herd prevention** pick the best available model.
 3. **Rate limits** (RPM/TPM) are enforced locally using sliding windows.
-4. **Penalty box** with exponential backoff protects against cascading failures.
+4. **One status per model** (Ready, Busy, Struggling, Needs you, Off) replaces a penalty box — busy models clear on their own, broken ones wait for you.
 5. **Budget tracking** prevents runaway costs.
 6. **Session stickiness** pins a conversation to one model for consistency.
 7. **Error handling** gives you control: catch `RouterBusy`, `RouterError`, `ContextWindowWarning`.

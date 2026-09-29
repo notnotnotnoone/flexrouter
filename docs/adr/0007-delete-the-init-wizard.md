@@ -1,7 +1,7 @@
 # 0007. The `init` wizard is deleted, not ported
 
 Date: 2026-09-19
-Status: Accepted
+Status: Accepted. Consequences amended by ADR 0023 (a quickstart checklist replaces "hand-edit config.yaml" as the first step).
 
 ## Context
 

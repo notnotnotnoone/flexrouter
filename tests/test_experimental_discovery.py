@@ -71,7 +71,8 @@ def test_the_toggle_is_off_by_default(client):
     body = client.get("/settings").text
     row = body[body.index('id="set-auto_add_models"'):]
     row = row[:row.index("</div></div>") + 12] if "</div></div>" in row else row[:2000]
-    assert "checked" not in row.split("</form>")[0]
+    # A switch now (Session 15), not a checkbox.
+    assert 'role="switch" aria-checked="false"' in row
 
 
 def test_turning_the_toggle_on_persists_as_a_real_bool(client):

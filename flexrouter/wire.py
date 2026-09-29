@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 # A bucket every flexrouter has without being asked: every model in every
-# bucket, once each (ADR 0019). A bucket the owner names "all" wins.
+# bucket, once each (ADR 0025). A bucket the owner names "all" wins.
 ALL_BUCKET = "all"
 
 

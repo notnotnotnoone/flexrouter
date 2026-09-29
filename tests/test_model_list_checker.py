@@ -7,9 +7,9 @@ from pathlib import Path
 from flexrouter.catalogue import KNOWN_MODEL_IDS_FILENAME, did_you_mean, is_real
 from flexrouter.store import write_json
 
-GOOGLE_IDS_FILE = (
-    Path(__file__).parent / "fixtures" / "google-live-model-ids-2026-09-25.txt"
-)
+# A copy of .scratch/polish/evidence/ (untracked), so a clean checkout and
+# CI have it too.
+GOOGLE_IDS_FILE = Path(__file__).parent / "fixtures" / "google-live-model-ids-2026-09-25.txt"
 
 
 def _real_google_ids() -> list[str]:

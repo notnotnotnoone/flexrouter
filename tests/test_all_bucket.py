@@ -2,7 +2,7 @@
 
 An app that wants each of the owner's models once (Agora's one vote per
 model) asks `all` and excludes the models it has had; flexrouter still picks
-and fails over, across everything rather than inside one bucket (ADR 0019).
+and fails over, across everything rather than inside one bucket (ADR 0025).
 """
 import json
 

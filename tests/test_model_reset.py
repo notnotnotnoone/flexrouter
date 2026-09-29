@@ -128,8 +128,10 @@ def test_provider_page_has_a_danger_zone(client):
     assert 'action="/providers/groq/reset"' in body
 
 
-def test_providers_page_has_a_reset_all_danger_zone(client):
-    body = client.get("/providers").text
+def test_the_reset_all_danger_zone_lives_on_settings_not_providers(client):
+    # US-99: destructive actions aren't next to routine ones.
+    assert 'action="/providers/reset-all"' not in client.get("/providers").text
+    body = client.get("/settings").text
     assert "Danger zone" in body
     assert 'action="/providers/reset-all"' in body
 

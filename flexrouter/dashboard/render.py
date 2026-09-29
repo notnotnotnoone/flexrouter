@@ -27,8 +27,7 @@ AREAS: list[tuple[str, str, str, str]] = [
     ("buckets", "Buckets", "The router", "layers"),
     ("requests", "Requests", "Traffic", "arrows"),
     ("playground", "Playground", "Traffic", "terminal"),
-    ("broken", "What's broken", "Traffic", "alert"),
-    ("brain", "Error brain", "Traffic", "brain"),
+    ("status", "Status", "Traffic", "alert"),
     ("allowance", "Allowance", "Traffic", "meter"),
     ("settings", "Settings", "System", "settings"),
 ]
@@ -148,7 +147,12 @@ def _nav(current: str, badges: dict) -> str:
                + (tag("span", esc(f"v{version}")) if version else "")
                + tag("kbd", "Ctrl K"),
                cls="nav-foot")
-    return tag("nav", _brand() + tag("div", "".join(out), cls="nav-links") + foot, cls="nav")
+    # On a narrow screen the links fold away behind this button (app.css
+    # hides it on a wide one).
+    toggle = ('<button type="button" class="btn ghost nav-toggle" aria-expanded="false" '
+              f'aria-controls="nav-links">{ui.icon("menu")}<span>Menu</span></button>')
+    return tag("nav", _brand() + toggle
+               + tag("div", "".join(out), cls="nav-links", id="nav-links") + foot, cls="nav")
 
 
 _SHORTCUTS = [
@@ -189,7 +193,7 @@ def _live_badges() -> dict:
     try:
         from flexrouter.app import get_router
         from flexrouter.dashboard import facts
-        return {"broken": len(facts.broken(get_router())["needs_you"])}
+        return {"status": len(facts.broken(get_router())["needs_you"])}
     except Exception:  # noqa: BLE001 - a badge must never break a page
         return {}
 
@@ -217,6 +221,9 @@ def page(title: str, current: str, body: str, *, badges: dict | None = None,
         # are about to animate in are never shown and then hidden again.
         "<script>document.documentElement.classList.add('js')</script>"
         f'<link rel="preload" href="{assets.asset_url("fonts/GeistMono.woff2")}" '
+        'as="font" type="font/woff2" crossorigin>'
+        # Both fonts, so neither swaps in late and shoves the page (papercut 26).
+        f'<link rel="preload" href="{assets.asset_url("fonts/Geist.woff2")}" '
         'as="font" type="font/woff2" crossorigin>'
         f'<link rel="stylesheet" href="{assets.asset_url("app.css")}">'
         + scripts

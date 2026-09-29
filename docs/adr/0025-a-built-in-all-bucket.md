@@ -1,4 +1,4 @@
-# 0019. A built-in `all` bucket holds every model
+# 0025. A built-in `all` bucket holds every model
 
 Date: 2026-09-26
 Status: Accepted
