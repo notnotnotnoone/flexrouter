@@ -2114,6 +2114,22 @@ async def buckets_add_model(bucket: str, request: Request) -> RedirectResponse:
         "/buckets", ok=True, message=f"{fields['provider']}/{fields['model']} added")
 
 
+@pages.post("/buckets/{bucket}/models/remove", include_in_schema=False)
+async def buckets_remove_model(bucket: str, request: Request) -> Response:
+    """Drag a model out of one bucket (Undo posts `restore=1`)."""
+    form = await request.form()
+    ident = (form.get("id") or "").strip()
+    try:
+        if form.get("restore"):
+            ov.restore_model(bucket, ident)
+        else:
+            ov.remove_model(bucket, ident)
+    except ValueError as e:
+        return Response(json.dumps({"ok": False, "message": str(e)}), status_code=400,
+                        media_type="application/json")
+    return Response(json.dumps({"ok": True}), media_type="application/json")
+
+
 @pages.post("/buckets/{bucket}/strategy", include_in_schema=False)
 async def buckets_set_strategy(bucket: str, request: Request) -> RedirectResponse:
     form = await request.form()

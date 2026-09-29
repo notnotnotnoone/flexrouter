@@ -415,3 +415,34 @@ async def test_attempts_the_provider_answered_count_toward_its_limits(config_fil
     events = q._state[f"{ROUTE.provider}/{ROUTE.model}"]
     assert len(events) == 2
     assert q.failed_in_window(ROUTE.provider, ROUTE.model, "rpd") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_stream_is_not_classified_or_blamed_on_the_model(config_file, monkeypatch):
+    """The caller pressing Stop is not the model failing: no classifier call."""
+    import asyncio
+
+    router = _router(config_file)
+    monkeypatch.setattr(router._engine, "select", _select_sequence([ROUTE]))
+
+    async def hangs_after_one(route, messages, **kwargs):
+        yield StreamChunk(content="par")
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(router._client, "stream_chat",
+                        _stream_chat_sequence([hangs_after_one]))
+    classified = []
+    monkeypatch.setattr(router._error_brain, "classify",
+                        lambda *a, **k: classified.append(a))
+
+    async def consume():
+        async for _ in router.agenerate_stream(MESSAGES, tier="low"):
+            pass
+
+    task = asyncio.ensure_future(consume())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert classified == []

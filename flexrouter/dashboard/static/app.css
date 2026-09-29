@@ -957,6 +957,8 @@ table.matrix th { padding: 9px 14px; }
 }
 .bucket-name { font: 500 12px var(--mono); overflow: hidden; text-overflow: ellipsis; }
 .bucket-n { font: 400 12px var(--mono); color: var(--ink-2); text-align: right; font-variant-numeric: tabular-nums; }
+.bucket-n.is-none { color: var(--ink-3, var(--ink-2)); opacity: .5; }
+.bucket-row.is-idle .bucket-name { color: var(--ink-2); font-weight: 400; }
 .bucket-track, .bucket-fill { display: none; }
 
 /* latency */
@@ -2363,3 +2365,16 @@ html[data-motion="reduced"] :is(.is-shake, .is-shake .switch-track, .pill.is-pop
   .pill-dot.is-morph::after, .st-empty.is-clear, .st-empty.is-clear::before, .meter.is-wave i,
   .qs.is-celebrating .qs-mark, .qs-done-line:not([hidden])) { animation: none; }
 html[data-motion="reduced"] :is(.switch-track i, .st-row.is-leaving, .st-open .icon) { transition: none; }
+
+/* ── drag a model out of a bucket ──────────────────────── */
+.ladder-row { touch-action: none; cursor: grab; }
+.ladder-row.is-dragging { opacity: .4; }
+.ladder-ghost { display: grid; border: 1px solid var(--green); }
+.remove-strip {
+  position: fixed; left: 50%; bottom: 20px; z-index: 69;
+  transform: translateX(-50%);
+  padding: 10px 18px; border: 1px dashed var(--rule-2);
+  background: var(--panel); color: var(--ink-2); font: 500 12px var(--mono);
+  pointer-events: none;
+}
+.remove-strip.is-hot { border-style: solid; border-color: var(--bad); background: var(--bad-wash); color: var(--bad); }

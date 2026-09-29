@@ -16,6 +16,8 @@ and the refresh - the live view cannot drift from the served one.
 """
 from __future__ import annotations
 
+import math
+
 from datetime import datetime, timezone
 
 from flexrouter.dashboard import charts, facts, prefs, quickstart, stats, ui
@@ -361,22 +363,29 @@ def _buckets(router, window: dict, label: str) -> str:
                                           action=ui.button("Set up buckets", href="/buckets")),
                       **{"data-enter": "", "data-box": "buckets"})
     peak = max([counts.get(n, 0) for n in names] or [0])
+    # Log scale: one bucket taking most of the traffic must not squash the rest
+    # down to a single cell.
+    scale = math.log1p(peak)
     ordered = sorted(names, key=lambda n: (-counts.get(n, 0), n))
     rows = ""
     for name in ordered:
         n = counts.get(name, 0)
+        shown = (tag("span", "-", cls="bucket-n is-none", **{"data-value": n},
+                     title=f"No requests in the last {label}")
+                 if n == 0 else tag("span", num(n), cls="bucket-n", **{"data-value": n}))
         rows += tag("div",
                     tag("span", esc(name), cls="bucket-name")
-                    + ui.meter(n / peak if peak else 0, label=name, share=True)
+                    + ui.meter(math.log1p(n) / scale if scale else 0, label=name, share=True)
                     + tag("span", "", cls="spacer")
-                    + tag("span", num(n), cls="bucket-n", **{"data-value": n}),
-                    cls="bucket-row", **{"data-row": f"bucket:{name}"})
+                    + shown,
+                    cls="bucket-row" + (" is-idle" if n == 0 else ""),
+                    **{"data-row": f"bucket:{name}"})
     if pinned:
         word = "request" if pinned == 1 else "requests"
         rows += tag("p", esc(f"Plus {pinned:,} {word} that named one model instead of a bucket."),
                     cls="note", **{"data-row": "bucket:pinned", "data-value": pinned})
     return ui.box("Buckets", rows,
-                  sub=f"requests in the last {label}, against the busiest bucket",
+                  sub=f"requests in the last {label}, log scale against the busiest bucket",
                   action=ui.button("Manage", href="/buckets", kind="ghost"),
                   **{"data-enter": "", "data-box": "buckets"})
 

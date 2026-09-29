@@ -175,6 +175,37 @@ def add_model(bucket: str, fields: dict, path: Path | str | None = None) -> None
             raise ValueError(f"{required} is required")
     data = load_overrides(path)
     data.setdefault("new_models", {}).setdefault(bucket, []).append(fields)
+    ident = f"{fields['provider']}/{fields['model']}"
+    _untombstone(data, bucket, ident)
+    save_overrides(data, path)
+
+
+def _untombstone(data: dict, bucket: str, ident: str) -> None:
+    gone = (data.get("removed_models") or {}).get(bucket) or []
+    if ident in gone:
+        gone.remove(ident)
+        if not gone:
+            data["removed_models"].pop(bucket)
+        if not data["removed_models"]:
+            data.pop("removed_models")
+
+
+def remove_model(bucket: str, ident: str, path: Path | str | None = None) -> None:
+    """Take `provider/model` out of `bucket` only (it stays in every other
+    bucket). Recorded as a tombstone so it also hides models that come from
+    config.yaml or from `new_models`; `restore_model` undoes it."""
+    if not ident or "/" not in ident:
+        raise ValueError("a model looks like provider/model")
+    data = load_overrides(path)
+    gone = data.setdefault("removed_models", {}).setdefault(bucket, [])
+    if ident not in gone:
+        gone.append(ident)
+    save_overrides(data, path)
+
+
+def restore_model(bucket: str, ident: str, path: Path | str | None = None) -> None:
+    data = load_overrides(path)
+    _untombstone(data, bucket, ident)
     save_overrides(data, path)
 
 
@@ -247,6 +278,13 @@ def apply_overrides(raw: dict, ov: dict) -> dict:
         merged[bkey][bucket_name] = [
             *merged[bkey][bucket_name], *copy.deepcopy(new_entries),
         ]
+
+    for bucket_name, idents in (ov.get("removed_models") or {}).items():
+        gone = set(idents or [])
+        if bucket_name in (merged.get(bkey) or {}):
+            merged[bkey][bucket_name] = [
+                e for e in merged[bkey][bucket_name] or []
+                if f"{e.get('provider')}/{e.get('model')}" not in gone]
 
     model_ov = ov.get("models") or {}
     if model_ov:

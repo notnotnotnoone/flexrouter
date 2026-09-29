@@ -1349,6 +1349,95 @@
     }, function () { d.done(false, "couldn't reach flexrouter"); });
   });
 
+  /* ── drag a model out of a bucket ────────────────────────── */
+  /* Grab a row of a bucket's ladder and let go anywhere outside that
+     bucket's box to take it out of that bucket (only that one). Delete on a
+     focused row does the same. The toast's Undo puts it back. */
+
+  var out = null;
+
+  function removeFromBucket(row, box) {
+    var bucket = box.getAttribute("data-dropzone"), id = row.getAttribute("data-row");
+    var post = function (restore) {
+      var body = new URLSearchParams();
+      body.set("id", id);
+      if (restore) body.set("restore", "1");
+      return fetch("/buckets/" + encodeURIComponent(bucket) + "/models/remove", {
+        method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString() });
+    };
+    var refresh = function () {
+      return window.htmx
+        ? htmx.ajax("GET", location.pathname, { target: "body", swap: "innerHTML" })
+            .then(function () { boot(document, true); })
+        : (location.reload(), Promise.resolve());
+    };
+    post(false).then(function (r) {
+      if (!r.ok) { toast("Couldn't remove " + id + " from " + bucket, "bad"); return; }
+      row.remove();
+      refresh().then(function () {
+        toast("Removed " + id + " from " + bucket, "ok", { action: "Undo", onAction: function () {
+          post(true).then(refresh);
+        } });
+      });
+    }, function () { toast("Couldn't reach flexrouter", "bad"); });
+  }
+
+  document.addEventListener("pointerdown", function (e) {
+    var row = e.target.closest && e.target.closest(".ladder-row");
+    var box = row && row.closest("[data-dropzone]");
+    if (!row || !box || e.button !== 0 || e.target.closest("a, button, input, select")) return;
+    out = { row: row, box: box, x: e.clientX, y: e.clientY, id: e.pointerId, ghost: null, strip: null };
+  });
+
+  document.addEventListener("pointermove", function (e) {
+    if (!out || e.pointerId !== out.id) return;
+    var dx = e.clientX - out.x, dy = e.clientY - out.y;
+    if (!out.ghost) {
+      if (Math.abs(dx) + Math.abs(dy) < 6) return;
+      var r = out.row.getBoundingClientRect(), g = out.row.cloneNode(true);
+      g.classList.add("drag-ghost", "ladder-ghost");
+      g.setAttribute("aria-hidden", "true");
+      g.style.left = r.left + "px"; g.style.top = r.top + "px"; g.style.width = r.width + "px";
+      document.body.appendChild(g);
+      out.ghost = g;
+      out.row.classList.add("is-dragging");
+      var strip = document.createElement("div");
+      strip.className = "remove-strip";
+      strip.textContent = "Drop here to take it out of " + out.box.getAttribute("data-dropzone");
+      document.body.appendChild(strip);
+      out.strip = strip;
+    }
+    out.ghost.style.transform = "translate(" + dx + "px, " + dy + "px)";
+    var under = document.elementFromPoint(e.clientX, e.clientY);
+    out.outside = !(under && out.box.contains(under));
+    out.strip.classList.toggle("is-hot", out.outside);
+  });
+
+  function endLadderDrag(e, cancelled) {
+    if (!out || e.pointerId !== out.id) return;
+    var d = out;
+    out = null;
+    if (!d.ghost) return;
+    justDragged = true;
+    setTimeout(function () { justDragged = false; }, 0);
+    d.row.classList.remove("is-dragging");
+    d.ghost.remove();
+    d.strip.remove();
+    if (d.outside && !cancelled) removeFromBucket(d.row, d.box);
+  }
+  document.addEventListener("pointerup", function (e) { endLadderDrag(e, false); });
+  document.addEventListener("pointercancel", function (e) { endLadderDrag(e, true); });
+
+  document.addEventListener("keydown", function (e) {
+    var row = e.target.closest && e.target.closest(".ladder-row");
+    var box = row && row.closest("[data-dropzone]");
+    if (row && box && (e.key === "Delete" || e.key === "Backspace")) {
+      e.preventDefault();
+      removeFromBucket(row, box);
+    }
+  });
+
   /* ── the status list ─────────────────────────────────────── */
 
   /* Open a row's detail from anywhere on the row; the chevron button is

@@ -209,6 +209,8 @@ class LocalRouter:
 
     async def _classify(self, text: str, status: Optional[int], route, trace_id: str,
                         exc: Optional[BaseException] = None):
+        if text.startswith("Cancelled via cancel scope"):
+            return ErrorVerdict(verdict="unknown", source="cancelled", confidence=0.0)
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(
@@ -1055,6 +1057,22 @@ class LocalRouter:
                         reasoning_acc.append(flush_reasoning)
                         any_yielded = True
                         yield ReasoningDeltaEvent(text=flush_reasoning)
+                except (asyncio.CancelledError, GeneratorExit) as exc:
+                    # The caller went away (Stop, closed tab, Compare tearing
+                    # down its siblings). That says nothing about the model, so
+                    # it is not classified, not learned from, and moves no status.
+                    attempts.append({"n": attempt + 1, "provider": route.provider,
+                                     "model": route.model, "status": None,
+                                     "provider_message": "cancelled by the caller",
+                                     "key_id": key_id, "verdict": "cancelled",
+                                     "waited_ms": waited_ms,
+                                     "ms": int((time.monotonic() - start) * 1000)})
+                    _write_trace(
+                        ok=False,
+                        ms_to_first_token=(
+                            int((first_token_at - start) * 1000) if first_token_at else None),
+                    )
+                    raise
                 except BaseException as exc:
                     verdict = await self._classify(str(exc), getattr(exc, "status_code", None), route, trace_id, exc)
                     if vision and verdict.verdict in ("bad_request", "model_gone") and \

@@ -59,7 +59,8 @@ def _row(rank: int, row, top: float, cut: float | None, strategy: str) -> str:
                + tag("span", shown, cls="ladder-score")
                + tag("span", esc(word), cls=f"status status-{state} ladder-word",
                      title=row.detail or ""),
-               cls=f"ladder-row is-{state}",
+               cls=f"ladder-row is-{state}", tabindex="0",
+               title="Drag out of this bucket (or press Delete) to remove it",
                **{"data-row": f"{row.provider}/{row.model}", "data-value": f"{value}/{state}"})
 
 
