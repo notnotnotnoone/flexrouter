@@ -2,8 +2,10 @@
 already handling. Each card says what is wrong in plain words and carries
 the one button that fixes it; "handling it" cards count down to recovery.
 
-An unclear error is fixed right on its card: Resolve opens the verdict
-chips, and one click saves the owner's answer to the Error brain.
+An unclear error and a model that needs you are fixed right on their
+card: Resolve opens the options, and one click saves the answer - a
+verdict to the Error brain, or retry / turn off / use-the-new-name for
+the model.
 """
 from __future__ import annotations
 
@@ -36,19 +38,42 @@ def _explain_button(prompt: str, label: str, ident: str, small: bool = False) ->
                               "title": "Copy a prompt that explains this to a chatbot"})
 
 
+def _button(field: str, value: str, body: str, guess: bool) -> str:
+    """One option chip: a submit button carrying field=value."""
+    extra = {"title": "flexrouter's best guess"} if guess else {}
+    cls = "verdict-chip" + (" is-guess" if guess else "")
+    # Written out, not tag(): `name` is tag()'s own first parameter.
+    return (f'<button type="submit" name="{field}"'
+            f'{attrs({"value": value, "class": cls, **extra})}>{body}{_CHECK}</button>')
+
+
+def _hidden(field: str, value: str) -> str:
+    return f'<input type="hidden"{attrs({"name": field, "value": value})}>'
+
+
+def _star(on: bool) -> str:
+    return tag("span", "★", cls="chip-star", **{"aria-hidden": "true"}) if on else ""
+
+
 def _chip(verdict: str, guess: str, probs: dict) -> str:
     p = float(probs.get(verdict) or 0)
-    star = tag("span", "★", cls="chip-star", **{"aria-hidden": "true"}) if verdict == guess else ""
-    body = tag("span", star + esc(VERDICT_LABELS.get(verdict, verdict)), cls="chip-name")
+    body = tag("span", _star(verdict == guess) + esc(VERDICT_LABELS.get(verdict, verdict)),
+               cls="chip-name")
     if p > 0:          # an answer the classifier never weighed shows no number
         body += tag("span", esc(f"{p:.0%}"), cls="chip-pct n")
         body += tag("span", tag("i", "", style=f"--p:{p:.3f}", **{"data-p": f"{p:.3f}"}),
                     cls="chip-bar", **{"aria-hidden": "true"})
-    extra = {"title": "flexrouter's best guess"} if verdict == guess else {}
-    # Written out, not tag(): `name` is tag()'s own first parameter.
-    cls = "verdict-chip" + (" is-guess" if verdict == guess else "")
-    return (f'<button type="submit" name="verdict"'
-            f'{attrs({"value": verdict, "class": cls, **extra})}>{body}{_CHECK}</button>')
+    return _button("verdict", verdict, body, verdict == guess)
+
+
+def _panel(ident: str, question: str, more: tuple, form: str, lead: str = "") -> str:
+    """The fold-out under a card: a question, a way out, and the options."""
+    head = tag("div", tag("span", esc(question), cls="resolver-q")
+               + tag("span", "", cls="spacer")
+               + tag("a", esc(more[0]), href=more[1], cls="resolver-more"),
+               cls="resolver-head")
+    return tag("div", tag("div", lead + head + form, cls="resolver"),
+               id=ident, cls="resolver-wrap", inert="")
 
 
 def _resolver(item, entry, ident: str) -> str:
@@ -72,15 +97,52 @@ def _resolver(item, entry, ident: str) -> str:
                      **{"aria-label": "What this error means"}),
                method="post", action=f"/brain/{quote(item.fp, safe='')}/verdict",
                cls="resolver-form", **{"data-resolve": ""})
-    head = tag("div", tag("span", "What does this mean?", cls="resolver-q")
-               + tag("span", "", cls="spacer")
-               + tag("a", "Full details in Error brain", href="/brain", cls="resolver-more"),
-               cls="resolver-head")
-    return tag("div",
-               tag("div", (tag("pre", esc(raw), cls="resolver-sample") if raw else "")
-                   + head + form,
-                   cls="resolver"),
-               id=ident, cls="resolver-wrap", inert="")
+    lead = tag("pre", esc(raw), cls="resolver-sample") if raw else ""
+    return _panel(ident, "What does this mean?", ("Full details in Error brain", "/brain"),
+                  form, lead)
+
+
+# What a model that needs you can have done to it, right from its card.
+# value -> (label, one line on what it does)
+_MODEL_FIXES = {
+    "retry": ("Try it again", "Back to Ready. The next request tests it."),
+    "off": ("Turn it off", "Stop routing to it. Undo from Models."),
+}
+
+
+def _model_resolver(item, ident: str) -> str:
+    """The options for one model that needs you, the likeliest fix first.
+
+    A did-you-mean suggestion leads when there is one; a model whose
+    provider isn't set up can't be retried, so it offers the setup page.
+    """
+    suggested = (item.action or "").removeprefix("use:") if (item.action or "").startswith("use:") else ""
+    no_provider = item.cause == "no_provider"
+    chips = []
+    if suggested:
+        chips.append(_button("do", "use", tag("span", _star(True) + esc(f"Use {suggested}")
+                             + tag("span", "The provider's current name for it.", cls="chip-hint"),
+                             cls="chip-name"), True))
+    if no_provider:
+        chips.append(tag("a", tag("span", _star(True) + esc(f"Set up {item.provider}")
+                         + tag("span", "Add its key; the model starts working.", cls="chip-hint"),
+                         cls="chip-name"),
+                         href="/providers", cls="verdict-chip is-guess"))
+    guess = "" if suggested or no_provider else ("off" if item.action == "remove" else "retry")
+    for value in (("off",) if no_provider else ("retry", "off")):
+        label, hint = _MODEL_FIXES[value]
+        chips.append(_button("do", value, tag("span", _star(value == guess) + esc(label)
+                             + tag("span", esc(hint), cls="chip-hint"), cls="chip-name"),
+                             value == guess))
+    if guess == "off":      # the likeliest fix goes first
+        chips.reverse()
+    form = tag("form",
+               _hidden("provider", item.provider) + _hidden("model", item.model)
+               + tag("div", "".join(chips), cls="verdict-chips is-wide", role="group",
+                     **{"aria-label": "What to do about this model"}),
+               method="post", action="/broken/model",
+               cls="resolver-form", **{"data-resolve": ""})
+    return _panel(ident, "What should happen to it?", ("Open in Models", "/models_catalog"), form)
 
 
 def _card(item, prompt: str = "", n: int = 0, entry=None) -> str:
@@ -97,12 +159,15 @@ def _card(item, prompt: str = "", n: int = 0, entry=None) -> str:
         label, href = _FIX[item.kind]
         fix = ui.button(label, href=href.format(p=quote(item.provider or "")),
                         kind="primary" if item.pile == "you" else "ghost")
+    panel = f"resolve-{n}"
     if item.kind == "unclear_error" and item.fp:
-        panel = f"resolve-{n}"
+        resolver = _resolver(item, entry, panel)
+    elif item.kind == "model_needs_you" and item.model:
+        resolver = _model_resolver(item, panel)
+    if resolver:
         fix = ui.button("Resolve", kind="primary",
                         **{"data-resolve-toggle": "", "aria-expanded": "false",
                            "aria-controls": panel})
-        resolver = _resolver(item, entry, panel)
     wait = ui.countdown(item.until, prefix="Back in") if item.until else ""
     ask = _explain_button(prompt, "Explain with AI", f"explain-{n}", small=True)
     foot = tag("div", since + wait + tag("span", "", cls="spacer") + ask + fix, cls="card-foot")

@@ -1034,6 +1034,9 @@ table.log td { padding: 8px 12px; }
 .verdict-chip.is-guess { color: var(--ink); border-color: rgba(52, 211, 153, .45); background: var(--green-wash); }
 .chip-name { flex: 1; min-width: 0; white-space: normal; line-height: 1.35; }
 .chip-star { color: var(--green); margin-right: 6px; }
+.chip-hint { display: block; margin-top: 2px; font: 400 11px/1.35 var(--sans); color: var(--ink-3); }
+.verdict-chips.is-wide { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+a.verdict-chip { text-decoration: none; }
 .chip-pct { flex: none; font-size: 11px; color: var(--ink-3); transition: opacity 120ms ease; }
 .chip-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--rule); }
 .chip-bar i { --p: 0; display: block; height: 100%; background: var(--ink-3); transform-origin: left; transform: scaleX(var(--p)); }

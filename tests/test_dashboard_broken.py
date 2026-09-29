@@ -119,3 +119,87 @@ def test_the_error_brain_form_still_goes_back_to_the_error_brain(client):
     fp = _unclear()
     r = client.post(f"/brain/{fp}/verdict", data={"verdict": "bad_key"}, follow_redirects=False)
     assert r.headers["location"].startswith("/brain?ok=1")
+
+
+def test_a_fingerprint_with_a_slash_still_saves(client):
+    """The fingerprint is the error's own words; "mistral/codestral" has a
+    slash the server decodes before routing. It must still reach the save."""
+    brain = app_module.get_router()._error_brain
+    brain._decider = _Unsure()
+    brain.classify("from mistral/codestral-embed: the quota widget is sulking", None)
+    [fp] = [fp for fp, e in brain._entries.items() if e.flagged_for_review]
+    assert "/" in fp
+    from urllib.parse import quote
+    r = client.post(f"/brain/{quote(fp, safe='')}/verdict", data={"verdict": "bad_key"},
+                    headers={"Accept": "application/json"})
+    assert r.status_code == 200, r.text
+    assert brain._entries[fp].verdict == "bad_key"
+
+
+# ── Fixing a model that needs you, in place ───────────────────────────
+
+M = "llama-3.1-8b-instant"
+
+
+def _gone(action=None):
+    app_module.get_router()._status.set_needs_you(
+        "groq", M, "The provider says this model is gone.", kind="gone", action=action)
+
+
+def _fix(client, do):
+    return client.post("/broken/model", data={"provider": "groq", "model": M, "do": do},
+                       headers={"Accept": "application/json"})
+
+
+def test_a_model_that_needs_you_has_options_on_its_card(client):
+    _gone(action="retry")
+    body = client.get("/broken").text
+    assert "data-resolve-toggle" in body
+    assert 'action="/broken/model"' in body
+    assert body.index('value="retry"') < body.index('value="off"')
+    assert 'name="do" value="retry" class="verdict-chip is-guess"' in body
+
+
+def test_a_did_you_mean_leads_with_the_new_name(client):
+    _gone(action="use:llama-3.3-8b-instant")
+    body = client.get("/broken").text
+    assert "Use llama-3.3-8b-instant" in body
+    assert body.index('value="use"') < body.index('value="retry"')
+
+
+def test_try_again_puts_the_model_back_to_ready(client):
+    _gone(action="retry")
+    r = _fix(client, "retry")
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert app_module.get_router()._status.get("groq", M).value == "ready"
+    assert "data-resolve-toggle" not in client.get("/broken").text
+
+
+def test_turn_it_off_takes_it_out_of_routing(client):
+    _gone(action="retry")
+    r = _fix(client, "off")
+    assert r.status_code == 200 and r.json()["ok"] is True
+    from flexrouter.overrides import load_overrides
+    assert load_overrides()["models"][f"groq/{M}"]["enabled"] is False
+
+
+def test_use_without_a_suggestion_says_why(client):
+    _gone(action="retry")
+    r = _fix(client, "use")
+    assert r.status_code == 400
+    assert "no suggested replacement" in r.json()["message"]
+
+
+def test_use_swaps_in_the_suggested_model(client):
+    _gone(action="use:llama-3.3-8b-instant")
+    r = _fix(client, "use")
+    assert r.status_code == 200, r.text
+    models = [m.model for ms in app_module.get_router()._cfg.tiers.values() for m in ms]
+    assert "llama-3.3-8b-instant" in models and M not in models
+
+
+def test_an_unknown_model_is_a_clear_no(client):
+    r = client.post("/broken/model", data={"provider": "groq", "model": "nope", "do": "retry"},
+                    headers={"Accept": "application/json"})
+    assert r.status_code == 404
+    assert "no longer in any bucket" in r.json()["message"]

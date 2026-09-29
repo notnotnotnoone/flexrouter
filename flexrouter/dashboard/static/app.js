@@ -1134,14 +1134,19 @@
     chip.classList.add("is-picked");
     if (card) card.setAttribute("data-resolving", "");
     var data = new FormData(form);
-    data.set("verdict", chip.value);
+    data.set(chip.name, chip.value);
     var save = fetch(form.action, {
       method: "POST", body: data, credentials: "same-origin",
       headers: { Accept: "application/json" }
+    }).catch(function () {
+      throw new Error("The dashboard server didn't answer. Is it still running?");
     }).then(function (res) {
       return res.json().catch(function () { return {}; }).then(function (j) {
-        if (!res.ok || !j.ok) throw new Error(j.message || "Could not save that answer.");
-        return j;
+        if (res.ok && j.ok) return j;
+        /* Say what went wrong: our own message, else the server's, else the code. */
+        var why = j.message || j.error || (typeof j.detail === "string" && j.detail);
+        throw new Error(why ? "Not saved: " + why
+                            : "Not saved: the server answered " + res.status + ".");
       });
     });
     /* Let the flood and the check finish before the card goes. */
@@ -1168,7 +1173,7 @@
       setResolver(toggle, toggle.getAttribute("aria-expanded") !== "true", e);
       return;
     }
-    var chip = e.target.closest(".verdict-chip");
+    var chip = e.target.closest("button.verdict-chip");   /* a link chip just goes */
     var form = chip && chip.closest("form[data-resolve]");
     if (!form || !window.fetch) return;   /* the plain form post still works */
     e.preventDefault();

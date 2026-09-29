@@ -1973,7 +1973,10 @@ def brain_page(ok: str = "", message: str = "") -> HTMLResponse:
                              brain_page_mod.body(_live_router(), _message_banner(ok, message))))
 
 
-@pages.post("/brain/{fp}/verdict", include_in_schema=False)
+# `:path`: a fingerprint is the error's own words and often holds a "/"
+# ("mistral/codestral-embed: invalid model"), which the server decodes
+# before routing - a plain {fp} would never match those.
+@pages.post("/brain/{fp:path}/verdict", include_in_schema=False)
 async def brain_correct(fp: str, request: Request) -> Response:
     """Correct what one learned error means. Stored as the owner's own
     answer, which nothing afterwards overrules.
@@ -1984,21 +1987,57 @@ async def brain_correct(fp: str, request: Request) -> Response:
     form = await request.form()
     verdict = str(form.get("verdict", ""))
     back = "/broken" if form.get("next") == "/broken" else "/brain"
-    wants_json = "application/json" in request.headers.get("accept", "")
-
-    def answer(ok: bool, message: str, code: int = 200) -> Response:
-        if wants_json:
-            return JSONResponse({"ok": ok, "message": message}, status_code=code)
-        return _redirect_with_message(back, ok, message)
-
     try:
         _live_router()._error_brain.correct(fp, verdict)
     except KeyError:
-        return answer(False, "That error is no longer on record.", 404)
+        return _answer(request, back, False, "That error is no longer on record.", 404)
     except ValueError as exc:
-        return answer(False, str(exc), 400)
+        return _answer(request, back, False, str(exc), 400)
     label = brain_page_mod.LABELS.get(verdict, verdict)
-    return answer(True, f"Saved: that error now means \"{label}\".")
+    return _answer(request, back, True, f"Saved: that error now means \"{label}\".")
+
+
+def _answer(request: Request, back: str, ok: bool, message: str, code: int = 200) -> Response:
+    """JSON for What's broken's in-place saves, a redirect for a plain post."""
+    if "application/json" in request.headers.get("accept", ""):
+        return JSONResponse({"ok": ok, "message": message}, status_code=200 if ok else code)
+    return _redirect_with_message(back, ok, message)
+
+
+@pages.post("/broken/model", include_in_schema=False)
+async def broken_model_fix(request: Request) -> Response:
+    """A model that needs you, fixed from its card on What's broken:
+    `do=retry` puts it back to Ready, `do=off` stops routing to it, and
+    `do=use` swaps in the catalogue's did-you-mean id. The suggestion is
+    read from the model's own live status, never from the form."""
+    form = await request.form()
+    provider, model = str(form.get("provider", "")), str(form.get("model", ""))
+    do = str(form.get("do", ""))
+    router = _live_router()
+    ident = f"{provider}/{model}"
+    if not any(m.provider == provider and m.model == model
+               for models in router._cfg.tiers.values() for m in models):
+        return _answer(request, "/broken", False, f"{ident} is no longer in any bucket.", 404)
+    try:
+        if do == "retry":
+            router._status.clear(provider, model)
+            message = f"{ident} is back to Ready; the next request tries it."
+        elif do == "off":
+            settings_write.set_model_fields(provider, model, {"enabled": False})
+            message = f"{ident} is off. Turn it back on from Models."
+        elif do == "use":
+            action = router._status.get(provider, model).action or ""
+            if not action.startswith("use:"):
+                raise ValueError(f"{ident} has no suggested replacement right now")
+            suggested = action.removeprefix("use:")
+            settings_write.use_suggested_model(router._cfg, provider, model, suggested)
+            router.reload()
+            message = f"Now using {provider}/{suggested} in place of {model}."
+        else:
+            raise ValueError(f"unknown fix {do!r}")
+    except ValueError as exc:
+        return _answer(request, "/broken", False, str(exc), 400)
+    return _answer(request, "/broken", True, message)
 
 
 @pages.get("/allowance", response_class=HTMLResponse, include_in_schema=False)
