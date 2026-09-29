@@ -339,3 +339,14 @@ def test_clock_names_the_day_only_when_it_is_not_today():
     assert "Sep" in clock("2026-09-20T12:00:00Z", now=now)
     assert "2025" in clock("2025-09-20T12:00:00Z", now=now)
     assert clock(0.0, now=now)[-5:].count(":") == 1               # epoch seconds work too
+
+
+def test_bucket_meters_are_log_scaled_and_empty_buckets_are_dashes(client, state_dir):
+    import math
+    from flexrouter.dashboard import ui
+    _seed(state_dir, [_row(1)])
+    body = client.get("/").text
+    assert "log scale" in body
+    # 14 of 362 lit one cell on a linear scale; on a log scale it is legible.
+    lit = ui.meter(math.log1p(14) / math.log1p(362), share=True).count('class="on"')
+    assert lit >= 9

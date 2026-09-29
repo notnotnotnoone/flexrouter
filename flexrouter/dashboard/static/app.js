@@ -944,15 +944,9 @@
     return (sys ? [{ role: "system", content: sys }] : []).concat(real);
   }
 
-  function copyText(text, what) {
-    var done = function () { toast("Copied " + what, "ok"); };
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done);
-    else {
-      var t = document.createElement("textarea");
-      t.value = text; document.body.appendChild(t); t.select();
-      try { document.execCommand("copy"); done(); } catch (err) { /* nothing to do */ }
-      t.remove();
-    }
+  function copyChat(text, what) {
+    copyText(text).then(function () { toast("Copied " + what, "ok"); },
+                        function (err) { toast(err.message, "bad"); });
   }
 
   function actions(b, idx) {
@@ -965,7 +959,7 @@
       bar.appendChild(x);
     };
     var m = chat.msgs[idx], last = idx === chat.msgs.length - 1;
-    if (m.content) add("Copy", function () { copyText(m.content, "the message"); });
+    if (m.content) add("Copy", function () { copyChat(m.content, "the message"); });
     if (m.role === "assistant" && last && !aborter) add("Regenerate", function () {
       chat.msgs.pop(); send({ regen: true });
     });
@@ -1005,7 +999,7 @@
       if (pre.querySelector(".pg-copy")) return;
       var x = document.createElement("button");
       x.type = "button"; x.className = "pg-copy"; x.textContent = "Copy";
-      x.addEventListener("click", function () { copyText(pre.querySelector("code").textContent, "the code"); });
+      x.addEventListener("click", function () { copyChat(pre.querySelector("code").textContent, "the code"); });
       pre.appendChild(x);
     });
   }

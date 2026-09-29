@@ -4,6 +4,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-09-29
+
+### Added
+
+- **Drag a model out of a bucket to remove it** (or press Delete on its row).
+  Only that bucket loses it; Undo puts it back. Recorded as `removed_models`
+  in `overrides.json`.
+- **Chat** (the Playground, renamed; `/playground` redirects) now keeps
+  history on the machine (`state/chats/`): a chat list with search, rename,
+  delete with Undo, Stop, Regenerate, Edit last message, Copy on replies and
+  code blocks, and Export as Markdown.
+
+### Changed
+
+- The Overview's Buckets meters use a log scale, so one busy bucket no longer
+  flattens the rest; a bucket with no requests shows a dim dash instead of 0.
+
+### Fixed
+
+- A caller cancelling a stream (Stop, closed tab, Compare tearing down) was
+  recorded as a provider failure and sent to the paid classifier, filling
+  Status with "Unknown" entries. It is now a plain cancelled attempt: no
+  classifier call, no status change.
+
 ## [2.3.0] - 2026-09-27
 
 The honesty and polish release: errors say what really happened, failover

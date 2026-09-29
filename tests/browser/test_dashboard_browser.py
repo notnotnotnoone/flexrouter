@@ -22,7 +22,7 @@ def _write_trace(trace: dict):
 
 
 def test_every_page_loads_without_a_script_error(page, server, errors):
-    for path in ["/", "/providers", "/models_catalog", "/buckets", "/requests", "/playground",
+    for path in ["/", "/providers", "/models_catalog", "/buckets", "/requests", "/chat",
                  "/status", "/allowance", "/settings"]:
         page.goto(server + path)
         expect(page.locator(".page-title")).to_be_visible()
@@ -114,7 +114,7 @@ def test_a_preset_opens_in_the_side_panel(page, server):
 
 
 def test_the_playground_shows_the_message_it_sends(page, server):
-    page.goto(server + "/playground")
+    page.goto(server + "/chat")
     page.fill("#pg-input", "hello")
     page.keyboard.press("Enter")
     expect(page.locator(".pg-user .pg-text")).to_have_text("hello")
@@ -232,7 +232,7 @@ def test_a_dangerous_reset_offers_undo(page, server, errors):
 def test_no_page_is_wider_than_the_window(page, server, width):
     page.set_viewport_size({"width": width, "height": 800})
     for path in ["/", "/providers", "/providers/groq", "/models_catalog", "/buckets",
-                 "/requests", "/allowance", "/settings", "/playground"]:
+                 "/requests", "/allowance", "/settings", "/chat"]:
         page.goto(server + path)
         extra = page.evaluate("document.documentElement.scrollWidth - innerWidth")
         assert extra <= 0, f"{path} is {extra}px wider than a {width}px window"
