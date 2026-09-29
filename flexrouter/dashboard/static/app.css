@@ -1512,7 +1512,7 @@ tbody tr.m-detail:hover td { background: var(--ground); }
 .ladder { display: flex; flex-direction: column; }
 .ladder-row {
   display: grid;
-  grid-template-columns: 22px minmax(0, 220px) minmax(0, 1fr) 34px 150px;
+  grid-template-columns: 22px minmax(60px, 220px) minmax(40px, 1fr) minmax(34px, 130px) minmax(90px, 150px);
   gap: 12px;
   align-items: center;
   padding: 8px 0;
@@ -1527,8 +1527,8 @@ tbody tr.m-detail:hover td { background: var(--ground); }
 .ladder-idle { background: var(--rule-2); }
 .ladder-bad { background: repeating-linear-gradient(135deg, rgba(248, 113, 113, .35) 0 3px, transparent 3px 6px); }
 .ladder-cut { position: absolute; top: -4px; bottom: -4px; width: 1px; background: var(--ink-2); }
-.ladder-score { font: 500 12px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
-.ladder-word { justify-self: start; }
+.ladder-score { font: 500 12px var(--mono); text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: break-word; }
+.ladder-word { justify-self: start; white-space: normal; overflow-wrap: break-word; min-width: 0; }
 .inline-form { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
 .inline-form select { font-size: 12px; padding: 5px 8px; }
 .try-result:empty { display: none; }
