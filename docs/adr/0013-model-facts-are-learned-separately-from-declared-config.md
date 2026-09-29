@@ -1,7 +1,7 @@
 # 0013. Model facts are learned, separately from declared config
 
 Date: 2026-09-21
-Status: Accepted
+Status: Accepted. Its rule that a bare 400 is `bad_request` at confidence 1.0 is overturned by ADR 0020 whenever a classifier is configured.
 
 ## Context
 

@@ -1,7 +1,7 @@
 # 0012. The error brain classifies; it does not decide
 
 Date: 2026-09-21
-Status: Accepted
+Status: Superseded by ADR 0020. The verdict now drives status and failover. Kept as the record of why the first stage was observability-only.
 
 ## Context
 

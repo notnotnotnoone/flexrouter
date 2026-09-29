@@ -1,7 +1,7 @@
 # 0014. Catalogue refresh runs on startup; applying a pending change is deferred
 
 Date: 2026-09-21
-Status: Accepted
+Status: Accepted. Amended by ADR 0021: only the model-id read runs on every start (the full check is opt-in), and the apply mechanism this ADR deferred now exists, driven by clicks.
 
 ## Context
 

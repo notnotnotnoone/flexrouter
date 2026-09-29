@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from html import escape
 
-# (slug, label, group, icon) for the nine areas, in the order they appear in
+# (slug, label, group, icon) for the ten areas, in the order they appear in
 # the menu. The group is the heading a slug sits under; the icon is a name
 # in `ui.ICONS`.
 AREAS: list[tuple[str, str, str, str]] = [
