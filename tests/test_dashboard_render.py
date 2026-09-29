@@ -48,7 +48,7 @@ def test_areas_lists_all_nine_in_menu_order():
     slugs = [slug for slug, _, _, _ in render.AREAS]
     assert slugs == [
         "overview", "providers", "models", "buckets",
-        "requests", "playground", "status", "allowance", "settings",
+        "requests", "chat", "status", "allowance", "settings",
     ]
 
 

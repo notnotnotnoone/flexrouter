@@ -1,7 +1,8 @@
-"""The Playground: talk to a bucket or one model through flexrouter itself.
+"""Chat: talk to a bucket or one model through flexrouter itself.
 
-Laid out like an AI provider's playground - settings on the left, chat on
-the right. Messages go through the same in-process path as
+Saved conversations on the left, the chat in the middle, settings on the
+right. History lives on the machine (flexrouter/chats.py) and is loaded by
+app.js through /chat/api/*. Messages go through the same in-process path as
 /v1/chat/completions (app._stream_chat), so they are real traffic: they
 show up on Requests, the Overview and Allowance like any app's. After the
 answer, one extra event says who answered, so each reply can carry an
@@ -52,7 +53,7 @@ def _field(label: str, control: str, hint: str = "") -> str:
 
 
 def body(router) -> str:
-    head = tag("div", tag("div", tag("h1", "Playground", cls="page-title")
+    head = tag("div", tag("div", tag("h1", "Chat", cls="page-title")
                           + tag("p", "Real requests through flexrouter. They count like any "
                                      "app's.", cls="page-status"), cls="page-head-text"),
                cls="page-head")
@@ -88,10 +89,24 @@ def body(router) -> str:
                             "The model stops as soon as it produces any of these."),
                    cls="pg-settings", id="pg-settings", onsubmit="return false",
                    **{"hx-boost": "false"})
+    rail = tag("aside",
+               tag("button", "New chat", type="button", id="pg-new", cls="primary-btn")
+               + '<input type="search" id="pg-search" placeholder="Search chats" '
+                 'aria-label="Search chats" autocomplete="off">'
+               + tag("div", "", id="pg-list", cls="pg-list"),
+               cls="pg-rail")
+    toolbar = tag("div",
+                  tag("button", "New chat", type="button", id="pg-title", cls="pg-title-btn",
+                      title="Click to rename")
+                  + tag("span", "", cls="spacer")
+                  + tag("button", "Export", type="button", id="pg-export", cls="ghost-btn")
+                  + tag("button", "Delete", type="button", id="pg-delete", cls="ghost-btn"),
+                  cls="pg-toolbar")
     chat = tag("div",
-               tag("div",
-                   ui.empty("Your conversation will appear here. Nothing is saved: "
-                            "clearing or leaving the page forgets it."),
+               toolbar
+               + tag("div",
+                   ui.empty("Ask something below. Chats are saved on this machine, "
+                            "and the list on the left brings them back."),
                    cls="pg-log", id="pg-log", **{"aria-live": "polite"})
                + tag("form",
                      '<textarea id="pg-input" rows="3" placeholder="Ask anything" '
@@ -99,12 +114,13 @@ def body(router) -> str:
                      + tag("div",
                            tag("span", "Enter to send, Shift+Enter for a new line", cls="n")
                            + tag("span", "", cls="spacer")
-                           + tag("button", "Clear", type="button", id="pg-clear", cls="ghost-btn")
+                           + tag("button", "Stop", type="button", id="pg-stop-btn",
+                                 cls="ghost-btn", hidden=True)
                            + tag("button", "Send", type="submit", id="pg-send", cls="primary-btn"),
                            cls="pg-actions"),
                      cls="pg-composer", id="pg-composer",
                      # app.js sends this itself; htmx must not turn it into a navigation
                      **{"hx-boost": "false"}),
                cls="pg-chat")
-    return head + tag("div", ui.box("Settings", settings, **{"data-enter": ""}) + chat,
+    return head + tag("div", rail + chat + ui.box("Settings", settings, **{"data-enter": ""}),
                       cls="pg-layout")

@@ -1264,10 +1264,56 @@ def _service_keys_section() -> str:
     )
 
 
-@pages.get("/playground", response_class=HTMLResponse, include_in_schema=False)
-def playground_page() -> HTMLResponse:
-    from flexrouter.dashboard import playground_page as pg
-    return HTMLResponse(page("Playground", "playground", pg.body(_live_router())))
+@pages.get("/chat", response_class=HTMLResponse, include_in_schema=False)
+def chat_page() -> HTMLResponse:
+    from flexrouter.dashboard import chat_page as pg
+    return HTMLResponse(page("Chat", "chat", pg.body(_live_router())))
+
+
+@pages.get("/playground", include_in_schema=False)
+def playground_moved() -> RedirectResponse:
+    """The Chat page's old name: bookmarks keep working."""
+    return RedirectResponse("/chat", status_code=308)
+
+
+@pages.get("/chat/api/chats", include_in_schema=False)
+def chats_list(q: str = "") -> JSONResponse:
+    from flexrouter import chats
+    return JSONResponse({"chats": chats.listing(q)})
+
+
+@pages.get("/chat/api/chats/{chat_id}", include_in_schema=False)
+def chats_get(chat_id: str) -> JSONResponse:
+    from flexrouter import chats
+    doc = chats.get(chat_id)
+    if not doc:
+        return JSONResponse({"error": "no such chat"}, status_code=404)
+    return JSONResponse(doc)
+
+
+@pages.post("/chat/api/chats/{chat_id}", include_in_schema=False)
+async def chats_save(chat_id: str, request: Request) -> JSONResponse:
+    from flexrouter import chats
+    try:
+        doc = chats.save(chat_id, await request.json())
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    return JSONResponse({"id": doc["id"], "title": doc["title"]})
+
+
+@pages.post("/chat/api/chats/{chat_id}/rename", include_in_schema=False)
+async def chats_rename(chat_id: str, request: Request) -> JSONResponse:
+    from flexrouter import chats
+    body = await request.json()
+    if not chats.rename(chat_id, str(body.get("title") or "")):
+        return JSONResponse({"error": "couldn't rename"}, status_code=400)
+    return JSONResponse({"ok": True})
+
+
+@pages.delete("/chat/api/chats/{chat_id}", include_in_schema=False)
+def chats_delete(chat_id: str) -> JSONResponse:
+    from flexrouter import chats
+    return JSONResponse({"ok": chats.delete(chat_id)})
 
 
 def _compare_targets(router, target: str) -> list[str]:
@@ -1310,7 +1356,8 @@ def _compare_targets(router, target: str) -> list[str]:
     return pins
 
 
-@pages.post("/playground/chat", include_in_schema=False)
+@pages.post("/playground/chat", include_in_schema=False)  # old name
+@pages.post("/chat/send", include_in_schema=False)
 async def playground_chat(request: Request):
     """Stream one Playground turn through the same in-process path /v1 uses.
 
@@ -1381,7 +1428,7 @@ async def playground_chat(request: Request):
 
     async def stream_single():
         async for piece in _stream_chat(router, messages, tier, target, kwargs, new_trace_id(),
-                                        {"client": "playground"}):
+                                        {"client": "chat"}):
             yield piece
         last = facts.recent_requests(router, limit=1)
         if last:
@@ -1398,7 +1445,7 @@ async def playground_chat(request: Request):
 
         async def run_one(pin: str) -> None:
             async for piece in _stream_chat(router, messages, pin, pin, kwargs, new_trace_id(),
-                                            {"client": "playground"}):
+                                            {"client": "chat"}):
                 await queue.put(piece)
             info = await one_target_trace(pin)
             await queue.put(f"event: flexrouter\ndata: {json.dumps(info)}\n\n")

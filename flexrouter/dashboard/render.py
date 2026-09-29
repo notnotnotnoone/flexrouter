@@ -26,7 +26,7 @@ AREAS: list[tuple[str, str, str, str]] = [
     ("models", "Models", "The router", "boxes"),
     ("buckets", "Buckets", "The router", "layers"),
     ("requests", "Requests", "Traffic", "arrows"),
-    ("playground", "Playground", "Traffic", "terminal"),
+    ("chat", "Chat", "Traffic", "terminal"),
     ("status", "Status", "Traffic", "alert"),
     ("allowance", "Allowance", "Traffic", "meter"),
     ("settings", "Settings", "System", "settings"),

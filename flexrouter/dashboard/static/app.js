@@ -809,11 +809,9 @@
     });
   }
 
-  /* ── the Playground ──────────────────────────────────────── */
+  /* ── Chat ──────────────────────────────────────── */
   /* The conversation lives only in this page; the settings column is
      remembered per browser. Replies stream in as the model writes them. */
-
-  var convo = [];
 
   function remember(el) {
     try {
@@ -869,26 +867,6 @@
     return fold;
   }
 
-  function bubble(role, text) {
-    var log = document.getElementById("pg-log");
-    var empty = log.querySelector(".empty");
-    if (empty) empty.remove();
-    var b = document.createElement("div");
-    b.className = "pg-msg pg-" + role;
-    var who = document.createElement("span");
-    who.className = "pg-who";
-    who.textContent = role === "user" ? "you" : "waiting for a model";
-    var body = document.createElement("div");
-    body.className = "pg-text";
-    body.textContent = text;
-    b.appendChild(who);
-    b.appendChild(body);
-    log.appendChild(b);
-    if (M && motion() !== "off") M.animate(b, { opacity: [0, 1], transform: ["translateY(6px)", "none"] }, { duration: 0.2 });
-    log.scrollTop = log.scrollHeight;
-    return body;
-  }
-
   function strip(target, info) {
     var s = document.createElement("a");
     s.className = "pg-strip outcome-" + (info.outcome || "ok");
@@ -896,12 +874,13 @@
     s.setAttribute("hx-get", "/requests/" + encodeURIComponent(info.id) + "/journey");
     s.setAttribute("hx-target", "#sheet-root");
     s.setAttribute("hx-swap", "innerHTML");
-    s.textContent = [
+    var bits = [
       (info.outcome === "failover" ? "FAILOVER · " : info.outcome === "failed" ? "FAILED · " : "") +
-        (info.answered_by || "nothing answered"),
-      (info.tokens_in || 0) + " in / " + (info.tokens_out || 0) + " out",
-      (info.ms || 0).toLocaleString() + " ms"
-    ].join("  ·  ");
+        (info.answered_by || "nothing answered")
+    ];
+    if (info.ms != null) bits.push((info.tokens_in || 0) + " in / " + (info.tokens_out || 0) + " out",
+                                   info.ms.toLocaleString() + " ms");
+    s.textContent = bits.join("  ·  ");
     target.parentNode.appendChild(s);
     var who = target.parentNode.querySelector(".pg-who");
     if (who && !target.closest(".pg-compare-card"))
@@ -943,24 +922,241 @@
     return cards;
   }
 
-  async function send() {
-    var input = document.getElementById("pg-input"), btn = document.getElementById("pg-send");
+  /* ── Chat: send, stop, regenerate, history ───────────────── */
+  /* A chat is {id, title, msgs}; msgs hold {role, content, answered_by,
+     request_id, reasoning, compare}. It is saved on the machine after every
+     turn (POST /chat/api/chats/<id>), so the list on the left survives
+     closing the browser. */
+
+  var chat = { id: "", title: "New chat", msgs: [] };
+  var aborter = null;
+
+  function newId() {
+    var a = new Uint8Array(6);
+    (window.crypto || window.msCrypto).getRandomValues(a);
+    return Array.prototype.map.call(a, function (b) { return ("0" + b.toString(16)).slice(-2); }).join("");
+  }
+
+  function apiMsgs() {
+    var sys = document.getElementById("pg-system").value.trim();
+    var real = chat.msgs.filter(function (m) { return !m.compare; })
+      .map(function (m) { return { role: m.role, content: m.content }; });
+    return (sys ? [{ role: "system", content: sys }] : []).concat(real);
+  }
+
+  function copyText(text, what) {
+    var done = function () { toast("Copied " + what, "ok"); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done);
+    else {
+      var t = document.createElement("textarea");
+      t.value = text; document.body.appendChild(t); t.select();
+      try { document.execCommand("copy"); done(); } catch (err) { /* nothing to do */ }
+      t.remove();
+    }
+  }
+
+  function actions(b, idx) {
+    var bar = document.createElement("div");
+    bar.className = "pg-acts";
+    var add = function (label, fn) {
+      var x = document.createElement("button");
+      x.type = "button"; x.className = "pg-act"; x.textContent = label;
+      x.addEventListener("click", fn);
+      bar.appendChild(x);
+    };
+    var m = chat.msgs[idx], last = idx === chat.msgs.length - 1;
+    if (m.content) add("Copy", function () { copyText(m.content, "the message"); });
+    if (m.role === "assistant" && last && !aborter) add("Regenerate", function () {
+      chat.msgs.pop(); send({ regen: true });
+    });
+    if (m.role === "user" && (last || idx === chat.msgs.length - 2) && !aborter) add("Edit", function () {
+      chat.msgs.length = idx; renderAll();
+      var input = document.getElementById("pg-input");
+      input.value = m.content; growInput(); input.focus();
+      saveChat();
+    });
+    if (!aborter) add("Delete", function () { chat.msgs.splice(idx, 1); renderAll(); saveChat(); });
+    b.appendChild(bar);
+  }
+
+  function bubble(role, text) {
+    var log = document.getElementById("pg-log");
+    var empty = log.querySelector(".empty");
+    if (empty) empty.remove();
+    var b = document.createElement("div");
+    b.className = "pg-msg pg-" + role;
+    var who = document.createElement("span");
+    who.className = "pg-who";
+    who.textContent = role === "user" ? "you" : "waiting for a model";
+    var body = document.createElement("div");
+    body.className = "pg-text";
+    body.textContent = text;
+    b.appendChild(who);
+    b.appendChild(body);
+    log.appendChild(b);
+    if (M && motion() !== "off") M.animate(b, { opacity: [0, 1], transform: ["translateY(6px)", "none"] }, { duration: 0.2 });
+    log.scrollTop = log.scrollHeight;
+    return body;
+  }
+
+  /* Code blocks get a Copy button once a reply is drawn. */
+  function decorateCode(scope) {
+    each(scope.querySelectorAll("pre"), function (pre) {
+      if (pre.querySelector(".pg-copy")) return;
+      var x = document.createElement("button");
+      x.type = "button"; x.className = "pg-copy"; x.textContent = "Copy";
+      x.addEventListener("click", function () { copyText(pre.querySelector("code").textContent, "the code"); });
+      pre.appendChild(x);
+    });
+  }
+
+  function renderAll() {
+    var log = document.getElementById("pg-log");
+    log.innerHTML = "";
+    if (!chat.msgs.length) {
+      log.innerHTML = '<div class="empty"><p>Ask something below. Chats are saved on this machine, and the list on the left brings them back.</p></div>';
+    }
+    chat.msgs.forEach(function (m, i) {
+      if (m.compare) {
+        var cards = compareGrid(Object.keys(m.compare));
+        Object.keys(cards).forEach(function (t) {
+          cards[t].body.classList.remove("shimmer");
+          cards[t].body.innerHTML = md(m.compare[t]);
+          decorateCode(cards[t].body);
+        });
+        actions(log.lastChild, i);
+        return;
+      }
+      var out = bubble(m.role, "");
+      var wrap = out.parentNode;
+      if (m.role === "user") out.textContent = m.content;
+      else {
+        out.innerHTML = md(m.content);
+        decorateCode(out);
+        wrap.querySelector(".pg-who").textContent = m.answered_by || "assistant";
+        if (m.reasoning) {
+          var fold = thinking(out);
+          fold.querySelector(".rq-think").textContent = m.reasoning;
+          fold.querySelector(".n").textContent = m.reasoning.length.toLocaleString() + " characters";
+        }
+        var info = m.info || (m.request_id ? { id: m.request_id, outcome: "ok", answered_by: m.answered_by } : null);
+        if (info) strip(out, info);
+      }
+      actions(wrap, i);
+    });
+    log.scrollTop = log.scrollHeight;
+    var t = document.getElementById("pg-title");
+    if (t) t.textContent = chat.title || "New chat";
+  }
+
+  function saveChat() {
+    if (!chat.id || !chat.msgs.length) return Promise.resolve();
+    return fetch("/chat/api/chats/" + chat.id, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: chat.title === "New chat" ? "" : chat.title,
+                             target: document.getElementById("pg-target").value,
+                             system: document.getElementById("pg-system").value,
+                             messages: chat.msgs })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.title) { chat.title = d.title; document.getElementById("pg-title").textContent = d.title; }
+      return refreshList();
+    }).catch(function () { /* history is a convenience; the chat itself is still on screen */ });
+  }
+
+  function dayLabel(iso) {
+    var d = new Date(iso), now = new Date();
+    var days = Math.floor((new Date(now.getFullYear(), now.getMonth(), now.getDate()) -
+                           new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 864e5);
+    return days <= 0 ? "Today" : days === 1 ? "Yesterday" : days < 7 ? "This week" : "Older";
+  }
+
+  function refreshList() {
+    var list = document.getElementById("pg-list");
+    if (!list) return Promise.resolve();
+    var q = document.getElementById("pg-search").value.trim();
+    return fetch("/chat/api/chats?q=" + encodeURIComponent(q)).then(function (r) { return r.json(); }).then(function (d) {
+      list.innerHTML = "";
+      if (!d.chats.length) {
+        var none = document.createElement("p");
+        none.className = "note";
+        none.textContent = q ? "No chat matches." : "No saved chats yet.";
+        list.appendChild(none);
+        return;
+      }
+      var group = "";
+      d.chats.forEach(function (c) {
+        var g = dayLabel(c.updated);
+        if (g !== group) {
+          group = g;
+          var h = document.createElement("div");
+          h.className = "pg-day"; h.textContent = g; list.appendChild(h);
+        }
+        var a = document.createElement("button");
+        a.type = "button";
+        a.className = "pg-item" + (c.id === chat.id ? " is-current" : "");
+        a.setAttribute("data-chat", c.id);
+        a.textContent = c.title;
+        list.appendChild(a);
+      });
+    }).catch(function () { /* list stays as it was */ });
+  }
+
+  function openChat(id) {
+    if (aborter) return;
+    fetch("/chat/api/chats/" + id).then(function (r) { return r.ok ? r.json() : null; }).then(function (doc) {
+      if (!doc) { toast("That chat is gone", "warn"); return refreshList(); }
+      chat = { id: doc.id, title: doc.title, msgs: doc.messages || [] };
+      if (doc.system !== undefined) document.getElementById("pg-system").value = doc.system;
+      var tgt = document.getElementById("pg-target");
+      if (doc.target && tgt.querySelector('option[value="' + doc.target.replace(/"/g, '\\"') + '"]')) tgt.value = doc.target;
+      try { history.replaceState({}, "", "/chat#" + doc.id); } catch (err) { /* not important */ }
+      renderAll(); refreshList();
+    });
+  }
+
+  function newChat() {
+    if (aborter) return;
+    chat = { id: newId(), title: "New chat", msgs: [] };
+    try { history.replaceState({}, "", "/chat"); } catch (err) { /* not important */ }
+    renderAll(); refreshList();
+    document.getElementById("pg-input").focus();
+  }
+
+  function growInput() {
+    var i = document.getElementById("pg-input");
+    if (!i) return;
+    i.style.height = "auto";
+    i.style.height = Math.min(i.scrollHeight, 240) + "px";
+  }
+
+  function busy(on) {
+    document.getElementById("pg-send").hidden = on;
+    document.getElementById("pg-send").disabled = on;
+    document.getElementById("pg-stop-btn").hidden = !on;
+  }
+
+  async function send(opts) {
+    opts = opts || {};
+    var input = document.getElementById("pg-input");
+    if (aborter) return;
     var text = input.value.trim();
-    if (!text || btn.disabled) return;
+    if (!opts.regen && !text) return;
+    if (!chat.id) chat.id = newId();
     var targetValue = document.getElementById("pg-target").value;
     var compare = targetValue.indexOf("compare:") === 0;
-    input.value = "";
-    convo.push({ role: "user", content: text });
-    bubble("user", text);
+    if (!opts.regen) {
+      input.value = ""; growInput();
+      chat.msgs.push({ role: "user", content: text });
+    }
+    renderAll();
     var out = compare ? null : bubble("assistant", "");
     if (out) out.classList.add("shimmer");
-    btn.disabled = true;
-    var sys = document.getElementById("pg-system").value.trim();
-    var msgs = (sys ? [{ role: "system", content: sys }] : []).concat(convo);
-    var answer = "", reasoning = "", cards = null;
+    aborter = new AbortController();
+    busy(true);
+    var answer = "", reasoning = "", cards = null, info = null, model = "", stopped = false;
     try {
-      var r = await fetch("/playground/chat", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+      var r = await fetch("/chat/send", {
+        method: "POST", headers: { "Content-Type": "application/json" }, signal: aborter.signal,
         body: JSON.stringify({ target: targetValue,
                                temperature: document.getElementById("pg-temp").value,
                                max_tokens: document.getElementById("pg-max").value,
@@ -968,7 +1164,7 @@
                                frequency_penalty: document.getElementById("pg-freq").value,
                                presence_penalty: document.getElementById("pg-pres").value,
                                stop: document.getElementById("pg-stop").value,
-                               messages: msgs })
+                               messages: apiMsgs() })
       });
       if (!r.ok) {
         var err = await r.json().catch(function () { return {}; });
@@ -993,7 +1189,7 @@
             if (evName === "targets") { cards = compareGrid(payload.targets || []); return; }
             if (evName === "flexrouter") {
               if (payload.target && cards && cards[payload.target]) strip(cards[payload.target].body, payload);
-              else if (out) strip(out, payload);
+              else if (out) { info = payload; strip(out, payload); }
               return;
             }
             var card = cards && payload.model ? cards[payload.model] : null;
@@ -1013,8 +1209,10 @@
             } else if (out) {
               // The reply is labelled with the model answering it, never
               // "flexrouter" (US-44): every chunk names it (ADR 0018).
-              if (payload.flexrouter && payload.flexrouter.model)
-                out.parentNode.querySelector(".pg-who").textContent = payload.flexrouter.model;
+              if (payload.flexrouter && payload.flexrouter.model) {
+                model = payload.flexrouter.model;
+                out.parentNode.querySelector(".pg-who").textContent = model;
+              }
               if (think) {
                 reasoning += think;
                 var fold = thinking(out);
@@ -1028,24 +1226,37 @@
           });
         });
       }
-      if (!compare) convo.push({ role: "assistant", content: answer });
     } catch (e) {
-      if (out) {
-        out.textContent = "Not sent: " + e.message;
-        out.parentNode.classList.add("pg-error");
-      } else if (cards) {
-        Object.keys(cards).forEach(function (t) {
-          cards[t].body.classList.remove("shimmer");
-          if (!cards[t].text) cards[t].body.textContent = "Not sent: " + e.message;
-        });
+      if (e.name === "AbortError") stopped = true;
+      else {
+        if (out) {
+          out.textContent = "Not sent: " + e.message;
+          out.parentNode.classList.add("pg-error");
+        } else if (cards) {
+          Object.keys(cards).forEach(function (t) {
+            cards[t].body.classList.remove("shimmer");
+            if (!cards[t].text) cards[t].body.textContent = "Not sent: " + e.message;
+          });
+        }
+        if (!opts.regen) { chat.msgs.pop(); input.value = text; growInput(); }
+        aborter = null; busy(false); input.focus();
+        return;
       }
-      convo.pop();
-    } finally {
-      if (out) out.classList.remove("shimmer");
-      if (cards) Object.keys(cards).forEach(function (t) { cards[t].body.classList.remove("shimmer"); });
-      btn.disabled = false;
-      input.focus();
     }
+    aborter = null;
+    busy(false);
+    if (cards) {
+      var map = {};
+      Object.keys(cards).forEach(function (t) { map[t] = cards[t].text; });
+      chat.msgs.push({ role: "assistant", content: "", compare: map });
+    } else if (answer || reasoning) {
+      chat.msgs.push({ role: "assistant", content: answer, reasoning: reasoning,
+                       answered_by: (info && info.answered_by) || model,
+                       request_id: info && info.id, info: info });
+    } else if (stopped) toast("Stopped before anything came back", "warn");
+    renderAll();
+    await saveChat();
+    input.focus();
   }
 
   function bootPlayground() {
@@ -1058,6 +1269,10 @@
       out.textContent = range.value;
       range.addEventListener("input", function () { out.textContent = range.value; });
     });
+    var wanted = (location.hash || "").slice(1);
+    if (/^[a-z0-9]{6,32}$/.test(wanted)) openChat(wanted);
+    else { chat = { id: newId(), title: "New chat", msgs: [] }; renderAll(); }
+    refreshList();
   }
 
   document.addEventListener("submit", function (e) {
@@ -1065,12 +1280,52 @@
   });
   document.addEventListener("keydown", function (e) {
     if (e.target.id === "pg-input" && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    if (e.target.id === "pg-input" && e.key === "Escape" && aborter) aborter.abort();
+  });
+  document.addEventListener("input", function (e) {
+    if (e.target.id === "pg-input") growInput();
+    if (e.target.id === "pg-search") refreshList();
   });
   document.addEventListener("click", function (e) {
-    if (e.target.id !== "pg-clear") return;
-    convo = [];
-    var log = document.getElementById("pg-log");
-    log.innerHTML = '<div class="empty"><p>Cleared. Nothing was saved.</p></div>';
+    var t = e.target.closest && e.target.closest("button");
+    if (!t) return;
+    if (t.id === "pg-stop-btn" && aborter) { aborter.abort(); return; }
+    if (t.id === "pg-new") { newChat(); return; }
+    if (t.classList.contains("pg-item")) { openChat(t.getAttribute("data-chat")); return; }
+    if (t.id === "pg-title") {
+      if (!chat.msgs.length) return;
+      var name = window.prompt("Rename this chat", chat.title);
+      if (name && name.trim()) {
+        fetch("/chat/api/chats/" + chat.id + "/rename", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: name.trim() }) })
+          .then(function () { chat.title = name.trim(); renderAll(); refreshList(); });
+      }
+      return;
+    }
+    if (t.id === "pg-delete") {
+      if (!chat.msgs.length) return;
+      var gone = chat;
+      fetch("/chat/api/chats/" + gone.id, { method: "DELETE" }).then(function () {
+        newChat();
+        toast("Deleted " + gone.title, "ok", { action: "Undo", onAction: function () {
+          chat = gone; renderAll(); saveChat();
+        } });
+      });
+      return;
+    }
+    if (t.id === "pg-export") {
+      if (!chat.msgs.length) return;
+      var text = "# " + chat.title + "\n\n" + chat.msgs.map(function (m) {
+        var who = m.role === "user" ? "You" : (m.answered_by || "Assistant");
+        var body = m.compare ? Object.keys(m.compare).map(function (k) { return "**" + k + "**\n\n" + m.compare[k]; }).join("\n\n") : m.content;
+        return "## " + who + "\n\n" + body;
+      }).join("\n\n") + "\n";
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([text], { type: "text/markdown" }));
+      a.download = (chat.title || "chat").replace(/[^\w-]+/g, "-").slice(0, 40) + ".md";
+      document.body.appendChild(a); a.click(); a.remove();
+    }
   });
 
   /* ── Buckets: Try it ─────────────────────────────────────── */
@@ -1087,7 +1342,7 @@
     out.textContent = "Sending one small request through " + bucket + "...";
     var info = null, error = "";
     try {
-      var r = await fetch("/playground/chat", {
+      var r = await fetch("/chat/send", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target: bucket, max_tokens: 1,
                                messages: [{ role: "user", content: "Reply with OK." }] })
@@ -1814,7 +2069,7 @@
   /* ── keyboard shortcuts ──────────────────────────────────── */
 
   var GO = { o: "/", p: "/providers", m: "/models_catalog", b: "/buckets", r: "/requests",
-             a: "/allowance", s: "/settings", l: "/playground" };
+             a: "/allowance", s: "/settings", l: "/chat" };
   var pendingG = 0;
 
   function typing(el) {

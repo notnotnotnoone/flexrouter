@@ -21,7 +21,7 @@ from flexrouter.store import read_json, write_json
 
 FILENAME = "quickstart.json"
 # Requests the dashboard sends itself; they don't prove your app is wired up.
-DASHBOARD_CLIENTS = ("playground", "dashboard-test")
+DASHBOARD_CLIENTS = ("chat", "playground", "dashboard-test")
 
 
 def _path(state_dir: str) -> Path:

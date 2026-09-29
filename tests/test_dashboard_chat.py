@@ -1,4 +1,4 @@
-"""The Playground: real requests through the router, streamed."""
+"""Chat: real requests through the router, streamed, and saved history."""
 import json
 
 import pytest
@@ -40,14 +40,14 @@ def compare_client(two_provider_config_file):
 
 
 def test_the_page_offers_buckets_and_models(client):
-    body = client.get("/playground").text
+    body = client.get("/chat").text
     assert '<optgroup label="Buckets">' in body and '<optgroup label="groq">' in body
     assert 'value="groq/' in body
     assert 'id="pg-input"' in body
 
 
 def test_the_playground_is_in_the_menu(client):
-    assert 'href="/playground"' in client.get("/").text
+    assert 'href="/chat"' in client.get("/").text
 
 
 def test_an_empty_conversation_is_refused(client):
@@ -114,7 +114,7 @@ def test_a_penalty_someone_set_is_sent(client, monkeypatch):
 
 
 def test_the_page_offers_a_compare_group(compare_client):
-    body = compare_client.get("/playground").text
+    body = compare_client.get("/chat").text
     assert '<optgroup label="Compare">' in body
     assert 'value="compare:all"' in body
     assert 'value="compare:bucket:high"' in body
@@ -167,3 +167,26 @@ def test_the_reply_is_not_labelled_flexrouter():
     assert 'role === "user" ? "you" : "flexrouter"' not in js
     assert "payload.flexrouter.model" in js
     assert "function md(src)" in js and "reasoning_content" in js
+
+
+def test_the_old_playground_address_redirects_to_chat(client):
+    r = client.get("/playground", follow_redirects=False)
+    assert r.status_code == 308 and r.headers["location"] == "/chat"
+
+
+def test_history_saves_lists_renames_and_deletes(client):
+    cid = "abc123def456"
+    r = client.post(f"/chat/api/chats/{cid}", json={"messages": [
+        {"role": "user", "content": "what is a bucket"},
+        {"role": "assistant", "content": "a name", "answered_by": "groq/x"}]})
+    assert r.json()["title"] == "what is a bucket"
+    assert [c["id"] for c in client.get("/chat/api/chats").json()["chats"]] == [cid]
+    assert client.get("/chat/api/chats?q=nomatch").json()["chats"] == []
+    assert client.post(f"/chat/api/chats/{cid}/rename", json={"title": "Buckets"}).status_code == 200
+    assert client.get(f"/chat/api/chats/{cid}").json()["title"] == "Buckets"
+    assert client.delete(f"/chat/api/chats/{cid}").json() == {"ok": True}
+    assert client.get(f"/chat/api/chats/{cid}").status_code == 404
+
+
+def test_a_bad_chat_id_is_refused(client):
+    assert client.post("/chat/api/chats/x", json={"messages": []}).status_code == 400
