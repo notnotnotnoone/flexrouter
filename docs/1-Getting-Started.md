@@ -160,6 +160,7 @@ print(response.choices[0].message.content)
 **Model naming:**
 - `"auto"` — flexrouter picks the tier with the highest-scoring model
 - `"cheap"`, `"premium"` — the plain name of a tier routes through that tier
+- `"all"` — every model in every bucket, once each (built-in; respects exclude and rate limits like any bucket)
 - `"groq/llama-3.1-8b-instant"` — a name with a `/` in it pins one exact
   model, with no failing over to another
 - The older `"auto-cheap"` spelling still works, so an app that already has it

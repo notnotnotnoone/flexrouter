@@ -337,6 +337,9 @@ Opens `http://localhost:4891`. The pages, in menu order:
   Off folded away. Press a row for what the provider actually said.
   **Explain errors with AI** copies a prompt describing every problem, and
   **Test all** says hi to every model.
+- **What's broken**: a summary of problems the error brain isn't sure about
+  (unclear errors). Press **Resolve** to vote on what each one means without
+  leaving the page; it saves your answer and removes the uncertain entry.
 - **Allowance**: free-tier headroom per provider, when each provider's day
   starts over (in your own time), and the provider's own figures when it
   sends them.

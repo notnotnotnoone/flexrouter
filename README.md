@@ -184,7 +184,7 @@ Your models are grouped into named lists — for example `fast` and `smart`, but
 
 If nothing in a bucket is available: by default flexrouter waits until something frees up. Pass `wait=False` and it will raise `RouterBusy` immediately instead.
 
-Buckets don't spill into each other — if everything in `low` is busy, flexrouter will not quietly reach into `high` on your behalf.
+Buckets don't spill into each other — if everything in `low` is busy, flexrouter will not quietly reach into `high` on your behalf. An exception: the built-in **`all` bucket** holds every model in every bucket, once each, so an app that wants each model in turn (e.g., one vote per model) can ask `all` and exclude what it's had. It routes like any other bucket, with failing over and respecting rate limits; if you name a bucket `all` yourself, it takes its place.
 
 **When a model fails**, flexrouter moves to the next one in the bucket straight away. It never sleeps between tries, tries every model in the bucket, and gives up after 30 seconds ("Give up after" in Settings). A request that names one exact model (`groq/llama-3.1-8b-instant`, with a `/`) is **pinned**: if that model is busy or broken you get the error at once, with no fallback.
 

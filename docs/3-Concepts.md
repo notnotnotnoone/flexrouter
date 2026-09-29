@@ -78,6 +78,27 @@ Tiers let you trade off cost, speed, and quality:
 
 You decide per-call which tier fits your use case.
 
+### The Built-in `all` Tier
+
+Every flexrouter has a special built-in **`all`** tier (unless you name a tier `all` yourself, in which case yours takes its place). It holds every model from every tier, once each, so an app that wants to vote on every model (like Agora's one vote per model) can ask for `all` and exclude the models it's already had:
+
+```python
+# First three calls: get each model once
+models_used = []
+for i in range(3):
+    response = router.generate(
+        messages=[...],
+        tier="all",
+        exclude=models_used,
+    )
+    model = response["model"]
+    models_used.append(model)
+
+# Fourth call would fail (all models excluded)
+```
+
+The `all` tier routes the same way as any other tier — it picks by score, fails over, and respects rate limits.
+
 ---
 
 ## Scoring and Model Selection
