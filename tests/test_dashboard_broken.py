@@ -163,7 +163,7 @@ def test_a_model_that_needs_you_has_options_on_its_card(client):
 def test_a_did_you_mean_leads_with_the_new_name(client):
     _gone(action="use:llama-3.3-8b-instant")
     body = client.get("/broken").text
-    assert "Use llama-3.3-8b-instant" in body
+    assert 'Use <span class="chip-id">llama-3.3-8b-instant</span>' in body
     assert body.index('value="use"') < body.index('value="retry"')
 
 

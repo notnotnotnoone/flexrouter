@@ -120,11 +120,11 @@ def _model_resolver(item, ident: str) -> str:
     no_provider = item.cause == "no_provider"
     chips = []
     if suggested:
-        chips.append(_button("do", "use", tag("span", _star(True) + esc(f"Use {suggested}")
+        chips.append(_button("do", "use", tag("span", _star(True) + "Use " + tag("span", esc(suggested), cls="chip-id")
                              + tag("span", "The provider's current name for it.", cls="chip-hint"),
                              cls="chip-name"), True))
     if no_provider:
-        chips.append(tag("a", tag("span", _star(True) + esc(f"Set up {item.provider}")
+        chips.append(tag("a", tag("span", _star(True) + "Set up " + tag("span", esc(item.provider), cls="chip-id")
                          + tag("span", "Add its key; the model starts working.", cls="chip-hint"),
                          cls="chip-name"),
                          href="/providers", cls="verdict-chip is-guess"))
