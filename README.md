@@ -10,7 +10,11 @@
 
 [Quickstart](#quickstart) · [Free tier stacking](#free-tier-stacking) · [How routing works](#how-routing-works) · [Dashboard](#dashboard) · [Contributing](#contributing)
 
+▶ [Watch the 14-second failover demo](docs/assets/flexrouter-demo-readme.mp4)
+
 </div>
+
+> **Status:** flexrouter is feature-complete and lightly maintained. Bug reports are still welcome. If you need many more providers or features, take a look at [OmniRoute](https://github.com/diegosouzapw/OmniRoute).
 
 ---
 
