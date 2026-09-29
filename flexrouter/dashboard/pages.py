@@ -2036,7 +2036,10 @@ def logs_page(fragment: str = "", limit: int = logs_page_mod.PAGE) -> HTMLRespon
     return HTMLResponse(page("Logs", "logs", logs_page_mod.body(limit)))
 
 
-@pages.post("/brain/{fp}/verdict", include_in_schema=False)
+# `:path`: a fingerprint is the error's own words and often holds a "/"
+# ("mistral/codestral-embed: invalid model"), which the server decodes
+# before routing - a plain {fp} would never match those.
+@pages.post("/brain/{fp:path}/verdict", include_in_schema=False)
 async def brain_correct(fp: str, request: Request) -> RedirectResponse:
     """Correct what one learned error means. Stored as the owner's own
     answer, which nothing afterwards overrules."""

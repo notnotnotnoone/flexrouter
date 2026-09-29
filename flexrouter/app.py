@@ -43,7 +43,7 @@ from flexrouter.exceptions import RouterBusy, RouterError
 from flexrouter.probe import probe_key, stale_models
 from flexrouter.redact import scrub
 from flexrouter.traces import new_trace_id
-from flexrouter.wire import bucket_id, model_id, parse_model, resolve
+from flexrouter.wire import ALL_BUCKET, bucket_id, model_id, parse_model, resolve
 
 # The library blocks indefinitely when a tier is saturated, which is the right
 # default for a script. A server must not: an HTTP client that never gets a
@@ -263,6 +263,14 @@ def _model_entries(router) -> list[dict]:
         "flexrouter": {"kind": "bucket", "models": [],
                        "resolves_to": _best_bucket(router)},
     })
+
+    if ALL_BUCKET not in tiers:
+        everyone = dict.fromkeys(model_id(mc.provider, mc.model)
+                                 for mcs in tiers.values() for mc in mcs)
+        entries.append({
+            "id": ALL_BUCKET, "object": "model", "created": 0, "owned_by": "flexrouter",
+            "flexrouter": {"kind": "bucket", "models": list(everyone), "builtin": True},
+        })
 
     buckets_by_model: dict[tuple[str, str], list[str]] = {}
     for name, model_configs in tiers.items():
